@@ -43,6 +43,14 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - Transaction-safe atomic audit log persistence with zero-allocation `SHA256.HashData(payloadBytes, hashBytes)` preventing hash chain forking under high concurrency.
   - Continuous cryptographic SHA-256 hash chaining (`PrevHash -> EntryHash`) persisted across gateway restarts and verifiable via automated health routines.
 
+- **OpenMetadata Enterprise Governance Integration**:
+  - Direct synchronization of enterprise catalog tables, schemas, columns, and tags from **OpenMetadata**.
+  - Automatic column masking generation based on classification tags (e.g. `PII.Sensitive` -> REDACT, `PII.Email` -> MASK_EMAIL, `PII.Pseudonym` -> HMAC_SHA256).
+  - OpenMetadata Policies, Rules, Roles, Teams, and Users mapped deterministically to GqlGateway `Consent` entries with Active Directory SID resolution (`TeamToGroupSidMap`, `UserToUserSidMap`).
+  - Real-time webhook ingestion (`POST /api/webhooks/openmetadata`) protected by HMAC-SHA256 signature verification (`X-OpenMetadata-Signature`).
+  - Background periodic synchronization service (`OpenMetadataSyncBackgroundService`) and administrative GraphQL mutation (`syncOpenMetadata(dryRun: Boolean)`).
+  - Immediate multi-instance cache invalidation via monotonic policy epoch incrementation upon catalog/permission sync.
+
 - **Enterprise Network & Edge Protection**:
   - Pre-Authentication IP Rate Limiting and Post-Authentication SID Token-Bucket Concurrency Limiting.
   - Anti-CSRF Preflight enforcement on GraphQL endpoints.
@@ -61,7 +69,7 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 ```
                   ┌───────────────────────────────┐
                   │       GqlGateway.Api          │  ASP.NET Core Host, Middleware,
-                  │                               │  Health Checks, DI Configuration
+                  │                               │  Health Checks, DI Configuration, Webhooks
                   └──────────────┬────────────────┘
                                  │
                   ┌──────────────▼────────────────┐
@@ -71,7 +79,7 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
                                  │
                   ┌──────────────▼────────────────┐
                   │     GqlGateway.Application    │  Use Cases, Consent Resolution,
-                  │                               │  Masking, RLS Generation, Interfaces
+                  │                               │  Masking, RLS Generation, OpenMetadata DTOs
                   └──────────────┬────────────────┘
                                  │
          ┌───────────────────────┴───────────────────────┐
@@ -80,7 +88,7 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 │    GqlGateway.Infrastructure   │             │       GqlGateway.Domain       │
 │                                │             │                               │
 │ SQLite/ADO.NET, Redis/Memory,  │             │ Domain Entities, Value Objects│
-│ Cryptography, Event Bus        │             │ (Sid, TableIdentifier), Enums │
+│ Cryptography, OpenMetadataSync │             │ (Sid, TableIdentifier), Enums │
 └────────────────────────────────┘             └───────────────────────────────┘
 ```
 
@@ -89,14 +97,14 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 | Project | Target | Description |
 |---|---|---|
 | [`GqlGateway.Domain`](src/GqlGateway.Domain) | `net10.0` | Value Objects (`Sid`, `TableIdentifier`, `CompositeKey`), Models, Options, Enums |
-| [`GqlGateway.Application`](src/GqlGateway.Application) | `net10.0` | Core business services (`ConsentResolutionService`, `ColumnMaskingProvider`, `RlsFilterGenerator`, `ChunkedQueryExecutor`), segregated interfaces |
-| [`GqlGateway.Infrastructure`](src/GqlGateway.Infrastructure) | `net10.0` | Persistence (`SqliteGovernanceRepository`), Caching (`ConsentCacheService`), Event Bus (`InProcessChannelEventBus`), Secret Providers |
-| [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 14 GraphQL engine, dynamic types, queries, mutations, DataLoader execution, Source-Generated Regexes |
-| [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Minimal API, hosting, rate limiting, anti-CSRF, forwarded headers |
+| [`GqlGateway.Application`](src/GqlGateway.Application) | `net10.0` | Core business services (`ConsentResolutionService`, `ColumnMaskingProvider`, `RlsFilterGenerator`, `ChunkedQueryExecutor`), OpenMetadata models & interfaces |
+| [`GqlGateway.Infrastructure`](src/GqlGateway.Infrastructure) | `net10.0` | Persistence (`SqliteGovernanceRepository`), Caching (`ConsentCacheService`), Event Bus (`InProcessChannelEventBus`), OpenMetadata client & sync service |
+| [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 14 GraphQL engine, dynamic types, queries, mutations (`syncOpenMetadata`), DataLoader execution, Source-Generated Regexes |
+| [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Minimal API, hosting, rate limiting, anti-CSRF, forwarded headers, OpenMetadata webhooks |
 | [`GqlGateway.Benchmarks`](benchmarks/GqlGateway.Benchmarks) | `net10.0` | BenchmarkDotNet suites for throughput, cache hit/miss, and masking allocations |
-| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 290 Unit & Property-Based tests (xUnit, Shouldly, FsCheck) |
+| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 298 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
 | [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | NetArchTest rules enforcing Clean Architecture dependency directions |
-| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 23 End-to-end integration tests using `WebApplicationFactory<Program>` |
+| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 27 End-to-end integration tests using `WebApplicationFactory<Program>` |
 
 ---
 

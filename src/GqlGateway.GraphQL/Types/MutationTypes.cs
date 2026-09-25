@@ -4,12 +4,22 @@ using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.OpenMetadata.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using HotChocolate;
 using Microsoft.AspNetCore.Http;
 
 namespace GqlGateway.GraphQL.Types;
+
+public sealed class OpenMetadataSyncPayload
+{
+    public bool Success { get; init; }
+    public int SyncedTables { get; init; }
+    public int SyncedConsents { get; init; }
+    public int SyncedMaskingRules { get; init; }
+    public List<string> Warnings { get; init; } = [];
+}
 
 public sealed class ConsentRequestPayload
 {
@@ -383,5 +393,40 @@ public sealed class Mutation
 
         await eventBus.PublishAsync("schema:reload", DateTimeOffset.UtcNow.ToString("O"), ct);
         return true;
+    }
+
+    public async Task<OpenMetadataSyncPayload> SyncOpenMetadataAsync(
+        bool dryRun = false,
+        [Service] IOpenMetadataSyncService syncService = default!,
+        [Service] IHttpContextAccessor httpContextAccessor = default!,
+        CancellationToken ct = default)
+    {
+        var principal = httpContextAccessor?.HttpContext?.User;
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("UNAUTHORIZED")
+                .SetMessage("Authentifizierung erforderlich.")
+                .Build());
+        }
+
+        var roles = principal.FindAll(ClaimTypes.Role).Select(r => r.Value).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!roles.Contains("GovernanceAdmin") && !roles.Contains("ClusterAdmin"))
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("FORBIDDEN")
+                .SetMessage("Nur Governance- oder Cluster-Administratoren dürfen OpenMetadata synchronisieren.")
+                .Build());
+        }
+
+        var result = await syncService.SyncPermissionsAsync(dryRun, ct);
+        return new OpenMetadataSyncPayload
+        {
+            Success = result.Success,
+            SyncedTables = result.SyncedTables,
+            SyncedConsents = result.SyncedConsents,
+            SyncedMaskingRules = result.SyncedMaskingRules,
+            Warnings = result.Warnings.ToList()
+        };
     }
 }

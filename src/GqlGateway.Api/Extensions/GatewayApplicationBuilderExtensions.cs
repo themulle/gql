@@ -1,5 +1,6 @@
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.OpenMetadata.Interfaces;
 using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -135,6 +136,25 @@ public static class GatewayApplicationBuilderExtensions
             : "/" + gatewayOptions.GraphQL.EndpointPath;
 
         app.MapGraphQL(endpoint).RequireAuthorization();
+
+        app.MapPost("/api/webhooks/openmetadata", async (
+            HttpContext context,
+            IOpenMetadataSyncService syncService) =>
+        {
+            using var reader = new StreamReader(context.Request.Body);
+            var payload = await reader.ReadToEndAsync();
+
+            string? signature = context.Request.Headers["X-OpenMetadata-Signature"].FirstOrDefault() ??
+                                context.Request.Headers["X-OM-Signature"].FirstOrDefault();
+
+            var success = await syncService.HandleWebhookEventAsync(payload, signature, context.RequestAborted);
+            if (!success)
+            {
+                return Results.BadRequest(new { error = "Failed to process webhook or invalid signature." });
+            }
+
+            return Results.Ok(new { status = "Processed" });
+        }).AllowAnonymous();
 
         return app;
     }

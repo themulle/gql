@@ -195,6 +195,150 @@ public partial class SqliteGovernanceRepository
         }
     }
 
+    public async Task<TableMetadata> UpsertTableMetadataAsync(TableMetadata metadata, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            using var tx = _connection.BeginTransaction();
+            try
+            {
+                Guid tableId;
+                using (var selectCmd = _connection.CreateCommand())
+                {
+                    selectCmd.Transaction = tx;
+                    selectCmd.CommandText = @"SELECT id FROM TABLES 
+                                              WHERE source_name = @domain COLLATE NOCASE 
+                                                AND schema_name = @schema COLLATE NOCASE 
+                                                AND table_name = @table COLLATE NOCASE";
+                    selectCmd.Parameters.AddWithValue("@domain", metadata.Identifier.Domain);
+                    selectCmd.Parameters.AddWithValue("@schema", metadata.Identifier.Schema);
+                    selectCmd.Parameters.AddWithValue("@table", metadata.Identifier.TableName);
+                    var existingIdObj = await selectCmd.ExecuteScalarAsync(ct);
+                    if (existingIdObj != null && existingIdObj != DBNull.Value)
+                    {
+                        tableId = Guid.Parse(existingIdObj.ToString()!);
+                        using var updateCmd = _connection.CreateCommand();
+                        updateCmd.Transaction = tx;
+                        updateCmd.CommandText = @"UPDATE TABLES 
+                                                  SET source_type = @sourceType, 
+                                                      display_name = @displayName, 
+                                                      sensitivity = @sensitivity, 
+                                                      requires_four_eyes = @requiresFourEyes, 
+                                                      is_active = @isActive
+                                                  WHERE id = @id";
+                        updateCmd.Parameters.AddWithValue("@sourceType", metadata.Table.SourceType);
+                        updateCmd.Parameters.AddWithValue("@displayName", metadata.Table.DisplayName);
+                        updateCmd.Parameters.AddWithValue("@sensitivity", metadata.Table.Sensitivity);
+                        updateCmd.Parameters.AddWithValue("@requiresFourEyes", metadata.Table.RequiresFourEyes ? 1 : 0);
+                        updateCmd.Parameters.AddWithValue("@isActive", metadata.Table.IsActive ? 1 : 0);
+                        updateCmd.Parameters.AddWithValue("@id", tableId.ToString());
+                        await updateCmd.ExecuteNonQueryAsync(ct);
+                    }
+                    else
+                    {
+                        tableId = metadata.Table.Id == Guid.Empty ? Guid.NewGuid() : metadata.Table.Id;
+                        using var insertCmd = _connection.CreateCommand();
+                        insertCmd.Transaction = tx;
+                        insertCmd.CommandText = @"INSERT INTO TABLES (id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active)
+                                                  VALUES (@id, @sourceType, @sourceName, @schemaName, @tableName, @displayName, @sensitivity, @requiresFourEyes, @isActive)";
+                        insertCmd.Parameters.AddWithValue("@id", tableId.ToString());
+                        insertCmd.Parameters.AddWithValue("@sourceType", metadata.Table.SourceType);
+                        insertCmd.Parameters.AddWithValue("@sourceName", metadata.Identifier.Domain);
+                        insertCmd.Parameters.AddWithValue("@schemaName", metadata.Identifier.Schema);
+                        insertCmd.Parameters.AddWithValue("@tableName", metadata.Identifier.TableName);
+                        insertCmd.Parameters.AddWithValue("@displayName", metadata.Table.DisplayName);
+                        insertCmd.Parameters.AddWithValue("@sensitivity", metadata.Table.Sensitivity);
+                        insertCmd.Parameters.AddWithValue("@requiresFourEyes", metadata.Table.RequiresFourEyes ? 1 : 0);
+                        insertCmd.Parameters.AddWithValue("@isActive", metadata.Table.IsActive ? 1 : 0);
+                        await insertCmd.ExecuteNonQueryAsync(ct);
+                    }
+                }
+
+                var columnIdsByName = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+                using (var getColsCmd = _connection.CreateCommand())
+                {
+                    getColsCmd.Transaction = tx;
+                    getColsCmd.CommandText = "SELECT id, column_name FROM TABLE_COLUMNS WHERE table_id = @tableId";
+                    getColsCmd.Parameters.AddWithValue("@tableId", tableId.ToString());
+                    using var reader = await getColsCmd.ExecuteReaderAsync(ct);
+                    while (await reader.ReadAsync(ct))
+                    {
+                        columnIdsByName[reader.GetString(1)] = Guid.Parse(reader.GetString(0));
+                    }
+                }
+
+                foreach (var col in metadata.Columns)
+                {
+                    Guid colId;
+                    if (columnIdsByName.TryGetValue(col.ColumnName, out var existingColId))
+                    {
+                        colId = existingColId;
+                        using var updateColCmd = _connection.CreateCommand();
+                        updateColCmd.Transaction = tx;
+                        updateColCmd.CommandText = @"UPDATE TABLE_COLUMNS 
+                                                    SET data_type = @dataType, is_sensitive = @isSensitive
+                                                    WHERE id = @id";
+                        updateColCmd.Parameters.AddWithValue("@dataType", col.DataType);
+                        updateColCmd.Parameters.AddWithValue("@isSensitive", col.IsSensitive ? 1 : 0);
+                        updateColCmd.Parameters.AddWithValue("@id", colId.ToString());
+                        await updateColCmd.ExecuteNonQueryAsync(ct);
+                    }
+                    else
+                    {
+                        colId = col.Id == Guid.Empty ? Guid.NewGuid() : col.Id;
+                        using var insertColCmd = _connection.CreateCommand();
+                        insertColCmd.Transaction = tx;
+                        insertColCmd.CommandText = @"INSERT INTO TABLE_COLUMNS (id, table_id, column_name, data_type, is_sensitive)
+                                                    VALUES (@id, @tableId, @columnName, @dataType, @isSensitive)";
+                        insertColCmd.Parameters.AddWithValue("@id", colId.ToString());
+                        insertColCmd.Parameters.AddWithValue("@tableId", tableId.ToString());
+                        insertColCmd.Parameters.AddWithValue("@columnName", col.ColumnName);
+                        insertColCmd.Parameters.AddWithValue("@dataType", col.DataType);
+                        insertColCmd.Parameters.AddWithValue("@isSensitive", col.IsSensitive ? 1 : 0);
+                        await insertColCmd.ExecuteNonQueryAsync(ct);
+                        columnIdsByName[col.ColumnName] = colId;
+                    }
+
+                    if (metadata.ColumnMaskingRules.TryGetValue(col.ColumnName, out var maskRule))
+                    {
+                        using var delMaskCmd = _connection.CreateCommand();
+                        delMaskCmd.Transaction = tx;
+                        delMaskCmd.CommandText = "DELETE FROM COLUMN_MASKING_RULES WHERE table_column_id = @colId";
+                        delMaskCmd.Parameters.AddWithValue("@colId", colId.ToString());
+                        await delMaskCmd.ExecuteNonQueryAsync(ct);
+
+                        using var insertMaskCmd = _connection.CreateCommand();
+                        insertMaskCmd.Transaction = tx;
+                        insertMaskCmd.CommandText = @"INSERT INTO COLUMN_MASKING_RULES (id, table_column_id, rule_type, pattern_or_format, replacement, hmac_key_id)
+                                                      VALUES (@id, @colId, @ruleType, @pattern, @replacement, @hmacKeyId)";
+                        insertMaskCmd.Parameters.AddWithValue("@id", (maskRule.Id == Guid.Empty ? Guid.NewGuid() : maskRule.Id).ToString());
+                        insertMaskCmd.Parameters.AddWithValue("@colId", colId.ToString());
+                        insertMaskCmd.Parameters.AddWithValue("@ruleType", maskRule.RuleType);
+                        insertMaskCmd.Parameters.AddWithValue("@pattern", (object?)maskRule.PatternOrFormat ?? DBNull.Value);
+                        insertMaskCmd.Parameters.AddWithValue("@replacement", (object?)maskRule.Replacement ?? DBNull.Value);
+                        insertMaskCmd.Parameters.AddWithValue("@hmacKeyId", (object?)maskRule.HmacKeyId ?? DBNull.Value);
+                        await insertMaskCmd.ExecuteNonQueryAsync(ct);
+                    }
+                }
+
+                await IncrementTableEpochInternalAsync(metadata.Identifier, tx, ct);
+                await tx.CommitAsync(ct);
+            }
+            catch
+            {
+                await tx.RollbackAsync(ct);
+                throw;
+            }
+
+            await _epochValidationService.InvalidateEpochAsync(metadata.Identifier, ct);
+            return metadata;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
 
     public async Task<long> GetTableEpochAsync(TableIdentifier table, CancellationToken ct = default)
     {

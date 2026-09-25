@@ -15,6 +15,7 @@ public sealed class GatewayOptions
     [Required] public DataMaskingOptions DataMasking { get; init; } = new();
     [Required] public AuditOptions Audit { get; init; } = new();
     [Required] public ReverseProxyOptions ReverseProxy { get; init; } = new();
+    [Required] public OpenMetadataOptions OpenMetadata { get; init; } = new();
 }
 
 public sealed class ReverseProxyOptions
@@ -128,4 +129,23 @@ public sealed class AuditOptions
     [Range(1, 7300)] public int AuditLogRetentionDays { get; init; } = 3650;
     [Range(1, 168)] public int VerifyHashChainIntervalHours { get; init; } = 24;
     public string ElasticsearchSinkUrl { get; init; } = string.Empty;
+}
+
+public sealed class OpenMetadataOptions
+{
+    public bool Enabled { get; init; }
+    public string ServerUrl { get; init; } = "http://localhost:8585/api/v1";
+    public string AuthToken { get; init; } = string.Empty;
+    public string WebhookSecret { get; init; } = string.Empty;
+    public string ServiceFilter { get; init; } = string.Empty;
+    [Range(1, 1440)] public int SyncIntervalMinutes { get; init; } = 30;
+    public Dictionary<string, string> TagToMaskingRuleMap { get; init; } = new()
+    {
+        ["PII.Sensitive"] = "REDACT",
+        ["PII.Email"] = "MASK_EMAIL",
+        ["PII.Pseudonym"] = "HMAC_SHA256",
+        ["PersonalData.Personal"] = "REDACT"
+    };
+    public Dictionary<string, string> TeamToGroupSidMap { get; init; } = new();
+    public Dictionary<string, string> UserToUserSidMap { get; init; } = new();
 }

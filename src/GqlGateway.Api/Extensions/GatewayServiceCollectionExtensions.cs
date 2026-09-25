@@ -3,6 +3,7 @@ using System.ComponentModel.DataAnnotations;
 using GqlGateway.Api.Hosting;
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.OpenMetadata.Interfaces;
 using GqlGateway.Application.Services;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Options;
@@ -11,6 +12,7 @@ using GqlGateway.GraphQL.Services;
 using GqlGateway.GraphQL.Types;
 using GqlGateway.Infrastructure.Cache;
 using GqlGateway.Infrastructure.Messaging;
+using GqlGateway.Infrastructure.OpenMetadata;
 using GqlGateway.Infrastructure.Persistence;
 using GqlGateway.Infrastructure.Security;
 using HotChocolate.Execution.Configuration;
@@ -135,6 +137,11 @@ public static class GatewayServiceCollectionExtensions
         // HA & Traffic Drain
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();
         services.AddHostedService<TrafficDrainHostedService>();
+
+        // OpenMetadata Integration
+        services.AddHttpClient<IOpenMetadataClient, OpenMetadataClient>();
+        services.AddSingleton<IOpenMetadataSyncService, OpenMetadataSyncService>();
+        services.AddHostedService<OpenMetadataSyncBackgroundService>();
 
         return services;
     }
