@@ -15,6 +15,8 @@ using GqlGateway.Infrastructure.Messaging;
 using GqlGateway.Infrastructure.OpenMetadata;
 using GqlGateway.Infrastructure.Persistence;
 using GqlGateway.Infrastructure.Security;
+using GqlGateway.Application.Plugins;
+using GqlGateway.Infrastructure.Plugins;
 using HotChocolate.Execution.Configuration;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Negotiate;
@@ -125,6 +127,14 @@ public static class GatewayServiceCollectionExtensions
             gatewayOptions.GraphQL.MaxInClauseBatchSize,
             sp.GetRequiredService<IParameterBudgetProvider>()));
         services.AddSingleton<ISqlFilterProvider>(new SqlFilterProvider(gatewayOptions.GraphQL.MaxInClauseBatchSize));
+
+        // HTTP & Plugin Data Sources
+        services.AddHttpClient();
+        services.AddSingleton<IPluginManager, PluginManager>();
+        services.AddSingleton<IDataSourceExecutor, SqlDataSourceExecutor>();
+        services.AddSingleton<IDataSourceExecutor, DeclarativeHttpDataSourceExecutor>();
+        services.AddSingleton<IDataSourceExecutor, PluginHttpDataSourceExecutor>();
+
         services.AddScoped(sp => new GatewayExecutionService(
             sp.GetRequiredService<ITableMetadataRepository>(),
             sp.GetRequiredService<IConsentRepository>(),
@@ -134,7 +144,9 @@ public static class GatewayServiceCollectionExtensions
             sp.GetRequiredService<IColumnMaskingProvider>(),
             sp.GetRequiredService<IChunkedQueryExecutor>(),
             sp.GetService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
-            sp.GetService<ITrafficDrainController>()));
+            sp.GetService<ITrafficDrainController>(),
+            sp.GetServices<IDataSourceExecutor>(),
+            sp.GetService<Microsoft.AspNetCore.Http.IHttpContextAccessor>()));
 
         // HA & Traffic Drain
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();

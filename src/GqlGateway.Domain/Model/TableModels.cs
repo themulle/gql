@@ -25,6 +25,10 @@ public sealed class Table
     public bool RequiresFourEyes { get; init; }
     public bool IsActive { get; init; } = true;
 
+    public DataSourceType DataSourceType { get; init; } = DataSourceType.Sql;
+    public HttpEndpointDescriptor? HttpEndpoint { get; init; }
+    public string? PluginName { get; init; }
+
     public bool IsHighlySensitive =>
         string.Equals(Sensitivity, "HIGH", StringComparison.OrdinalIgnoreCase) || RequiresFourEyes;
 
@@ -62,6 +66,10 @@ public sealed class TableMetadata
     public IReadOnlyList<string> PrimaryKeyColumns { get; init; } = new[] { "id" };
 
     public bool IsCompositePrimaryKey => PrimaryKeyColumns.Count > 1;
+
+    public DataSourceType DataSourceType => Table.DataSourceType;
+    public HttpEndpointDescriptor? HttpEndpoint => Table.HttpEndpoint;
+    public string? PluginName => Table.PluginName;
 
     public DatabaseDialect Dialect => Table.Dialect;
 

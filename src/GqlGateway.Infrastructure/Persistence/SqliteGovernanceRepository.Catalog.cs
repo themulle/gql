@@ -23,7 +23,7 @@ public partial class SqliteGovernanceRepository
 
             using (var cmd = _connection.CreateCommand())
             {
-                cmd.CommandText = @"SELECT id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active
+                cmd.CommandText = @"SELECT id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active, data_source_type, http_endpoint_json, plugin_name
                                     FROM TABLES
                                     WHERE source_name = @domain COLLATE NOCASE AND schema_name = @schema COLLATE NOCASE AND table_name = @table COLLATE NOCASE";
                 cmd.Parameters.AddWithValue("@domain", table.Domain);
@@ -34,6 +34,13 @@ public partial class SqliteGovernanceRepository
                 if (await reader.ReadAsync(ct))
                 {
                     tableId = Guid.Parse(reader.GetString(0));
+                    var dstInt = reader.IsDBNull(9) ? 0 : reader.GetInt32(9);
+                    var httpEndpointJson = reader.IsDBNull(10) ? null : reader.GetString(10);
+                    var pluginName = reader.IsDBNull(11) ? null : reader.GetString(11);
+                    var httpEndpoint = !string.IsNullOrWhiteSpace(httpEndpointJson)
+                        ? JsonSerializer.Deserialize<HttpEndpointDescriptor>(httpEndpointJson)
+                        : null;
+
                     tableEntity = new Table
                     {
                         Id = tableId.Value,
@@ -44,7 +51,10 @@ public partial class SqliteGovernanceRepository
                         DisplayName = reader.GetString(5),
                         Sensitivity = reader.GetString(6),
                         RequiresFourEyes = reader.GetInt32(7) == 1,
-                        IsActive = reader.GetInt32(8) == 1
+                        IsActive = reader.GetInt32(8) == 1,
+                        DataSourceType = (DataSourceType)dstInt,
+                        HttpEndpoint = httpEndpoint,
+                        PluginName = pluginName
                     };
                 }
             }
@@ -120,7 +130,8 @@ public partial class SqliteGovernanceRepository
             {
                 cmd.CommandText = @"SELECT t.id, t.source_type, t.source_name, t.schema_name, t.table_name,
                                            t.display_name, t.sensitivity, t.requires_four_eyes, t.is_active,
-                                           COALESCE(t.source_name, p.domain, 'default') as domain
+                                           COALESCE(t.source_name, p.domain, 'default') as domain,
+                                           t.data_source_type, t.http_endpoint_json, t.plugin_name
                                     FROM TABLES t
                                     LEFT JOIN POLICY_EPOCHS p ON t.id = p.table_id
                                     WHERE t.is_active = 1";
@@ -132,6 +143,12 @@ public partial class SqliteGovernanceRepository
                     var domain = reader.GetString(9);
                     var schema = reader.GetString(3);
                     var name = reader.GetString(4);
+                    var dstInt = reader.IsDBNull(10) ? 0 : reader.GetInt32(10);
+                    var httpEndpointJson = reader.IsDBNull(11) ? null : reader.GetString(11);
+                    var pluginName = reader.IsDBNull(12) ? null : reader.GetString(12);
+                    var httpEndpoint = !string.IsNullOrWhiteSpace(httpEndpointJson)
+                        ? JsonSerializer.Deserialize<HttpEndpointDescriptor>(httpEndpointJson)
+                        : null;
 
                     var table = new Table
                     {
@@ -143,7 +160,10 @@ public partial class SqliteGovernanceRepository
                         DisplayName = reader.GetString(5),
                         Sensitivity = reader.GetString(6),
                         RequiresFourEyes = reader.GetInt32(7) == 1,
-                        IsActive = reader.GetInt32(8) == 1
+                        IsActive = reader.GetInt32(8) == 1,
+                        DataSourceType = (DataSourceType)dstInt,
+                        HttpEndpoint = httpEndpoint,
+                        PluginName = pluginName
                     };
                     tableRows.Add((id, domain, name, table));
                 }
@@ -200,10 +220,10 @@ public partial class SqliteGovernanceRepository
         await _lock.WaitAsync(ct);
         try
         {
+            Guid tableId;
             using var tx = _connection.BeginTransaction();
             try
             {
-                Guid tableId;
                 using (var selectCmd = _connection.CreateCommand())
                 {
                     selectCmd.Transaction = tx;
@@ -225,13 +245,19 @@ public partial class SqliteGovernanceRepository
                                                       display_name = @displayName, 
                                                       sensitivity = @sensitivity, 
                                                       requires_four_eyes = @requiresFourEyes, 
-                                                      is_active = @isActive
+                                                      is_active = @isActive,
+                                                      data_source_type = @dataSourceType,
+                                                      http_endpoint_json = @httpEndpointJson,
+                                                      plugin_name = @pluginName
                                                   WHERE id = @id";
                         updateCmd.Parameters.AddWithValue("@sourceType", metadata.Table.SourceType);
                         updateCmd.Parameters.AddWithValue("@displayName", metadata.Table.DisplayName);
                         updateCmd.Parameters.AddWithValue("@sensitivity", metadata.Table.Sensitivity);
                         updateCmd.Parameters.AddWithValue("@requiresFourEyes", metadata.Table.RequiresFourEyes ? 1 : 0);
                         updateCmd.Parameters.AddWithValue("@isActive", metadata.Table.IsActive ? 1 : 0);
+                        updateCmd.Parameters.AddWithValue("@dataSourceType", (int)metadata.Table.DataSourceType);
+                        updateCmd.Parameters.AddWithValue("@httpEndpointJson", metadata.Table.HttpEndpoint != null ? JsonSerializer.Serialize(metadata.Table.HttpEndpoint) : (object)DBNull.Value);
+                        updateCmd.Parameters.AddWithValue("@pluginName", (object?)metadata.Table.PluginName ?? DBNull.Value);
                         updateCmd.Parameters.AddWithValue("@id", tableId.ToString());
                         await updateCmd.ExecuteNonQueryAsync(ct);
                     }
@@ -240,8 +266,8 @@ public partial class SqliteGovernanceRepository
                         tableId = metadata.Table.Id == Guid.Empty ? Guid.NewGuid() : metadata.Table.Id;
                         using var insertCmd = _connection.CreateCommand();
                         insertCmd.Transaction = tx;
-                        insertCmd.CommandText = @"INSERT INTO TABLES (id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active)
-                                                  VALUES (@id, @sourceType, @sourceName, @schemaName, @tableName, @displayName, @sensitivity, @requiresFourEyes, @isActive)";
+                        insertCmd.CommandText = @"INSERT INTO TABLES (id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active, data_source_type, http_endpoint_json, plugin_name)
+                                                  VALUES (@id, @sourceType, @sourceName, @schemaName, @tableName, @displayName, @sensitivity, @requiresFourEyes, @isActive, @dataSourceType, @httpEndpointJson, @pluginName)";
                         insertCmd.Parameters.AddWithValue("@id", tableId.ToString());
                         insertCmd.Parameters.AddWithValue("@sourceType", metadata.Table.SourceType);
                         insertCmd.Parameters.AddWithValue("@sourceName", metadata.Identifier.Domain);
@@ -251,6 +277,9 @@ public partial class SqliteGovernanceRepository
                         insertCmd.Parameters.AddWithValue("@sensitivity", metadata.Table.Sensitivity);
                         insertCmd.Parameters.AddWithValue("@requiresFourEyes", metadata.Table.RequiresFourEyes ? 1 : 0);
                         insertCmd.Parameters.AddWithValue("@isActive", metadata.Table.IsActive ? 1 : 0);
+                        insertCmd.Parameters.AddWithValue("@dataSourceType", (int)metadata.Table.DataSourceType);
+                        insertCmd.Parameters.AddWithValue("@httpEndpointJson", metadata.Table.HttpEndpoint != null ? JsonSerializer.Serialize(metadata.Table.HttpEndpoint) : (object)DBNull.Value);
+                        insertCmd.Parameters.AddWithValue("@pluginName", (object?)metadata.Table.PluginName ?? DBNull.Value);
                         await insertCmd.ExecuteNonQueryAsync(ct);
                     }
                 }
@@ -332,7 +361,31 @@ public partial class SqliteGovernanceRepository
             }
 
             await _epochValidationService.InvalidateEpochAsync(metadata.Identifier, ct);
-            return metadata;
+
+            var updatedTable = new Table
+            {
+                Id = tableId,
+                SourceType = metadata.Table.SourceType,
+                SourceName = metadata.Identifier.Domain,
+                SchemaName = metadata.Identifier.Schema,
+                TableName = metadata.Identifier.TableName,
+                DisplayName = metadata.Table.DisplayName,
+                Sensitivity = metadata.Table.Sensitivity,
+                RequiresFourEyes = metadata.Table.RequiresFourEyes,
+                IsActive = metadata.Table.IsActive,
+                DataSourceType = metadata.Table.DataSourceType,
+                HttpEndpoint = metadata.Table.HttpEndpoint,
+                PluginName = metadata.Table.PluginName
+            };
+
+            return new TableMetadata
+            {
+                Identifier = metadata.Identifier,
+                Table = updatedTable,
+                Columns = metadata.Columns,
+                ColumnMaskingRules = metadata.ColumnMaskingRules,
+                PrimaryKeyColumns = metadata.PrimaryKeyColumns
+            };
         }
         finally
         {

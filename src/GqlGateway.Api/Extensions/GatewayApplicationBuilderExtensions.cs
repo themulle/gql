@@ -150,6 +150,12 @@ public static class GatewayApplicationBuilderExtensions
             ? gatewayOptions.GraphQL.EndpointPath
             : "/" + gatewayOptions.GraphQL.EndpointPath;
 
+        var pluginManager = app.Services.GetService<GqlGateway.Application.Plugins.IPluginManager>();
+        if (pluginManager != null && !string.IsNullOrWhiteSpace(gatewayOptions.Plugins.Directory))
+        {
+            pluginManager.LoadPluginsFromDirectory(gatewayOptions.Plugins.Directory);
+        }
+
         app.MapGraphQL(endpoint).RequireAuthorization();
 
         app.MapPost("/api/webhooks/openmetadata", async (

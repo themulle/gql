@@ -7,6 +7,7 @@ using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.GraphQL.Types;
 using HotChocolate;
+using Microsoft.AspNetCore.Http;
 
 namespace GqlGateway.GraphQL.Services;
 
@@ -30,6 +31,9 @@ public sealed partial class GatewayExecutionService
     private readonly IChunkedQueryExecutor _chunkedQueryExecutor;
     private readonly GatewayOptions? _options;
     private readonly ITrafficDrainController? _drainController;
+    private readonly IEnumerable<IDataSourceExecutor>? _dataSourceExecutors;
+    private readonly IHttpContextAccessor? _httpContextAccessor;
+    private readonly IDataSourceExecutor _defaultSqlExecutor = new GqlGateway.Application.Services.SqlDataSourceExecutor();
 
     public int LastDispatchedChildQueryCount { get; private set; }
 
@@ -43,7 +47,9 @@ public sealed partial class GatewayExecutionService
         IColumnMaskingProvider maskingProvider,
         IChunkedQueryExecutor? chunkedQueryExecutor = null,
         Microsoft.Extensions.Options.IOptions<GatewayOptions>? options = null,
-        ITrafficDrainController? drainController = null)
+        ITrafficDrainController? drainController = null,
+        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null,
+        IHttpContextAccessor? httpContextAccessor = null)
     {
         _metadataRepository = metadataRepository;
         _consentRepository = consentRepository;
@@ -54,6 +60,8 @@ public sealed partial class GatewayExecutionService
         _chunkedQueryExecutor = chunkedQueryExecutor ?? new GqlGateway.Application.Services.ChunkedQueryExecutor(500);
         _options = options?.Value;
         _drainController = drainController;
+        _dataSourceExecutors = dataSourceExecutors;
+        _httpContextAccessor = httpContextAccessor;
     }
 
     public GatewayExecutionService(
@@ -63,16 +71,27 @@ public sealed partial class GatewayExecutionService
         IColumnMaskingProvider maskingProvider,
         IChunkedQueryExecutor? chunkedQueryExecutor = null,
         Microsoft.Extensions.Options.IOptions<GatewayOptions>? options = null,
-        ITrafficDrainController? drainController = null)
-        : this(repository, repository, repository, resolutionService, cacheService, maskingProvider, chunkedQueryExecutor, options, drainController)
+        ITrafficDrainController? drainController = null,
+        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null,
+        IHttpContextAccessor? httpContextAccessor = null)
+        : this(repository, repository, repository, resolutionService, cacheService, maskingProvider, chunkedQueryExecutor, options, drainController, dataSourceExecutors, httpContextAccessor)
     {
     }
 
-    public async Task<(IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, TableAccessDecision Decision)> ExecuteTableQueryAsync(
+    public Task<(IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, TableAccessDecision Decision)> ExecuteTableQueryAsync(
         ClaimsPrincipal? principal,
         TableIdentifier table,
         int first = 50,
         int after = 0,
+        CancellationToken ct = default)
+        => ExecuteTableQueryAsync(principal, table, first, after, null, ct);
+
+    public async Task<(IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, TableAccessDecision Decision)> ExecuteTableQueryAsync(
+        ClaimsPrincipal? principal,
+        TableIdentifier table,
+        int first,
+        int after,
+        IReadOnlyDictionary<string, object?>? queryArguments,
         CancellationToken ct = default)
     {
         using var _ = _drainController?.TrackQuery();
@@ -151,15 +170,85 @@ public sealed partial class GatewayExecutionService
                 .Build());
         }
 
-        // Generate synthetic query result (enforcing configured MaxResponseRows)
+        // Generate/Fetch query result via IDataSourceExecutor (SQL, Declarative HTTP, or Plugin)
         var maxRows = _options?.GraphQL?.MaxResponseRows > 0 ? _options.GraphQL.MaxResponseRows : 1000;
         var rowLimit = Math.Clamp(first, 1, maxRows);
-        var mockRows = GenerateMockRows(metadata, decision, rowLimit, after);
+
+        var executor = _dataSourceExecutors?.FirstOrDefault(e => e.SupportedType == metadata.DataSourceType)
+                       ?? (metadata.DataSourceType == DataSourceType.Sql ? _defaultSqlExecutor : null);
+        if (executor == null)
+        {
+            throw new InvalidOperationException($"Kein Datenquellen-Executor für Typ '{metadata.DataSourceType}' auf Tabelle '{table}' registriert.");
+        }
+
+        var execArgs = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["limit"] = rowLimit,
+            ["offset"] = after
+        };
+        if (queryArguments != null)
+        {
+            foreach (var (k, v) in queryArguments)
+            {
+                execArgs[k] = v;
+            }
+        }
+
+        var execContext = new DataSourceExecutionContext(
+            SourceName: metadata.Table.SourceName,
+            Metadata: metadata,
+            Principal: principal,
+            AccessDecision: decision,
+            Arguments: execArgs,
+            RequestedFields: metadata.Columns.Select(c => c.ColumnName).ToList(),
+            HttpContext: _httpContextAccessor?.HttpContext,
+            Limit: rowLimit,
+            Offset: after
+        );
+
+        var rawRows = await executor.ExecuteAsync(execContext, ct);
+
+        // Central Zero-Trust Pipeline: Step 1: In-Memory RLS Post-Filtering
+        var filteredRows = rawRows.ToList();
+        if (!string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
+        {
+            filteredRows = FilterRows(filteredRows, decision.CombinedRowFilterSql, metadata);
+        }
+
+        // Central Zero-Trust Pipeline: Step 2: Column Masking & Deny Stripping
+        var processedRows = new List<IReadOnlyDictionary<string, object?>>(filteredRows.Count);
+        foreach (var r in filteredRows)
+        {
+            var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var col in metadata.Columns)
+            {
+                var access = decision.GetColumnAccess(col.ColumnName);
+                if (access == ColumnAccessLevel.Deny)
+                {
+                    continue; // Zero-Trust: strip denied column
+                }
+
+                if (r.TryGetValue(col.ColumnName, out var rawVal))
+                {
+                    if (access == ColumnAccessLevel.Mask)
+                    {
+                        var rule = metadata.ColumnMaskingRules.TryGetValue(col.ColumnName, out var mRule) ? mRule : new MaskingRule { RuleType = "REDACT" };
+                        rawVal = _maskingProvider.MaskValue(col.ColumnName, rawVal, rule);
+                    }
+                    dict[col.ColumnName] = rawVal;
+                }
+                else
+                {
+                    dict[col.ColumnName] = null;
+                }
+            }
+            processedRows.Add(dict);
+        }
 
         // Enforce configured MaxResponseBytes
         var maxBytes = _options?.GraphQL?.MaxResponseBytes > 0 ? _options.GraphQL.MaxResponseBytes : 10 * 1024 * 1024;
         long estimatedBytes = 0;
-        foreach (var row in mockRows)
+        foreach (var row in processedRows)
         {
             foreach (var kvp in row)
             {
@@ -187,59 +276,7 @@ public sealed partial class GatewayExecutionService
                 .Build());
         }
 
-        return (mockRows, decision);
-    }
-
-    private List<IReadOnlyDictionary<string, object?>> GenerateMockRows(
-        TableMetadata metadata,
-        TableAccessDecision decision,
-        int count,
-        int offset)
-    {
-        var rows = new List<IReadOnlyDictionary<string, object?>>();
-
-        for (int i = 1; i <= count; i++)
-        {
-            var rowNum = offset + i;
-            var dict = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var col in metadata.Columns)
-            {
-                var access = decision.GetColumnAccess(col.ColumnName);
-
-                if (access == ColumnAccessLevel.Deny)
-                {
-                    continue; // Strip denied column
-                }
-
-                object? rawVal = col.ColumnName.ToLowerInvariant() switch
-                {
-                    "id" => rowNum,
-                    "name" => $"Sample {metadata.Identifier.TableName} Record #{rowNum}",
-                    "amount" => 100.50m * rowNum,
-                    "email" => $"user{rowNum}@corp.local",
-                    "created_at" => DateTimeOffset.UtcNow.AddDays(-rowNum),
-                    _ => $"Value_{rowNum}"
-                };
-
-                if (access == ColumnAccessLevel.Mask)
-                {
-                    var rule = metadata.ColumnMaskingRules.TryGetValue(col.ColumnName, out var r) ? r : new MaskingRule { RuleType = "REDACT" };
-                    rawVal = _maskingProvider.MaskValue(col.ColumnName, rawVal, rule);
-                }
-
-                dict[col.ColumnName] = rawVal;
-            }
-
-            rows.Add(dict);
-        }
-
-        if (!string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
-        {
-            rows = FilterRows(rows, decision.CombinedRowFilterSql, metadata);
-        }
-
-        return rows;
+        return (processedRows, decision);
     }
 
     private static List<IReadOnlyDictionary<string, object?>> FilterRows(

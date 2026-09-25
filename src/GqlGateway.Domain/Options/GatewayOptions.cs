@@ -16,6 +16,13 @@ public sealed class GatewayOptions
     [Required] public AuditOptions Audit { get; init; } = new();
     [Required] public ReverseProxyOptions ReverseProxy { get; init; } = new();
     [Required] public OpenMetadataOptions OpenMetadata { get; init; } = new();
+    [Required] public PluginsOptions Plugins { get; init; } = new();
+}
+
+public sealed class PluginsOptions
+{
+    public string Directory { get; init; } = "plugins";
+    public bool EnableHotReload { get; init; } = false;
 }
 
 public sealed class ReverseProxyOptions

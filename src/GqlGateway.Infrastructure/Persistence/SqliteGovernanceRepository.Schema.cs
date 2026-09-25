@@ -26,7 +26,10 @@ public partial class SqliteGovernanceRepository
                 display_name TEXT NOT NULL,
                 sensitivity TEXT NOT NULL,
                 requires_four_eyes INTEGER NOT NULL,
-                is_active INTEGER NOT NULL
+                is_active INTEGER NOT NULL,
+                data_source_type INTEGER NOT NULL DEFAULT 0,
+                http_endpoint_json TEXT,
+                plugin_name TEXT
             );
 
             CREATE TABLE IF NOT EXISTS TABLE_COLUMNS (
@@ -209,6 +212,7 @@ public partial class SqliteGovernanceRepository
         cmd.ExecuteNonQuery();
 
         EnsureConsentRowFilterColumns();
+        EnsureTableColumns();
 
         using (var lastHashCmd = _connection.CreateCommand())
         {
@@ -217,6 +221,37 @@ public partial class SqliteGovernanceRepository
             if (res != null && res != DBNull.Value && !string.IsNullOrWhiteSpace(res.ToString()))
             {
                 _lastAuditHash = res.ToString()!;
+            }
+        }
+    }
+
+    private void EnsureTableColumns()
+    {
+        var existingCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA table_info(TABLES);";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                existingCols.Add(reader.GetString(1));
+            }
+        }
+
+        string[] requiredCols = {
+            "data_source_type INTEGER NOT NULL DEFAULT 0",
+            "http_endpoint_json TEXT",
+            "plugin_name TEXT"
+        };
+
+        foreach (var colDef in requiredCols)
+        {
+            var colName = colDef.Split(' ')[0];
+            if (!existingCols.Contains(colName))
+            {
+                using var alterCmd = _connection.CreateCommand();
+                alterCmd.CommandText = $"ALTER TABLE TABLES ADD COLUMN {colDef};";
+                alterCmd.ExecuteNonQuery();
             }
         }
     }
