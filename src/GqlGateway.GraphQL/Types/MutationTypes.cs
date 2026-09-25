@@ -56,22 +56,46 @@ public sealed class Mutation
         return userSid.Value;
     }
 
-    private static bool TryGetIdempotent(Sid userSid, string operation, string? idempotencyKey, out ConsentRequestPayload payload)
+    private static bool TryGetIdempotent(Sid userSid, string operation, string? idempotencyKey, out ConsentRequestPayload payload, IHttpContextAccessor? httpContextAccessor = null)
     {
         payload = default!;
         if (string.IsNullOrEmpty(idempotencyKey)) return false;
-        var compositeKey = $"{userSid.Value}:{operation}:{idempotencyKey}";
+        var compositeKey = $"idempotency:{userSid.Value}:{operation}:{idempotencyKey}";
+
+        if (httpContextAccessor?.HttpContext?.RequestServices?.GetService(typeof(Microsoft.Extensions.Caching.Memory.IMemoryCache)) is Microsoft.Extensions.Caching.Memory.IMemoryCache cache)
+        {
+            if (cache.TryGetValue(compositeKey, out var cachedObj) && cachedObj is ConsentRequestPayload cached)
+            {
+                payload = cached;
+                return true;
+            }
+        }
+
         if (IdempotencyStore.TryGetValue(compositeKey, out var entry))
         {
-            payload = entry.Payload;
-            return true;
+            if (entry.CreatedAt > DateTimeOffset.UtcNow.AddHours(-24))
+            {
+                payload = entry.Payload;
+                return true;
+            }
+            IdempotencyStore.TryRemove(compositeKey, out _);
         }
         return false;
     }
 
-    private static void StoreIdempotent(Sid userSid, string operation, string? idempotencyKey, ConsentRequestPayload payload)
+    private static void StoreIdempotent(Sid userSid, string operation, string? idempotencyKey, ConsentRequestPayload payload, IHttpContextAccessor? httpContextAccessor = null)
     {
         if (string.IsNullOrEmpty(idempotencyKey)) return;
+        var compositeKey = $"idempotency:{userSid.Value}:{operation}:{idempotencyKey}";
+
+        if (httpContextAccessor?.HttpContext?.RequestServices?.GetService(typeof(Microsoft.Extensions.Caching.Memory.IMemoryCache)) is Microsoft.Extensions.Caching.Memory.IMemoryCache cache)
+        {
+            using var cacheEntry = cache.CreateEntry(compositeKey);
+            cacheEntry.Value = payload;
+            cacheEntry.Size = 1;
+            cacheEntry.AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(24);
+            return;
+        }
 
         if (IdempotencyStore.Count > 5000)
         {
@@ -98,10 +122,10 @@ public sealed class Mutation
             }
         }
 
-        var compositeKey = $"{userSid.Value}:{operation}:{idempotencyKey}";
         IdempotencyStore[compositeKey] = new IdempotencyEntry(payload, DateTimeOffset.UtcNow);
     }
 
+    [GraphQLIgnore]
     public Task<ConsentRequestPayload> RequestTableAccessAsync(
         string domain,
         string schema,
@@ -128,7 +152,7 @@ public sealed class Mutation
     {
         var userSid = GetAuthenticatedUserSid(httpContextAccessor);
 
-        if (TryGetIdempotent(userSid, "RequestTableAccess", idempotencyKey, out var existing))
+        if (TryGetIdempotent(userSid, "RequestTableAccess", idempotencyKey, out var existing, httpContextAccessor))
         {
             return existing;
         }
@@ -162,10 +186,11 @@ public sealed class Mutation
             Message = "Consent request submitted successfully."
         };
 
-        StoreIdempotent(userSid, "RequestTableAccess", idempotencyKey, payload);
+        StoreIdempotent(userSid, "RequestTableAccess", idempotencyKey, payload, httpContextAccessor);
         return payload;
     }
 
+    [GraphQLIgnore]
     public Task<ConsentRequestPayload> ApproveConsentRequestAsync(
         Guid requestId,
         string? idempotencyKey,
@@ -185,7 +210,7 @@ public sealed class Mutation
     {
         var approverSid = GetAuthenticatedUserSid(httpContextAccessor);
 
-        if (TryGetIdempotent(approverSid, "ApproveConsentRequest", idempotencyKey, out var existing))
+        if (TryGetIdempotent(approverSid, "ApproveConsentRequest", idempotencyKey, out var existing, httpContextAccessor))
         {
             return existing;
         }
@@ -249,10 +274,11 @@ public sealed class Mutation
             Message = message
         };
 
-        StoreIdempotent(approverSid, "ApproveConsentRequest", idempotencyKey, payload);
+        StoreIdempotent(approverSid, "ApproveConsentRequest", idempotencyKey, payload, httpContextAccessor);
         return payload;
     }
 
+    [GraphQLIgnore]
     public Task<ConsentRequestPayload> RejectConsentRequestAsync(
         Guid requestId,
         string reason,
@@ -273,7 +299,7 @@ public sealed class Mutation
     {
         var approverSid = GetAuthenticatedUserSid(httpContextAccessor);
 
-        if (TryGetIdempotent(approverSid, "RejectConsentRequest", idempotencyKey, out var existing))
+        if (TryGetIdempotent(approverSid, "RejectConsentRequest", idempotencyKey, out var existing, httpContextAccessor))
         {
             return existing;
         }
@@ -312,10 +338,11 @@ public sealed class Mutation
             Message = $"Consent request rejected: {reason}"
         };
 
-        StoreIdempotent(approverSid, "RejectConsentRequest", idempotencyKey, payload);
+        StoreIdempotent(approverSid, "RejectConsentRequest", idempotencyKey, payload, httpContextAccessor);
         return payload;
     }
 
+    [GraphQLIgnore]
     public Task<bool> RevokeConsentAsync(
         Guid consentId,
         string reason,

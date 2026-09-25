@@ -15,6 +15,8 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _tableCacheKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly IDisposable? _subscription;
 
+    private readonly object _syncLock = new();
+
     private sealed record CacheEntryEnvelope(TableAccessDecision Decision, long Epoch);
 
     public ConsentCacheService(
@@ -31,11 +33,14 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         {
             await Task.Yield();
             var normalized = (tableString ?? string.Empty).ToLowerInvariant();
-            if (_tableCacheKeys.TryRemove(normalized, out var keys))
+            lock (_syncLock)
             {
-                foreach (var key in keys.Keys)
+                if (_tableCacheKeys.TryRemove(normalized, out var keys))
                 {
-                    _memoryCache.Remove(key);
+                    foreach (var key in keys.Keys)
+                    {
+                        _memoryCache.Remove(key);
+                    }
                 }
             }
         });
@@ -44,9 +49,10 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
     public async Task<TableAccessDecision?> GetCachedDecisionAsync(
         Sid userSid,
         TableIdentifier table,
+        string? contextHash = null,
         CancellationToken ct = default)
     {
-        var cacheKey = BuildCacheKey(userSid, table);
+        var cacheKey = BuildCacheKey(userSid, table, contextHash);
         if (!_memoryCache.TryGetValue(cacheKey, out CacheEntryEnvelope? envelope) || envelope == null)
         {
             RemoveKeyFromTableIndex(table, cacheKey);
@@ -70,9 +76,10 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         TableIdentifier table,
         TableAccessDecision decision,
         TimeSpan ttl,
+        string? contextHash = null,
         CancellationToken ct = default)
     {
-        var cacheKey = BuildCacheKey(userSid, table);
+        var cacheKey = BuildCacheKey(userSid, table, contextHash);
         var currentEpoch = await _epochValidationService.GetCurrentEpochAsync(table, ct);
         var envelope = new CacheEntryEnvelope(decision, currentEpoch);
 
@@ -83,8 +90,6 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
             + decision.DeniedReasons.Sum(r => r.Length * 2);
 
         var tableKey = NormalizeTableKey(table);
-        var keys = _tableCacheKeys.GetOrAdd(tableKey, _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
-        keys.TryAdd(cacheKey, 0);
 
         var cacheEntryOptions = new MemoryCacheEntryOptions
         {
@@ -94,27 +99,38 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
 
         cacheEntryOptions.RegisterPostEvictionCallback((evictedKey, _, _, _) =>
         {
-            if (_tableCacheKeys.TryGetValue(tableKey, out var currentKeys))
+            lock (_syncLock)
             {
-                currentKeys.TryRemove((string)evictedKey, out _);
-                if (currentKeys.IsEmpty)
+                if (_tableCacheKeys.TryGetValue(tableKey, out var currentKeys))
                 {
-                    _tableCacheKeys.TryRemove(tableKey, out _);
+                    currentKeys.TryRemove((string)evictedKey, out _);
+                    if (currentKeys.IsEmpty)
+                    {
+                        _tableCacheKeys.TryRemove(tableKey, out _);
+                    }
                 }
             }
         });
 
-        _memoryCache.Set(cacheKey, envelope, cacheEntryOptions);
+        lock (_syncLock)
+        {
+            var keys = _tableCacheKeys.GetOrAdd(tableKey, _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
+            keys.TryAdd(cacheKey, 0);
+            _memoryCache.Set(cacheKey, envelope, cacheEntryOptions);
+        }
     }
 
     public Task EvictTableDecisionsAsync(TableIdentifier table, CancellationToken ct = default)
     {
         var tableKey = NormalizeTableKey(table);
-        if (_tableCacheKeys.TryRemove(tableKey, out var keys))
+        lock (_syncLock)
         {
-            foreach (var key in keys.Keys)
+            if (_tableCacheKeys.TryRemove(tableKey, out var keys))
             {
-                _memoryCache.Remove(key);
+                foreach (var key in keys.Keys)
+                {
+                    _memoryCache.Remove(key);
+                }
             }
         }
         return Task.CompletedTask;
@@ -122,11 +138,14 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
 
     public Task ClearL1CacheAsync(CancellationToken ct = default)
     {
-        if (_memoryCache is MemoryCache mc)
+        lock (_syncLock)
         {
-            mc.Clear();
+            if (_memoryCache is MemoryCache mc)
+            {
+                mc.Clear();
+            }
+            _tableCacheKeys.Clear();
         }
-        _tableCacheKeys.Clear();
         return Task.CompletedTask;
     }
 
@@ -155,8 +174,12 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
 
     private static string NormalizeTableKey(TableIdentifier table) => table.ToString().ToLowerInvariant();
 
-    private static string BuildCacheKey(Sid userSid, TableIdentifier table) =>
-        $"consent:{userSid.Value.ToUpperInvariant()}:{table.Domain.ToLowerInvariant()}:{table.Schema.ToLowerInvariant()}:{table.TableName.ToLowerInvariant()}";
+    public static string ComputeSubjectContextHash(IReadOnlySet<Sid>? groupSids, IReadOnlySet<string>? roles) =>
+        IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
+
+
+    private static string BuildCacheKey(Sid userSid, TableIdentifier table, string? contextHash = null) =>
+        $"consent:{userSid.Value.ToUpperInvariant()}:{(string.IsNullOrWhiteSpace(contextHash) ? "default" : contextHash)}:{table.Domain.ToLowerInvariant()}:{table.Schema.ToLowerInvariant()}:{table.TableName.ToLowerInvariant()}";
 
     public void Dispose()
     {

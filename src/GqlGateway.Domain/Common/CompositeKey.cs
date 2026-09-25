@@ -124,10 +124,18 @@ public readonly struct CompositeKey : IEquatable<CompositeKey>, IComparable<Comp
         var hash = new HashCode();
         foreach (var val in Values)
         {
-            if (val != null && TryConvertToDecimal(val, out var d))
+            if (val != null)
             {
-                hash.Add(d);
-                continue;
+                if (TryConvertToDecimal(val, out var d))
+                {
+                    hash.Add(d);
+                    continue;
+                }
+                if (IsNumeric(val))
+                {
+                    hash.Add(val.ToString(), StringComparer.Ordinal);
+                    continue;
+                }
             }
             hash.Add(val);
         }

@@ -69,8 +69,9 @@ public static class GatewayServiceCollectionExtensions
 
             if (gatewayOptions.ReverseProxy.Enabled)
             {
-                options.KnownIPNetworks.Clear();
-                options.KnownProxies.Clear();
+                // Preserve safe loopback defaults against spoofing
+                options.KnownProxies.Add(System.Net.IPAddress.Loopback);
+                options.KnownProxies.Add(System.Net.IPAddress.IPv6Loopback);
 
                 foreach (var netStr in gatewayOptions.ReverseProxy.KnownNetworks)
                 {
@@ -144,6 +145,35 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IOpenMetadataSyncService, OpenMetadataSyncService>();
         services.AddHostedService<OpenMetadataSyncBackgroundService>();
 
+        // Explicit CORS policy configuration
+        services.AddCors(options =>
+        {
+            options.AddDefaultPolicy(policy =>
+            {
+                var trusted = gatewayOptions.GraphQL.TrustedOrigins;
+                if (trusted.Count > 0)
+                {
+                    if (trusted.Contains("*"))
+                    {
+                        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+                    }
+                    else
+                    {
+                        policy.WithOrigins(trusted.Where(o => o != "*").ToArray())
+                              .AllowAnyHeader()
+                              .AllowAnyMethod()
+                              .AllowCredentials();
+                    }
+                }
+                else
+                {
+                    policy.WithOrigins("http://localhost:5000", "https://localhost:5001")
+                          .AllowAnyHeader()
+                          .AllowAnyMethod();
+                }
+            });
+        });
+
         return services;
     }
 
@@ -189,6 +219,11 @@ public static class GatewayServiceCollectionExtensions
             {
                 opt.ExecutionTimeout = TimeSpan.FromSeconds(gatewayOptions.HighAvailability.QueryTimeoutSeconds);
             });
+
+        if (gatewayOptions.GraphQL.PersistedQueriesOnly)
+        {
+            gqlBuilder.UseOnlyPersistedOperationAllowed();
+        }
 
         if (!gatewayOptions.GraphQL.EnableIntrospection)
         {

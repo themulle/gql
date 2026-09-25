@@ -193,6 +193,9 @@ public partial class SqliteGovernanceRepository
             CREATE UNIQUE INDEX IF NOT EXISTS UX_TABLE_OWNERS_NATURAL
                 ON TABLE_OWNERS (table_id, data_owner_id, owner_role);
 
+            CREATE UNIQUE INDEX IF NOT EXISTS UX_POLICY_EPOCHS_NATURAL
+                ON POLICY_EPOCHS (domain, schema_name, table_name);
+
             CREATE TABLE IF NOT EXISTS TABLE_RELATIONS (
                 id TEXT PRIMARY KEY,
                 parent_table_id TEXT NOT NULL,

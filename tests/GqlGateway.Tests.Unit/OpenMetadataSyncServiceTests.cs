@@ -314,4 +314,67 @@ public sealed class OpenMetadataSyncServiceTests
         await _metadataRepo.Received().UpsertTableMetadataAsync(Arg.Is<TableMetadata>(t => t.Identifier.TableName == "products"), Arg.Any<CancellationToken>());
         await _epochRepo.Received().IncrementTableEpochAsync(Arg.Is<TableIdentifier>(t => t.TableName == "products"), Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task HandleWebhookEventAsync_RejectsReplayAttack_WhenTimestampExceedsWindow()
+    {
+        var options = CreateOptions("webhook-secret-123");
+        var staleTimestamp = DateTimeOffset.UtcNow.AddMinutes(-10).ToUnixTimeMilliseconds();
+        var payload = $"{{\"id\":\"{Guid.NewGuid()}\",\"eventType\":\"entityUpdated\",\"entityType\":\"table\",\"entityFullyQualifiedName\":\"service.db.schema.products\",\"timestamp\":{staleTimestamp}}}";
+
+        var hash = Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes("webhook-secret-123"), Encoding.UTF8.GetBytes(payload)));
+
+        var syncService = new OpenMetadataSyncService(
+            _client,
+            _metadataRepo,
+            _consentRepo,
+            _epochRepo,
+            Options.Create(options),
+            NullLogger<OpenMetadataSyncService>.Instance);
+
+        var success = await syncService.HandleWebhookEventAsync(payload, $"sha256={hash}");
+
+        // Stale timestamp outside 5-minute replay window must be rejected
+        success.ShouldBeFalse();
+        await _metadataRepo.DidNotReceiveWithAnyArgs().UpsertTableMetadataAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task HandleWebhookEventAsync_DeduplicatesEvents_WhenDuplicateEventIdReceived()
+    {
+        var options = CreateOptions("webhook-secret-123");
+        var eventId = Guid.NewGuid();
+        var validTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var payload = $"{{\"id\":\"{eventId}\",\"eventType\":\"entityUpdated\",\"entityType\":\"table\",\"entityFullyQualifiedName\":\"service.db.schema.dedup_table\",\"timestamp\":{validTimestamp}}}";
+
+        var hash = Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes("webhook-secret-123"), Encoding.UTF8.GetBytes(payload)));
+
+        var table = new OpenMetadataTable
+        {
+            Id = Guid.NewGuid(),
+            Name = "dedup_table",
+            FullyQualifiedName = "service.db.schema.dedup_table",
+            Columns = [new OpenMetadataColumn { Name = "id", DataType = "INT" }]
+        };
+        _client.GetTableByFqnAsync("service.db.schema.dedup_table", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<OpenMetadataTable?>(table));
+
+        var syncService = new OpenMetadataSyncService(
+            _client,
+            _metadataRepo,
+            _consentRepo,
+            _epochRepo,
+            Options.Create(options),
+            NullLogger<OpenMetadataSyncService>.Instance);
+
+        // First delivery: processes successfully
+        var firstResult = await syncService.HandleWebhookEventAsync(payload, $"sha256={hash}");
+        firstResult.ShouldBeTrue();
+
+        // Duplicate delivery with same event ID: idempotent skip without re-invoking repo
+        _metadataRepo.ClearReceivedCalls();
+        var duplicateResult = await syncService.HandleWebhookEventAsync(payload, $"sha256={hash}");
+        duplicateResult.ShouldBeTrue();
+        await _metadataRepo.DidNotReceiveWithAnyArgs().UpsertTableMetadataAsync(default!, default);
+    }
 }

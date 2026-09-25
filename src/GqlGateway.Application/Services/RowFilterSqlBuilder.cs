@@ -131,6 +131,13 @@ public sealed partial class RowFilterSqlBuilder : IRowFilterSqlBuilder
             return _rlsFilterGenerator.BuildCrossSourceSetFilter(filter, 500, dialect);
         }
 
+        if (string.Equals(filter.ValueSource, "USER_ATTRIBUTE", StringComparison.OrdinalIgnoreCase))
+        {
+            // Zero-Trust: If user attributes are not resolvable in the current filter context,
+            // fail closed immediately to prevent privilege escalation.
+            return "1 = 0";
+        }
+
         var col = filter.ColumnName;
         if (!SafeIdentifierRegex().IsMatch(col))
         {
@@ -210,14 +217,6 @@ public sealed partial class RowFilterSqlBuilder : IRowFilterSqlBuilder
 
     private static string FormatLiteral(JsonElement elem, DatabaseDialect dialect)
     {
-        return elem.ValueKind switch
-        {
-            JsonValueKind.String => $"'{elem.GetString()?.Replace("'", "''")}'",
-            JsonValueKind.Number when (elem.TryGetInt64(out _) || elem.TryGetDecimal(out _)) => elem.GetRawText(),
-            JsonValueKind.True => (dialect == DatabaseDialect.SqlServer || dialect == DatabaseDialect.Oracle) ? "1" : "TRUE",
-            JsonValueKind.False => (dialect == DatabaseDialect.SqlServer || dialect == DatabaseDialect.Oracle) ? "0" : "FALSE",
-            JsonValueKind.Null => "NULL",
-            _ => throw new InvalidOperationException($"Nicht unterstützter Literal-Typ im Zeilenfilter: {elem.ValueKind}")
-        };
+        return dialect.FormatSafeLiteral(elem);
     }
 }

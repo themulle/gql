@@ -112,8 +112,9 @@ public sealed partial class GatewayExecutionService
                 .Build());
         }
 
-        // Check Consent Cache (L1/L2 with Epoch Validation)
-        var decision = await _cacheService.GetCachedDecisionAsync(userSid, table, ct);
+        // Check Consent Cache (L1/L2 with Epoch Validation & Group/Role Context Hash)
+        var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
+        var decision = await _cacheService.GetCachedDecisionAsync(userSid, table, contextHash, ct);
         if (decision == null)
         {
             // Cache Miss -> Load from Governance DB
@@ -126,7 +127,7 @@ public sealed partial class GatewayExecutionService
             var ttl = metadata.Table.IsHighlySensitive
                 ? TimeSpan.FromSeconds(60)
                 : TimeSpan.FromMinutes(10);
-            await _cacheService.SetCachedDecisionAsync(userSid, table, decision, ttl, ct);
+            await _cacheService.SetCachedDecisionAsync(userSid, table, decision, ttl, contextHash, ct);
         }
 
         // Audit evaluation
@@ -150,9 +151,41 @@ public sealed partial class GatewayExecutionService
                 .Build());
         }
 
-        // Generate synthetic query result (mocking source database execution)
-        var rowLimit = Math.Clamp(first, 1, 250);
+        // Generate synthetic query result (enforcing configured MaxResponseRows)
+        var maxRows = _options?.GraphQL?.MaxResponseRows > 0 ? _options.GraphQL.MaxResponseRows : 1000;
+        var rowLimit = Math.Clamp(first, 1, maxRows);
         var mockRows = GenerateMockRows(metadata, decision, rowLimit, after);
+
+        // Enforce configured MaxResponseBytes
+        var maxBytes = _options?.GraphQL?.MaxResponseBytes > 0 ? _options.GraphQL.MaxResponseBytes : 10 * 1024 * 1024;
+        long estimatedBytes = 0;
+        foreach (var row in mockRows)
+        {
+            foreach (var kvp in row)
+            {
+                estimatedBytes += kvp.Key.Length * 2;
+                if (kvp.Value is string s)
+                {
+                    estimatedBytes += s.Length * 2;
+                }
+                else if (kvp.Value is byte[] b)
+                {
+                    estimatedBytes += b.Length;
+                }
+                else
+                {
+                    estimatedBytes += 16;
+                }
+            }
+        }
+
+        if (estimatedBytes > maxBytes)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("RESPONSE_TOO_LARGE")
+                .SetMessage($"Antwortgröße ({estimatedBytes} Bytes) überschreitet das konfigurierte Limit von {maxBytes} Bytes.")
+                .Build());
+        }
 
         return (mockRows, decision);
     }
@@ -436,7 +469,8 @@ public sealed partial class GatewayExecutionService
             return TableAccessDecision.Denied(table, $"Table '{table}' not found in catalog");
         }
 
-        var decision = await _cacheService.GetCachedDecisionAsync(userSid, table, ct);
+        var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
+        var decision = await _cacheService.GetCachedDecisionAsync(userSid, table, contextHash, ct);
         if (decision == null)
         {
             var allSubjects = groupSids.Append(userSid).ToList();
@@ -446,7 +480,7 @@ public sealed partial class GatewayExecutionService
             var ttl = metadata.Table.IsHighlySensitive
                 ? TimeSpan.FromSeconds(60)
                 : TimeSpan.FromMinutes(10);
-            await _cacheService.SetCachedDecisionAsync(userSid, table, decision, ttl, ct);
+            await _cacheService.SetCachedDecisionAsync(userSid, table, decision, ttl, contextHash, ct);
         }
 
         var traceId = Guid.NewGuid().ToString("N");

@@ -7,6 +7,9 @@ using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.GraphQL.Services;
 using GqlGateway.Infrastructure.Messaging;
+using GqlGateway.Application.Services;
+using GqlGateway.GraphQL.Filtering;
+using HotChocolate.Language;
 using NSubstitute;
 using Shouldly;
 using Xunit;
@@ -213,5 +216,83 @@ public class PipelineAndInfrastructureSecurityTests
         var reasons = jsonDoc.RootElement.GetProperty("reasons");
         reasons.GetArrayLength().ShouldBe(2);
         reasons[0].GetString().ShouldBe("Invalid \"quote\" and newline \n or backslash \\ and <script>");
+    }
+
+    [Fact]
+    public void ComputeSubjectContextHash_ProducesConsistentHash_AndDifferentiatesRolesAndGroups()
+    {
+        var hashDefault = IConsentCacheService.ComputeSubjectContextHash(null, null);
+        hashDefault.ShouldBe("default");
+
+        var groups1 = new HashSet<Sid> { new("S-1-5-21-G1"), new("S-1-5-21-G2") };
+        var roles1 = new HashSet<string> { "Analyst", "DataConsumer" };
+
+        var hash1 = IConsentCacheService.ComputeSubjectContextHash(groups1, roles1);
+        hash1.ShouldNotBe("default");
+
+        // Canonical order independence
+        var groups2 = new HashSet<Sid> { new("S-1-5-21-G2"), new("S-1-5-21-G1") };
+        var roles2 = new HashSet<string> { "DataConsumer", "Analyst" };
+        var hash2 = IConsentCacheService.ComputeSubjectContextHash(groups2, roles2);
+        hash2.ShouldBe(hash1);
+
+        // Membership change yields different hash
+        var groupsChanged = new HashSet<Sid> { new("S-1-5-21-G1") };
+        var hashChanged = IConsentCacheService.ComputeSubjectContextHash(groupsChanged, roles1);
+        hashChanged.ShouldNotBe(hash1);
+    }
+
+    [Fact]
+    public void RowFilterSqlBuilder_UserAttribute_FailsClosedWith1Equals0()
+    {
+        var builder = new RowFilterSqlBuilder();
+        var filter = new ConsentRowFilter
+        {
+            ColumnName = "department_id",
+            Operator = "EQ",
+            ValueType = "string",
+            ValueJson = "\"DEPT_01\"",
+            ValueSource = "USER_ATTRIBUTE"
+        };
+
+        var condition = builder.FormatCondition(filter, DatabaseDialect.SqlServer);
+        condition.ShouldBe("1 = 0");
+    }
+
+    [Fact]
+    public void SqlFilterProvider_NullValue_GeneratesIsNullAndIsNotNull()
+    {
+        var provider = new SqlFilterProvider();
+        var metadata = new TableMetadata
+        {
+            Identifier = new TableIdentifier("sales", "dbo", "orders"),
+            Columns = [new() { ColumnName = "notes", DataType = "varchar" }]
+        };
+
+        // eq: null -> notes IS NULL
+        var eqFilter = new ObjectValueNode(
+            new ObjectFieldNode("notes", new ObjectValueNode(new ObjectFieldNode("eq", NullValueNode.Default)))
+        );
+        var (sqlEq, pEq) = provider.TranslateObjectValue(eqFilter, metadata, DatabaseDialect.SqlServer);
+        sqlEq.ShouldBe("[notes] IS NULL");
+        pEq.ShouldBeEmpty();
+
+        // neq: null -> notes IS NOT NULL
+        var neqFilter = new ObjectValueNode(
+            new ObjectFieldNode("notes", new ObjectValueNode(new ObjectFieldNode("neq", NullValueNode.Default)))
+        );
+        var (sqlNeq, pNeq) = provider.TranslateObjectValue(neqFilter, metadata, DatabaseDialect.SqlServer);
+        sqlNeq.ShouldBe("[notes] IS NOT NULL");
+        pNeq.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void CompositeKey_NaN_GeneratesConsistentHashCodeAndEquality()
+    {
+        var keyFloat = new CompositeKey(float.NaN);
+        var keyDouble = new CompositeKey(double.NaN);
+
+        keyFloat.Equals(keyDouble).ShouldBeTrue();
+        keyFloat.GetHashCode().ShouldBe(keyDouble.GetHashCode());
     }
 }

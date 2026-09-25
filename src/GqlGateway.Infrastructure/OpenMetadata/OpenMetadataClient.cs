@@ -102,11 +102,26 @@ public sealed class OpenMetadataClient : IOpenMetadataClient
     {
         var allItems = new List<T>();
         string? afterCursor = null;
+        var visitedCursors = new HashSet<string>(StringComparer.Ordinal);
+        const int maxPages = 1000;
+        int pageCount = 0;
 
         try
         {
             do
             {
+                if (++pageCount > maxPages)
+                {
+                    _logger.LogWarning("Pagination limit of {MaxPages} pages reached while fetching from {Url}.", maxPages, baseUrl);
+                    break;
+                }
+
+                if (!string.IsNullOrEmpty(afterCursor) && !visitedCursors.Add(afterCursor))
+                {
+                    _logger.LogWarning("Duplicate cursor detected '{Cursor}' while fetching from {Url}. Breaking pagination loop.", afterCursor, baseUrl);
+                    break;
+                }
+
                 var separator = baseUrl.Contains('?') ? "&" : "?";
                 var url = string.IsNullOrEmpty(afterCursor)
                     ? baseUrl

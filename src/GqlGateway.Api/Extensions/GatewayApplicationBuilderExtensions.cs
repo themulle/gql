@@ -13,6 +13,7 @@ public static class GatewayApplicationBuilderExtensions
     public static WebApplication UseGatewayPipeline(this WebApplication app, GatewayOptions gatewayOptions)
     {
         app.UseForwardedHeaders();
+        app.UseCors();
 
         if (!app.Environment.IsDevelopment())
         {
@@ -105,6 +106,20 @@ public static class GatewayApplicationBuilderExtensions
                         return;
                     }
                 }
+                else if (gatewayOptions.GraphQL.TrustedOrigins.Count > 0 && !app.Environment.IsDevelopment())
+                {
+                    // If browser-originating request omits Origin/Referer in production with trusted origins configured, reject
+                    var secFetchSite = context.Request.Headers["Sec-Fetch-Site"].FirstOrDefault();
+                    if (!string.IsNullOrEmpty(secFetchSite) && !string.Equals(secFetchSite, "none", StringComparison.OrdinalIgnoreCase))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        await context.Response.WriteAsJsonAsync(new
+                        {
+                            error = "CSRF Protection: Origin or Referer header required for browser requests."
+                        });
+                        return;
+                    }
+                }
             }
 
             await next();
@@ -141,6 +156,11 @@ public static class GatewayApplicationBuilderExtensions
             HttpContext context,
             IOpenMetadataSyncService syncService) =>
         {
+            if (context.Request.ContentLength > 2 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Payload size exceeds maximum allowed size (2 MB)." });
+            }
+
             using var reader = new StreamReader(context.Request.Body);
             var payload = await reader.ReadToEndAsync();
 

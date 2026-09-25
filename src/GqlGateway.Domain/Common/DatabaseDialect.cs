@@ -79,4 +79,59 @@ public static class DatabaseDialectExtensions
             _ => Enum.TryParse<DatabaseDialect>(sourceType, true, out var d) ? d : DatabaseDialect.PostgreSql
         };
     }
+
+    public static string EscapeSqlLiteral(this DatabaseDialect dialect, string value)
+    {
+        if (value.Contains('\0'))
+        {
+            throw new InvalidOperationException("Literal enthält verbotenes Null-Byte (\\0). Potenzieller Injection-Angriff.");
+        }
+
+        // Standard single quote doubling
+        var escaped = value.Replace("'", "''");
+
+        // Dialect-specific backslash protection:
+        // In PostgreSQL and Databricks, backslashes must be escaped so they cannot escape following characters.
+        if (dialect is DatabaseDialect.PostgreSql or DatabaseDialect.Databricks)
+        {
+            escaped = escaped.Replace(@"\", @"\\");
+        }
+
+        return escaped;
+    }
+
+    public static string FormatSafeLiteral(this DatabaseDialect dialect, System.Text.Json.JsonElement elem)
+    {
+        switch (elem.ValueKind)
+        {
+            case System.Text.Json.JsonValueKind.String:
+                var str = elem.GetString() ?? string.Empty;
+                var escaped = dialect.EscapeSqlLiteral(str);
+                return $"'{escaped}'";
+
+            case System.Text.Json.JsonValueKind.Number:
+                if (!elem.TryGetInt64(out _) && !elem.TryGetDecimal(out _))
+                {
+                    throw new InvalidOperationException($"Ungültiger numerischer Literal-Wert im Zeilenfilter: {elem.GetRawText()}");
+                }
+                var raw = elem.GetRawText();
+                if (!Regex.IsMatch(raw, @"^[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$"))
+                {
+                    throw new InvalidOperationException($"Ungültiges Zahlenformat im Zeilenfilter: '{raw}'");
+                }
+                return raw;
+
+            case System.Text.Json.JsonValueKind.True:
+                return (dialect is DatabaseDialect.SqlServer or DatabaseDialect.Oracle) ? "1" : "TRUE";
+
+            case System.Text.Json.JsonValueKind.False:
+                return (dialect is DatabaseDialect.SqlServer or DatabaseDialect.Oracle) ? "0" : "FALSE";
+
+            case System.Text.Json.JsonValueKind.Null:
+                return "NULL";
+
+            default:
+                throw new InvalidOperationException($"Nicht unterstützter Literal-Typ im Zeilenfilter: {elem.ValueKind}");
+        }
+    }
 }

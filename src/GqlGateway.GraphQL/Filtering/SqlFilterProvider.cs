@@ -197,6 +197,18 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
 
                         var opVal = ExtractLiteralValue(opField.Value);
 
+                        if (opVal == null)
+                        {
+                            var nullCondition = op switch
+                            {
+                                "eq" => $"{quotedColumn} IS NULL",
+                                "neq" => $"{quotedColumn} IS NOT NULL",
+                                _ => throw new InvalidOperationException($"Operator '{op}' kann nicht mit NULL verglichen werden.")
+                            };
+                            clauses.Add(nullCondition);
+                            continue;
+                        }
+
                         var paramName = GetParamName(dialect, counter);
                         parameters[paramName.TrimStart('@', '$', ':')] = opVal;
 

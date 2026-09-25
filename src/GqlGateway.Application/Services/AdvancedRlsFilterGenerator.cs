@@ -164,15 +164,7 @@ public static partial class AdvancedRlsFilterGenerator
 
     private static string FormatLiteralValue(JsonElement elem, DatabaseDialect dialect)
     {
-        return elem.ValueKind switch
-        {
-            JsonValueKind.String => $"'{elem.GetString()?.Replace("'", "''")}'",
-            JsonValueKind.Number when (elem.TryGetInt64(out _) || elem.TryGetDecimal(out _)) => elem.GetRawText(),
-            JsonValueKind.True => (dialect == DatabaseDialect.SqlServer || dialect == DatabaseDialect.Oracle) ? "1" : "TRUE",
-            JsonValueKind.False => (dialect == DatabaseDialect.SqlServer || dialect == DatabaseDialect.Oracle) ? "0" : "FALSE",
-            JsonValueKind.Null => "NULL",
-            _ => throw new InvalidOperationException($"Nicht unterstützter oder unsicherer Literal-Typ im Prädikat: {elem.ValueKind}")
-        };
+        return dialect.FormatSafeLiteral(elem);
     }
 
     private static List<string> ParseSubqueryPredicates(string json, DatabaseDialect dialect)

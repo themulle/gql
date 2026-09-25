@@ -228,9 +228,9 @@ public partial class SqliteGovernanceRepository
                     {
                         hops = System.Text.Json.JsonSerializer.Deserialize<List<SubqueryJoinHop>>(hopsJson);
                     }
-                    catch
+                    catch (System.Text.Json.JsonException ex)
                     {
-                        // Ignore malformed hop JSON
+                        throw new InvalidOperationException("Malformed additional hops JSON detected in consent row filter.", ex);
                     }
                 }
             }
@@ -356,9 +356,9 @@ public partial class SqliteGovernanceRepository
                             {
                                 hops = System.Text.Json.JsonSerializer.Deserialize<List<SubqueryJoinHop>>(hopsJson);
                             }
-                            catch
+                            catch (System.Text.Json.JsonException ex)
                             {
-                                // Ignore malformed hop JSON
+                                throw new InvalidOperationException("Malformed additional hops JSON detected in consent row filter.", ex);
                             }
                         }
                     }

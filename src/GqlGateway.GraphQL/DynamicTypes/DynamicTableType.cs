@@ -34,9 +34,18 @@ public sealed class DynamicTableType : ObjectType
                     return null;
                 }
 
-                // Strict Fail-Closed: Check ColumnAccess in ContextData
-                if (!ctx.ContextData.TryGetValue("ColumnAccess", out var accessObj) ||
-                    accessObj is not IReadOnlyDictionary<string, ColumnAccessLevel> colAccess ||
+                // Strict Fail-Closed: Check ColumnAccess in ScopedContextData or ContextData
+                IReadOnlyDictionary<string, ColumnAccessLevel>? colAccess = null;
+                if (ctx.ScopedContextData.TryGetValue("ColumnAccess", out var scopedObj) && scopedObj is IReadOnlyDictionary<string, ColumnAccessLevel> sc)
+                {
+                    colAccess = sc;
+                }
+                else if (ctx.ContextData.TryGetValue("ColumnAccess", out var accessObj) && accessObj is IReadOnlyDictionary<string, ColumnAccessLevel> ac)
+                {
+                    colAccess = ac;
+                }
+
+                if (colAccess == null ||
                     !colAccess.TryGetValue(col.ColumnName, out var level) ||
                     level == ColumnAccessLevel.Deny)
                 {

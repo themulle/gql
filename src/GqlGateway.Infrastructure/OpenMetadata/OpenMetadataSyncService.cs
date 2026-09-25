@@ -27,6 +27,7 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
     };
 
     private static readonly SemaphoreSlim SyncLock = new(1, 1);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTimeOffset> ProcessedWebhookEvents = new();
 
     public OpenMetadataSyncService(
         IOpenMetadataClient client,
@@ -362,6 +363,44 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
         {
             _logger.LogWarning("OpenMetadata webhook event payload is null.");
             return false;
+        }
+
+        // Validate timestamp to prevent replay attacks (tolerance: 5 minutes)
+        if (webhookEvent.Timestamp.HasValue)
+        {
+            var eventTime = webhookEvent.Timestamp.Value > 10_000_000_000L
+                ? DateTimeOffset.FromUnixTimeMilliseconds(webhookEvent.Timestamp.Value)
+                : DateTimeOffset.FromUnixTimeSeconds(webhookEvent.Timestamp.Value);
+
+            var skew = Math.Abs((DateTimeOffset.UtcNow - eventTime).TotalMinutes);
+            if (skew > 5)
+            {
+                _logger.LogWarning("Rejecting OpenMetadata webhook: event timestamp is skewed or outside acceptable replay window ({Skew:F1} minutes).", skew);
+                return false;
+            }
+        }
+
+        // Event ID deduplication
+        if (webhookEvent.Id.HasValue)
+        {
+            if (!ProcessedWebhookEvents.TryAdd(webhookEvent.Id.Value, DateTimeOffset.UtcNow))
+            {
+                _logger.LogInformation("OpenMetadata webhook event {EventId} has already been processed. Skipping duplicate.", webhookEvent.Id.Value);
+                return true;
+            }
+
+            // Bound the size of the deduplication dictionary
+            if (ProcessedWebhookEvents.Count > 10_000)
+            {
+                var cutoff = DateTimeOffset.UtcNow.AddMinutes(-30);
+                foreach (var (k, v) in ProcessedWebhookEvents)
+                {
+                    if (v < cutoff)
+                    {
+                        ProcessedWebhookEvents.TryRemove(k, out _);
+                    }
+                }
+            }
         }
 
         _logger.LogInformation(

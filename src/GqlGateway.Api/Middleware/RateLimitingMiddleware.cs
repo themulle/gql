@@ -24,11 +24,16 @@ public sealed class PreAuthIpRateLimitingMiddleware
 
     private static long _lastCleanupTimestamp = Stopwatch.GetTimestamp();
     private static int _isCleaningUp;
+    private readonly CancellationToken _stoppingToken;
 
-    public PreAuthIpRateLimitingMiddleware(RequestDelegate next, IOptions<GatewayOptions> options)
+    public PreAuthIpRateLimitingMiddleware(
+        RequestDelegate next,
+        IOptions<GatewayOptions> options,
+        Microsoft.Extensions.Hosting.IHostApplicationLifetime? lifetime = null)
     {
         _next = next;
         _options = options.Value.RateLimiting.PreAuthIpRateLimit;
+        _stoppingToken = lifetime?.ApplicationStopping ?? CancellationToken.None;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -56,6 +61,7 @@ public sealed class PreAuthIpRateLimitingMiddleware
                     var staleThresholdDuration = windowDuration * 2;
                     foreach (var kvp in IpCounters)
                     {
+                        if (_stoppingToken.IsCancellationRequested) break;
                         long ws;
                         lock (kvp.Value.Lock)
                         {
@@ -71,7 +77,15 @@ public sealed class PreAuthIpRateLimitingMiddleware
                 {
                     Interlocked.Exchange(ref _isCleaningUp, 0);
                 }
-            });
+            }, _stoppingToken);
+        }
+
+        // Bounded capacity check against memory exhaustion attacks
+        if (IpCounters.Count >= 25000 && !IpCounters.ContainsKey(ip))
+        {
+            context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            context.Response.Headers.RetryAfter = "60";
+            return;
         }
 
         var counter = IpCounters.GetOrAdd(ip, _ => new IpCounter());
@@ -129,6 +143,7 @@ public sealed class PostAuthSidRateLimitingMiddleware
     private static readonly ConcurrentDictionary<string, TokenBucket> Buckets = new(StringComparer.OrdinalIgnoreCase);
     private static long _lastBucketsCleanupTimestamp = Stopwatch.GetTimestamp();
     private static int _isCleaningUpBuckets = 0;
+    private readonly CancellationToken _stoppingToken;
 
     private sealed class TokenBucket
     {
@@ -137,10 +152,14 @@ public sealed class PostAuthSidRateLimitingMiddleware
         public readonly object Lock = new();
     }
 
-    public PostAuthSidRateLimitingMiddleware(RequestDelegate next, IOptions<GatewayOptions> options)
+    public PostAuthSidRateLimitingMiddleware(
+        RequestDelegate next,
+        IOptions<GatewayOptions> options,
+        Microsoft.Extensions.Hosting.IHostApplicationLifetime? lifetime = null)
     {
         _next = next;
         _options = options.Value.RateLimiting.PostAuthSidRateLimit;
+        _stoppingToken = lifetime?.ApplicationStopping ?? CancellationToken.None;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -193,6 +212,7 @@ public sealed class PostAuthSidRateLimitingMiddleware
                     var staleThresholdDuration = TimeSpan.FromMinutes(10);
                     foreach (var kvp in Buckets)
                     {
+                        if (_stoppingToken.IsCancellationRequested) break;
                         long lastRefill;
                         lock (kvp.Value.Lock)
                         {
@@ -208,7 +228,15 @@ public sealed class PostAuthSidRateLimitingMiddleware
                 {
                     Interlocked.Exchange(ref _isCleaningUpBuckets, 0);
                 }
-            });
+            }, _stoppingToken);
+        }
+
+        // Bounded capacity check
+        if (Buckets.Count >= 25000 && !Buckets.ContainsKey(sid))
+        {
+            context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            context.Response.Headers.RetryAfter = "60";
+            return;
         }
 
         var bucket = Buckets.GetOrAdd(sid, _ => new TokenBucket

@@ -27,6 +27,20 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
         "VALIDATION_ERROR"
     };
 
+    private static readonly string[] SensitivePatterns =
+    [
+        "password=", "pwd=", "server=", "uid=", "user id=", "connectionstring", "initial catalog=",
+        "bearer ", "token=", "secret=", "client_secret",
+        "stack trace:", "at system.", "at microsoft.", "at gqlgateway."
+    ];
+
+    private static bool ContainsSensitivePatterns(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return false;
+        var lower = message.ToLowerInvariant();
+        return SensitivePatterns.Any(pattern => lower.Contains(pattern));
+    }
+
     public IError OnError(IError error)
     {
         if (_environment.IsDevelopment())
@@ -40,10 +54,15 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
             _logger.LogError(error.Exception, "GraphQL Execution Error [{Code}]: {Message}", error.Code, error.Message);
         }
 
-        // Whitelisted client codes: retain safe message/code, but strictly strip internal exception details
+        // Whitelisted client codes: retain safe message/code, but strictly strip internal exception details and sanitize sensitive text
         if (error.Code != null && WhitelistedSafeCodes.Contains(error.Code))
         {
-            return error.RemoveException();
+            var cleanError = error.RemoveException();
+            if (ContainsSensitivePatterns(cleanError.Message))
+            {
+                return cleanError.WithMessage("Die Anfrage enthält ungültige Parameter oder kann nicht verarbeitet werden.");
+            }
+            return cleanError;
         }
 
         // Non-whitelisted or unhandled technical exceptions: mask as generic INTERNAL_SERVER_ERROR
