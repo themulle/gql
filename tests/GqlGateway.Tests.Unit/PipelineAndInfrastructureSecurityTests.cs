@@ -116,7 +116,8 @@ public class PipelineAndInfrastructureSecurityTests
             Arg.Any<IReadOnlySet<Sid>>(),
             Arg.Any<IReadOnlySet<string>>(),
             Arg.Is(tableId),
-            Arg.Any<IReadOnlyList<Consent>>())
+            Arg.Any<IReadOnlyList<Consent>>(),
+            Arg.Any<DatabaseDialect>())
             .Returns(decision);
 
         var executionService = new GatewayExecutionService(
@@ -176,7 +177,8 @@ public class PipelineAndInfrastructureSecurityTests
             Arg.Any<IReadOnlySet<Sid>>(),
             Arg.Any<IReadOnlySet<string>>(),
             Arg.Is(tableId),
-            Arg.Any<IReadOnlyList<Consent>>())
+            Arg.Any<IReadOnlyList<Consent>>(),
+            Arg.Any<DatabaseDialect>())
             .Returns(decision);
 
         AuditLogEntry? capturedAudit = null;

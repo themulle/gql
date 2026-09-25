@@ -120,7 +120,7 @@ public sealed partial class GatewayExecutionService
             var allSubjects = groupSids.Append(userSid).ToList();
             var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
 
-            decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents);
+            decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
 
             // Cache decision
             var ttl = metadata.Table.IsHighlySensitive
@@ -441,7 +441,7 @@ public sealed partial class GatewayExecutionService
         {
             var allSubjects = groupSids.Append(userSid).ToList();
             var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
-            decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents);
+            decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
 
             var ttl = metadata.Table.IsHighlySensitive
                 ? TimeSpan.FromSeconds(60)

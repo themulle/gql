@@ -62,13 +62,23 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
                 return rule.Replacement ?? "REDACTED";
 
             case "HMAC":
+            case "HMAC_SHA256":
                 return ComputeHmacSha256(rawValue.ToString() ?? string.Empty, rule.HmacKeyId ?? _options.HmacKeyId);
+
+            case "MASK_EMAIL":
+                return MaskEmail(rawValue.ToString() ?? string.Empty);
+
+            case "MASK_IBAN":
+                return MaskIban(rawValue.ToString() ?? string.Empty);
+
+            case "MASK_PHONE":
+                return MaskPhone(rawValue.ToString() ?? string.Empty);
 
             case "REGEX":
                 return ApplyRegexOrFormatMask(columnName, rawValue.ToString() ?? string.Empty, rule);
 
             default:
-                return "REDACTED";
+                return rule.Replacement ?? "REDACTED";
         }
     }
 

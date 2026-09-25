@@ -94,10 +94,3 @@ public sealed class AuditLogEntry
     public string PrevHash { get; set; } = string.Empty;
     public string EntryHash { get; set; } = string.Empty;
 }
-
-public sealed class AuditActorDirectoryEntry
-{
-    public Sid ActorSid { get; init; }
-    public string DisplayName { get; init; } = string.Empty;
-    public string Email { get; init; } = string.Empty;
-}

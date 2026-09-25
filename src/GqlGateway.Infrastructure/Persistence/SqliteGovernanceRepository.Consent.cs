@@ -42,8 +42,8 @@ public partial class SqliteGovernanceRepository
                 using var reader = await cmd.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))
                 {
-                    var validFrom = DateTimeOffset.Parse(reader.GetString(8));
-                    var validTo = DateTimeOffset.Parse(reader.GetString(9));
+                    var validFrom = DateTimeOffset.Parse(reader.GetString(8), System.Globalization.CultureInfo.InvariantCulture);
+                    var validTo = DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture);
 
                     if (atTime < validFrom || atTime >= validTo) continue;
 
@@ -106,17 +106,16 @@ public partial class SqliteGovernanceRepository
             {
                 cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
                                            c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
-                                           c.is_revoked, p.domain, t.schema_name, t.table_name
+                                           c.is_revoked, t.source_name, t.schema_name, t.table_name
                                     FROM CONSENTS c
                                     JOIN TABLES t ON c.table_id = t.id
-                                    LEFT JOIN POLICY_EPOCHS p ON t.id = p.table_id
                                     WHERE c.is_revoked = 0";
 
                 using var reader = await cmd.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))
                 {
-                    var validFrom = DateTimeOffset.Parse(reader.GetString(8));
-                    var validTo = DateTimeOffset.Parse(reader.GetString(9));
+                    var validFrom = DateTimeOffset.Parse(reader.GetString(8), System.Globalization.CultureInfo.InvariantCulture);
+                    var validTo = DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture);
 
                     if (effectiveAt < validFrom || effectiveAt >= validTo) continue;
 
@@ -137,7 +136,7 @@ public partial class SqliteGovernanceRepository
                         continue;
                     }
 
-                    var domain = reader.IsDBNull(11) ? "default" : reader.GetString(11);
+                    var domain = reader.GetString(11);
                     var tableIdentifier = new TableIdentifier(domain, reader.GetString(12), reader.GetString(13));
 
                     var consent = new Consent
@@ -276,120 +275,124 @@ public partial class SqliteGovernanceRepository
             return;
         }
 
-        var idList = string.Join(",", consents.Select((_, i) => $"@cid{i}"));
-
-        // 1. Batch load column rules
-        using (var cmdRules = _connection.CreateCommand())
+        // Chunk by 500 to protect SQLite 999 parameter limit
+        foreach (var consentChunk in consents.Chunk(500))
         {
-            cmdRules.CommandText = $@"SELECT id, consent_id, table_column_id, column_name, access_level
-                                     FROM CONSENT_COLUMN_RULES WHERE consent_id IN ({idList})";
-            for (int i = 0; i < consents.Count; i++)
+            var idList = string.Join(",", consentChunk.Select((_, i) => $"@cid{i}"));
+
+            // 1. Batch load column rules
+            using (var cmdRules = _connection.CreateCommand())
             {
-                cmdRules.Parameters.AddWithValue($"@cid{i}", consents[i].Id.ToString());
+                cmdRules.CommandText = $@"SELECT id, consent_id, table_column_id, column_name, access_level
+                                         FROM CONSENT_COLUMN_RULES WHERE consent_id IN ({idList})";
+                for (int i = 0; i < consentChunk.Length; i++)
+                {
+                    cmdRules.Parameters.AddWithValue($"@cid{i}", consentChunk[i].Id.ToString());
+                }
+
+                var rulesMap = consentChunk.ToDictionary(c => c.Id, _ => new List<ConsentColumnRule>());
+                using var reader = await cmdRules.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    var cid = Guid.Parse(reader.GetString(1));
+                    if (rulesMap.TryGetValue(cid, out var list))
+                    {
+                        list.Add(new ConsentColumnRule
+                        {
+                            Id = Guid.Parse(reader.GetString(0)),
+                            ConsentId = cid,
+                            TableColumnId = Guid.Parse(reader.GetString(2)),
+                            ColumnName = reader.GetString(3),
+                            AccessLevel = (ColumnAccessLevel)reader.GetInt32(4)
+                        });
+                    }
+                }
+
+                foreach (var c in consentChunk)
+                {
+                    c.ColumnRules = rulesMap[c.Id];
+                }
             }
 
-            var rulesMap = consents.ToDictionary(c => c.Id, _ => new List<ConsentColumnRule>());
-            using var reader = await cmdRules.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
+            // 2. Batch load row filters
+            using (var cmdFilters = _connection.CreateCommand())
             {
-                var cid = Guid.Parse(reader.GetString(1));
-                if (rulesMap.TryGetValue(cid, out var list))
+                cmdFilters.CommandText = $@"SELECT id, consent_id, filter_group, table_column_id, column_name,
+                                           operator, value_type, value_json, value_source, user_attribute,
+                                           filter_type, dependent_table, dependent_table_alias, foreign_key_column,
+                                           primary_key_column, subquery_predicate_json, target_temporal_column,
+                                           dependent_valid_from_column, dependent_valid_to_column, target_table_alias,
+                                           additional_hops_json
+                                    FROM CONSENT_ROW_FILTERS WHERE consent_id IN ({idList})";
+                for (int i = 0; i < consentChunk.Length; i++)
                 {
-                    list.Add(new ConsentColumnRule
+                    cmdFilters.Parameters.AddWithValue($"@cid{i}", consentChunk[i].Id.ToString());
+                }
+
+                var filtersMap = consentChunk.ToDictionary(c => c.Id, _ => new List<ConsentRowFilter>());
+                using var reader = await cmdFilters.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    var cid = Guid.Parse(reader.GetString(1));
+                    if (!filtersMap.TryGetValue(cid, out var list)) continue;
+
+                    TableIdentifier? depTable = null;
+                    if (!reader.IsDBNull(11))
+                    {
+                        var depStr = reader.GetString(11);
+                        if (TableIdentifier.TryParse(depStr, out var parsed))
+                        {
+                            depTable = parsed;
+                        }
+                    }
+
+                    IReadOnlyList<SubqueryJoinHop>? hops = null;
+                    if (!reader.IsDBNull(20))
+                    {
+                        var hopsJson = reader.GetString(20);
+                        if (!string.IsNullOrWhiteSpace(hopsJson))
+                        {
+                            try
+                            {
+                                hops = System.Text.Json.JsonSerializer.Deserialize<List<SubqueryJoinHop>>(hopsJson);
+                            }
+                            catch
+                            {
+                                // Ignore malformed hop JSON
+                            }
+                        }
+                    }
+
+                    list.Add(new ConsentRowFilter
                     {
                         Id = Guid.Parse(reader.GetString(0)),
                         ConsentId = cid,
-                        TableColumnId = Guid.Parse(reader.GetString(2)),
-                        ColumnName = reader.GetString(3),
-                        AccessLevel = (ColumnAccessLevel)reader.GetInt32(4)
+                        FilterGroup = reader.GetInt32(2),
+                        TableColumnId = Guid.Parse(reader.GetString(3)),
+                        ColumnName = reader.GetString(4),
+                        Operator = reader.GetString(5),
+                        ValueType = reader.GetString(6),
+                        ValueJson = reader.GetString(7),
+                        ValueSource = reader.GetString(8),
+                        UserAttribute = reader.IsDBNull(9) ? null : reader.GetString(9),
+                        FilterType = (RowFilterType)(reader.IsDBNull(10) ? 0 : reader.GetInt32(10)),
+                        DependentTable = depTable,
+                        DependentTableAlias = reader.IsDBNull(12) ? null : reader.GetString(12),
+                        ForeignKeyColumn = reader.IsDBNull(13) ? null : reader.GetString(13),
+                        PrimaryKeyColumn = reader.IsDBNull(14) ? null : reader.GetString(14),
+                        SubqueryFilterPredicateJson = reader.IsDBNull(15) ? null : reader.GetString(15),
+                        TargetTemporalColumn = reader.IsDBNull(16) ? null : reader.GetString(16),
+                        DependentValidFromColumn = reader.IsDBNull(17) ? null : reader.GetString(17),
+                        DependentValidToColumn = reader.IsDBNull(18) ? null : reader.GetString(18),
+                        TargetTableAlias = reader.IsDBNull(19) ? null : reader.GetString(19),
+                        AdditionalHops = hops
                     });
                 }
-            }
 
-            foreach (var c in consents)
-            {
-                c.ColumnRules = rulesMap[c.Id];
-            }
-        }
-
-        // 2. Batch load row filters
-        using (var cmdFilters = _connection.CreateCommand())
-        {
-            cmdFilters.CommandText = $@"SELECT id, consent_id, filter_group, table_column_id, column_name,
-                                       operator, value_type, value_json, value_source, user_attribute,
-                                       filter_type, dependent_table, dependent_table_alias, foreign_key_column,
-                                       primary_key_column, subquery_predicate_json, target_temporal_column,
-                                       dependent_valid_from_column, dependent_valid_to_column, target_table_alias,
-                                       additional_hops_json
-                                FROM CONSENT_ROW_FILTERS WHERE consent_id IN ({idList})";
-            for (int i = 0; i < consents.Count; i++)
-            {
-                cmdFilters.Parameters.AddWithValue($"@cid{i}", consents[i].Id.ToString());
-            }
-
-            var filtersMap = consents.ToDictionary(c => c.Id, _ => new List<ConsentRowFilter>());
-            using var reader = await cmdFilters.ExecuteReaderAsync(ct);
-            while (await reader.ReadAsync(ct))
-            {
-                var cid = Guid.Parse(reader.GetString(1));
-                if (!filtersMap.TryGetValue(cid, out var list)) continue;
-
-                TableIdentifier? depTable = null;
-                if (!reader.IsDBNull(11))
+                foreach (var c in consentChunk)
                 {
-                    var depStr = reader.GetString(11);
-                    if (TableIdentifier.TryParse(depStr, out var parsed))
-                    {
-                        depTable = parsed;
-                    }
+                    c.RowFilters = filtersMap[c.Id];
                 }
-
-                IReadOnlyList<SubqueryJoinHop>? hops = null;
-                if (!reader.IsDBNull(20))
-                {
-                    var hopsJson = reader.GetString(20);
-                    if (!string.IsNullOrWhiteSpace(hopsJson))
-                    {
-                        try
-                        {
-                            hops = System.Text.Json.JsonSerializer.Deserialize<List<SubqueryJoinHop>>(hopsJson);
-                        }
-                        catch
-                        {
-                            // Ignore malformed hop JSON
-                        }
-                    }
-                }
-
-                list.Add(new ConsentRowFilter
-                {
-                    Id = Guid.Parse(reader.GetString(0)),
-                    ConsentId = cid,
-                    FilterGroup = reader.GetInt32(2),
-                    TableColumnId = Guid.Parse(reader.GetString(3)),
-                    ColumnName = reader.GetString(4),
-                    Operator = reader.GetString(5),
-                    ValueType = reader.GetString(6),
-                    ValueJson = reader.GetString(7),
-                    ValueSource = reader.GetString(8),
-                    UserAttribute = reader.IsDBNull(9) ? null : reader.GetString(9),
-                    FilterType = (RowFilterType)(reader.IsDBNull(10) ? 0 : reader.GetInt32(10)),
-                    DependentTable = depTable,
-                    DependentTableAlias = reader.IsDBNull(12) ? null : reader.GetString(12),
-                    ForeignKeyColumn = reader.IsDBNull(13) ? null : reader.GetString(13),
-                    PrimaryKeyColumn = reader.IsDBNull(14) ? null : reader.GetString(14),
-                    SubqueryFilterPredicateJson = reader.IsDBNull(15) ? null : reader.GetString(15),
-                    TargetTemporalColumn = reader.IsDBNull(16) ? null : reader.GetString(16),
-                    DependentValidFromColumn = reader.IsDBNull(17) ? null : reader.GetString(17),
-                    DependentValidToColumn = reader.IsDBNull(18) ? null : reader.GetString(18),
-                    TargetTableAlias = reader.IsDBNull(19) ? null : reader.GetString(19),
-                    AdditionalHops = hops
-                });
-            }
-
-            foreach (var c in consents)
-            {
-                c.RowFilters = filtersMap[c.Id];
             }
         }
     }
@@ -535,6 +538,22 @@ public partial class SqliteGovernanceRepository
         await _lock.WaitAsync(ct);
         try
         {
+            string currentStatus;
+            using (var checkCmd = _connection.CreateCommand())
+            {
+                checkCmd.CommandText = "SELECT status FROM CONSENT_REQUESTS WHERE id = @id";
+                checkCmd.Parameters.AddWithValue("@id", requestId.ToString());
+                var statusObj = await checkCmd.ExecuteScalarAsync(ct);
+                if (statusObj == null) throw new InvalidOperationException($"Request {requestId} not found.");
+                currentStatus = statusObj.ToString()!;
+            }
+
+            if (!string.Equals(currentStatus, "PENDING", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(currentStatus, "PENDING_SECOND_APPROVAL", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Request {requestId} is in status '{currentStatus}' and cannot be approved.");
+            }
+
             bool isAuthorized = await IsAuthorizedApproverForTableInternalAsync(req.TableIdentifier, approverSid, ct);
             if (!isAuthorized)
             {
@@ -625,6 +644,22 @@ public partial class SqliteGovernanceRepository
         await _lock.WaitAsync(ct);
         try
         {
+            string currentStatus;
+            using (var checkCmd = _connection.CreateCommand())
+            {
+                checkCmd.CommandText = "SELECT status FROM CONSENT_REQUESTS WHERE id = @id";
+                checkCmd.Parameters.AddWithValue("@id", requestId.ToString());
+                var statusObj = await checkCmd.ExecuteScalarAsync(ct);
+                if (statusObj == null) throw new InvalidOperationException($"Request {requestId} not found.");
+                currentStatus = statusObj.ToString()!;
+            }
+
+            if (!string.Equals(currentStatus, "PENDING", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(currentStatus, "PENDING_SECOND_APPROVAL", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"Request {requestId} is in status '{currentStatus}' and cannot be rejected.");
+            }
+
             bool isAuthorized = await IsAuthorizedApproverForTableInternalAsync(req.TableIdentifier, approverSid, ct);
             if (!isAuthorized)
             {

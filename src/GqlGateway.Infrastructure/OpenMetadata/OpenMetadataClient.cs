@@ -98,20 +98,40 @@ public sealed class OpenMetadataClient : IOpenMetadataClient
     public Task<IReadOnlyList<OpenMetadataUser>> GetUsersAsync(CancellationToken ct = default) =>
         GetPagedEntitiesAsync<OpenMetadataUser>("users?limit=1000&fields=roles,teams", ct);
 
-    private async Task<IReadOnlyList<T>> GetPagedEntitiesAsync<T>(string relativeUrl, CancellationToken ct)
+    private async Task<IReadOnlyList<T>> GetPagedEntitiesAsync<T>(string baseUrl, CancellationToken ct)
     {
+        var allItems = new List<T>();
+        string? afterCursor = null;
+
         try
         {
-            using var response = await _httpClient.GetAsync(relativeUrl, ct);
-            response.EnsureSuccessStatusCode();
+            do
+            {
+                var separator = baseUrl.Contains('?') ? "&" : "?";
+                var url = string.IsNullOrEmpty(afterCursor)
+                    ? baseUrl
+                    : $"{baseUrl}{separator}after={Uri.EscapeDataString(afterCursor)}";
 
-            await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            var paged = await JsonSerializer.DeserializeAsync<PagedResponse<T>>(stream, JsonOptions, ct);
-            return paged?.Data ?? (IReadOnlyList<T>)Array.Empty<T>();
+                using var response = await _httpClient.GetAsync(url, ct);
+                response.EnsureSuccessStatusCode();
+
+                await using var stream = await response.Content.ReadAsStreamAsync(ct);
+                var paged = await JsonSerializer.DeserializeAsync<PagedResponse<T>>(stream, JsonOptions, ct);
+
+                if (paged?.Data == null || paged.Data.Count == 0)
+                {
+                    break;
+                }
+
+                allItems.AddRange(paged.Data);
+                afterCursor = paged.Paging?.After;
+            } while (!string.IsNullOrEmpty(afterCursor));
+
+            return allItems;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "Failed to retrieve OpenMetadata entities from endpoint: {Url}", relativeUrl);
+            _logger.LogError(ex, "Failed to retrieve OpenMetadata entities from endpoint: {Url}", baseUrl);
             throw;
         }
     }

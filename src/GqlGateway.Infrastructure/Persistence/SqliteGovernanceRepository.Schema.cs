@@ -181,6 +181,18 @@ public partial class SqliteGovernanceRepository
             CREATE UNIQUE INDEX IF NOT EXISTS UX_APPROVAL_STEPS_REQ_STEP
                 ON APPROVAL_STEPS (consent_request_id, step_number);
 
+            CREATE UNIQUE INDEX IF NOT EXISTS UX_TABLES_NATURAL
+                ON TABLES (source_name, schema_name, table_name);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS UX_TABLE_COLUMNS_NATURAL
+                ON TABLE_COLUMNS (table_id, column_name);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS UX_DATA_OWNERS_SID
+                ON DATA_OWNERS (ad_sid);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS UX_TABLE_OWNERS_NATURAL
+                ON TABLE_OWNERS (table_id, data_owner_id, owner_role);
+
             CREATE TABLE IF NOT EXISTS TABLE_RELATIONS (
                 id TEXT PRIMARY KEY,
                 parent_table_id TEXT NOT NULL,

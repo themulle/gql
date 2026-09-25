@@ -28,7 +28,7 @@ public sealed class ConsentResolutionService : IConsentResolutionService
 
         // 1. Identify applicable active consents for Subject Set S
         var applicable = activeConsents
-            .Where(c => c.IsActive(now) && IsTableMatch(c.TableIdentifier, table) && IsSubjectMatch(c, userSid, subjectGroupSids, userRoles))
+            .Where(c => c.IsActive(now) && c.TableIdentifier == table && IsSubjectMatch(c, userSid, subjectGroupSids, userRoles))
             .ToList();
 
         // Separate into A (ALLOW) and D (DENY)
@@ -121,13 +121,6 @@ public sealed class ConsentResolutionService : IConsentResolutionService
         bool hasUnconstrainedColumnAllow = aConsents.Any(c => c.ColumnRules.Count == 0);
 
         return TableAccessDecision.Allowed(table, columnAccess, rowFilterSql, hasUnconstrainedColumnAllow);
-    }
-
-    private static bool IsTableMatch(TableIdentifier a, TableIdentifier b)
-    {
-        return string.Equals(a.Domain, b.Domain, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(a.Schema, b.Schema, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(a.TableName, b.TableName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsSubjectMatch(

@@ -24,7 +24,7 @@ public sealed class EpochValidationService : IEpochValidationService
 
     public Task<long> GetCurrentEpochAsync(TableIdentifier table, CancellationToken ct = default)
     {
-        var key = table.ToString();
+        var key = table.ToString().ToLowerInvariant();
         var epoch = _epochs.GetOrAdd(key, 1);
         return Task.FromResult(epoch);
     }
@@ -36,7 +36,7 @@ public sealed class EpochValidationService : IEpochValidationService
         var result = new Dictionary<TableIdentifier, long>();
         foreach (var t in tables)
         {
-            var key = t.ToString();
+            var key = t.ToString().ToLowerInvariant();
             result[t] = _epochs.GetOrAdd(key, 1);
         }
         return Task.FromResult<IReadOnlyDictionary<TableIdentifier, long>>(result);
@@ -50,10 +50,10 @@ public sealed class EpochValidationService : IEpochValidationService
 
     public async Task InvalidateEpochAsync(TableIdentifier table, CancellationToken ct = default)
     {
-        var key = table.ToString();
+        var key = table.ToString().ToLowerInvariant();
         _epochs.AddOrUpdate(key, 2, (_, current) => current + 1);
 
         // Broadcast invalidation event
-        await _eventBus.PublishAsync(_invalidationChannel, table.ToString(), ct);
+        await _eventBus.PublishAsync(_invalidationChannel, key, ct);
     }
 }

@@ -30,7 +30,8 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         _subscription = eventBus.Subscribe<string>(channel, async tableString =>
         {
             await Task.Yield();
-            if (_tableCacheKeys.TryRemove(tableString, out var keys))
+            var normalized = (tableString ?? string.Empty).ToLowerInvariant();
+            if (_tableCacheKeys.TryRemove(normalized, out var keys))
             {
                 foreach (var key in keys.Keys)
                 {
@@ -81,7 +82,7 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
             + decision.ColumnAccess.Count * 64
             + decision.DeniedReasons.Sum(r => r.Length * 2);
 
-        var tableKey = table.ToString();
+        var tableKey = NormalizeTableKey(table);
         var keys = _tableCacheKeys.GetOrAdd(tableKey, _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
         keys.TryAdd(cacheKey, 0);
 
@@ -108,7 +109,7 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
 
     public Task EvictTableDecisionsAsync(TableIdentifier table, CancellationToken ct = default)
     {
-        var tableKey = table.ToString();
+        var tableKey = NormalizeTableKey(table);
         if (_tableCacheKeys.TryRemove(tableKey, out var keys))
         {
             foreach (var key in keys.Keys)
@@ -131,7 +132,7 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
 
     public int GetTrackedKeyCount(TableIdentifier table)
     {
-        var tableKey = table.ToString();
+        var tableKey = NormalizeTableKey(table);
         if (_tableCacheKeys.TryGetValue(tableKey, out var keys))
         {
             return keys.Count;
@@ -141,7 +142,7 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
 
     private void RemoveKeyFromTableIndex(TableIdentifier table, string cacheKey)
     {
-        var tableKey = table.ToString();
+        var tableKey = NormalizeTableKey(table);
         if (_tableCacheKeys.TryGetValue(tableKey, out var keys))
         {
             keys.TryRemove(cacheKey, out _);
@@ -151,6 +152,8 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
             }
         }
     }
+
+    private static string NormalizeTableKey(TableIdentifier table) => table.ToString().ToLowerInvariant();
 
     private static string BuildCacheKey(Sid userSid, TableIdentifier table) =>
         $"consent:{userSid.Value.ToUpperInvariant()}:{table.Domain.ToLowerInvariant()}:{table.Schema.ToLowerInvariant()}:{table.TableName.ToLowerInvariant()}";

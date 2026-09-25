@@ -1,5 +1,6 @@
 using GqlGateway.Application.OpenMetadata.Interfaces;
 using GqlGateway.Domain.Options;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -8,16 +9,16 @@ namespace GqlGateway.Infrastructure.OpenMetadata;
 
 public sealed class OpenMetadataSyncBackgroundService : BackgroundService
 {
-    private readonly IOpenMetadataSyncService _syncService;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly IOptions<GatewayOptions> _options;
     private readonly ILogger<OpenMetadataSyncBackgroundService> _logger;
 
     public OpenMetadataSyncBackgroundService(
-        IOpenMetadataSyncService syncService,
+        IServiceScopeFactory scopeFactory,
         IOptions<GatewayOptions> options,
         ILogger<OpenMetadataSyncBackgroundService> logger)
     {
-        _syncService = syncService;
+        _scopeFactory = scopeFactory;
         _options = options;
         _logger = logger;
     }
@@ -36,7 +37,9 @@ public sealed class OpenMetadataSyncBackgroundService : BackgroundService
         // Initial sync on startup
         try
         {
-            await _syncService.SyncPermissionsAsync(dryRun: false, stoppingToken);
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var syncService = scope.ServiceProvider.GetRequiredService<IOpenMetadataSyncService>();
+            await syncService.SyncPermissionsAsync(dryRun: false, stoppingToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -49,7 +52,9 @@ public sealed class OpenMetadataSyncBackgroundService : BackgroundService
         {
             try
             {
-                await _syncService.SyncPermissionsAsync(dryRun: false, stoppingToken);
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var syncService = scope.ServiceProvider.GetRequiredService<IOpenMetadataSyncService>();
+                await syncService.SyncPermissionsAsync(dryRun: false, stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

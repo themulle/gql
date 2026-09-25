@@ -66,11 +66,12 @@ public static class GatewayServiceCollectionExtensions
         services.Configure<ForwardedHeadersOptions>(options =>
         {
             options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost;
-            options.KnownIPNetworks.Clear();
-            options.KnownProxies.Clear();
 
             if (gatewayOptions.ReverseProxy.Enabled)
             {
+                options.KnownIPNetworks.Clear();
+                options.KnownProxies.Clear();
+
                 foreach (var netStr in gatewayOptions.ReverseProxy.KnownNetworks)
                 {
                     if (System.Net.IPNetwork.TryParse(netStr, out var network))

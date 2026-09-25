@@ -26,6 +26,8 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
         PropertyNameCaseInsensitive = true
     };
 
+    private static readonly SemaphoreSlim SyncLock = new(1, 1);
+
     public OpenMetadataSyncService(
         IOpenMetadataClient client,
         ITableMetadataRepository metadataRepo,
@@ -44,9 +46,17 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
 
     public async Task<OpenMetadataSyncResult> SyncPermissionsAsync(bool dryRun = false, CancellationToken ct = default)
     {
-        var omOptions = _options.Value.OpenMetadata;
-        var warnings = new List<string>();
-        var affectedTables = new HashSet<TableIdentifier>();
+        if (!await SyncLock.WaitAsync(TimeSpan.FromSeconds(5), ct))
+        {
+            _logger.LogWarning("OpenMetadata sync is already in progress. Skipping concurrent request.");
+            return new OpenMetadataSyncResult(0, 0, 0, Array.Empty<TableIdentifier>(), ["Sync already in progress."], false);
+        }
+
+        try
+        {
+            var omOptions = _options.Value.OpenMetadata;
+            var warnings = new List<string>();
+            var affectedTables = new HashSet<TableIdentifier>();
 
         int syncedTablesCount = 0;
         int syncedMaskingRulesCount = 0;
@@ -232,8 +242,12 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
                 }
             }
 
-            // Save consents
-            foreach (var consent in consentsToCreate)
+            // Save consents (with deduplication)
+            var distinctConsents = consentsToCreate
+                .DistinctBy(c => (c.TableIdentifier, c.GranteeType, c.GranteeSid?.Value ?? string.Empty, c.RoleName ?? string.Empty, c.Effect))
+                .ToList();
+
+            foreach (var consent in distinctConsents)
             {
                 try
                 {
@@ -243,7 +257,22 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
 
                     if (!dryRun)
                     {
-                        await _consentRepo.CreateConsentAsync(consent, ct);
+                        bool alreadyExists = false;
+                        if (consent.GranteeType == GranteeType.Role && !string.IsNullOrEmpty(consent.RoleName))
+                        {
+                            var existingRoleConsents = await _consentRepo.GetAllActiveConsentsForSubjectsAsync([], [consent.RoleName], DateTimeOffset.UtcNow, ct);
+                            alreadyExists = existingRoleConsents.Any(c => c.TableIdentifier.Equals(consent.TableIdentifier) && c.Effect == consent.Effect && string.Equals(c.RoleName, consent.RoleName, StringComparison.OrdinalIgnoreCase));
+                        }
+                        else if (consent.GranteeSid.HasValue)
+                        {
+                            var existingSidConsents = await _consentRepo.GetActiveConsentsForSubjectsAsync([consent.GranteeSid.Value], consent.TableIdentifier, DateTimeOffset.UtcNow, ct);
+                            alreadyExists = existingSidConsents.Any(c => c.Effect == consent.Effect && c.GranteeType == consent.GranteeType && c.GranteeSid == consent.GranteeSid);
+                        }
+
+                        if (!alreadyExists)
+                        {
+                            await _consentRepo.CreateConsentAsync(consent, ct);
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -281,33 +310,41 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
             "OpenMetadata synchronization completed. Tables: {Tables}, Consents: {Consents}, MaskingRules: {Masks}, DryRun: {DryRun}",
             syncedTablesCount, syncedConsentsCount, syncedMaskingRulesCount, dryRun);
 
-        return new OpenMetadataSyncResult(
-            syncedTablesCount,
-            syncedConsentsCount,
-            syncedMaskingRulesCount,
-            affectedTables.ToList(),
-            warnings,
-            true);
+            return new OpenMetadataSyncResult(
+                syncedTablesCount,
+                syncedConsentsCount,
+                syncedMaskingRulesCount,
+                affectedTables.ToList(),
+                warnings,
+                true);
+        }
+        finally
+        {
+            SyncLock.Release();
+        }
     }
 
     public async Task<bool> HandleWebhookEventAsync(string eventPayload, string? signatureHeader = null, CancellationToken ct = default)
     {
         var omOptions = _options.Value.OpenMetadata;
 
-        // Verify signature if secret is configured
-        if (!string.IsNullOrWhiteSpace(omOptions.WebhookSecret))
+        // Enforce signature verification (fail closed)
+        if (string.IsNullOrWhiteSpace(omOptions.WebhookSecret))
         {
-            if (string.IsNullOrWhiteSpace(signatureHeader))
-            {
-                _logger.LogWarning("Rejecting OpenMetadata webhook: missing signature header.");
-                return false;
-            }
+            _logger.LogWarning("Rejecting OpenMetadata webhook: WebhookSecret is not configured.");
+            return false;
+        }
 
-            if (!VerifyWebhookSignature(eventPayload, signatureHeader, omOptions.WebhookSecret))
-            {
-                _logger.LogWarning("Rejecting OpenMetadata webhook: signature verification failed.");
-                return false;
-            }
+        if (string.IsNullOrWhiteSpace(signatureHeader))
+        {
+            _logger.LogWarning("Rejecting OpenMetadata webhook: missing signature header.");
+            return false;
+        }
+
+        if (!VerifyWebhookSignature(eventPayload, signatureHeader, omOptions.WebhookSecret))
+        {
+            _logger.LogWarning("Rejecting OpenMetadata webhook: signature verification failed.");
+            return false;
         }
 
         OpenMetadataWebhookEvent? webhookEvent;
@@ -443,7 +480,18 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
 
             foreach (var tag in omCol.Tags)
             {
-                if (omOptions.TagToMaskingRuleMap.TryGetValue(tag.TagFQN, out var ruleType))
+                string? ruleType = null;
+                if (!omOptions.TagToMaskingRuleMap.TryGetValue(tag.TagFQN, out ruleType))
+                {
+                    if (tag.TagFQN.StartsWith("PII.", StringComparison.OrdinalIgnoreCase) ||
+                        tag.TagFQN.StartsWith("PersonalData.", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(tag.TagFQN, "PII", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ruleType = "REDACT";
+                    }
+                }
+
+                if (ruleType != null)
                 {
                     isSensitive = true;
                     var maskingRule = new MaskingRule

@@ -133,10 +133,17 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
                     throw new InvalidOperationException($"Ungültiger Spaltenname im Filter: '{fieldName}' existiert nicht in Tabelle '{metadata.Identifier}'. Potenzieller Injection-Angriff.");
                 }
 
-                // SEC-01: Zero-Trust rule: Filtering on columns with Mask or Deny is strictly forbidden to prevent side-channel inference
-                if (columnAccess != null && columnAccess.TryGetValue(fieldName, out var access) && access != ColumnAccessLevel.Clear)
+                // SEC-01: Zero-Trust rule: Filtering on columns without explicit Clear access (or with Mask/Deny) is strictly forbidden to prevent side-channel inference
+                if (columnAccess != null)
                 {
-                    throw new SecurityException($"Zero-Trust-Verletzung: Filtern auf Spalte '{fieldName}' ist nicht gestattet (Zugriffsebene: {access}).");
+                    var access = columnAccess.TryGetValue(fieldName, out var explicitAccess)
+                        ? explicitAccess
+                        : ColumnAccessLevel.Deny;
+
+                    if (access != ColumnAccessLevel.Clear)
+                    {
+                        throw new SecurityException($"Zero-Trust-Verletzung: Filtern auf Spalte '{fieldName}' ist nicht gestattet (Zugriffsebene: {access}).");
+                    }
                 }
 
                 var quotedColumn = QuoteIdentifier(fieldName, dialect);
