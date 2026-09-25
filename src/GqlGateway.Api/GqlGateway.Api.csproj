@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\GqlGateway.GraphQL\GqlGateway.GraphQL.csproj" />
+    <ProjectReference Include="..\GqlGateway.Infrastructure\GqlGateway.Infrastructure.csproj" />
+    <ProjectReference Include="..\GqlGateway.Application\GqlGateway.Application.csproj" />
+    <ProjectReference Include="..\GqlGateway.Domain\GqlGateway.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="HotChocolate.AspNetCore" Version="14.1.0" />
+    <PackageReference Include="HotChocolate.CostAnalysis" Version="14.1.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="10.0.12" />
+    <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>
