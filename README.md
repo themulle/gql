@@ -20,9 +20,12 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - Multi-step **Four-Eyes Approval Workflow** with segregation of duties (requester cannot approve own requests; duplicate approvals rejected).
   - Time-bounded delegations (`DATA_OWNER_DELEGATIONS`) allowing seamless holiday/vacation handovers.
 
-- **Dynamic Schema & Multi-Database Engine Support**:
+- **Heterogeneous Multi-Source Data Architecture (SQL, Declarative REST, Plugins)**:
   - Dynamic type projection and schema generation based on the active governance catalog.
-  - Native support for 5 major database backends: **MSSQL (SQL Server)**, **SQLite**, **PostgreSQL**, **Databricks**, and **Oracle**.
+  - Native support for 5 major relational database backends: **MSSQL (SQL Server)**, **SQLite**, **PostgreSQL**, **Databricks**, and **Oracle**.
+  - **Declarative REST Data Source Engine (Pattern 3)**: Expose external REST APIs with URL-template parameter substitution (`/api/v1/customers/{id}`), header/query pushdown (`X-Tenant-Id`, `X-User-Sid`), bearer token forwarding / API keys, JSONPath extraction, and adaptive batching (`QueryParameterList`, `JsonBodyArray`, `ParallelSingleRequests` throttled via `SemaphoreSlim`).
+  - **Isolated C# Plugin System (Pattern 4)**: Host specialized HTTP/data connectors in isolated, collectible `AssemblyLoadContext` instances (`IHttpDataSourcePlugin`) preventing dependency collisions with host packages.
+  - **Central Zero-Trust Pipeline**: Regardless of source (SQL, REST, or Plugin), all data passes through central consent evaluation, in-memory RLS post-filtering, central column masking, response budgeting, and audit logging.
   - Efficient DataLoader-based batching and selective child relation loading with chunking to protect underlying database parameter limits (e.g. SQLite 999, Oracle 1000, MSSQL 2100, PostgreSQL/Databricks 10000).
   - Introspection and Banana Cake Pop (Nitro) UI configurable per environment.
 
@@ -102,9 +105,9 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 | [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 14 GraphQL engine, dynamic types, queries, mutations (`syncOpenMetadata`), DataLoader execution, Source-Generated Regexes |
 | [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Minimal API, hosting, rate limiting, anti-CSRF, forwarded headers, OpenMetadata webhooks |
 | [`GqlGateway.Benchmarks`](benchmarks/GqlGateway.Benchmarks) | `net10.0` | BenchmarkDotNet suites for throughput, cache hit/miss, and masking allocations |
-| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 298 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
+| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 321 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
 | [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | NetArchTest rules enforcing Clean Architecture dependency directions |
-| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 27 End-to-end integration tests using `WebApplicationFactory<Program>` |
+| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 30 End-to-end integration tests using `WebApplicationFactory<Program>` |
 
 ---
 
@@ -127,10 +130,10 @@ dotnet build GqlGateway.sln -c Release
 ```bash
 dotnet test GqlGateway.sln -c Release
 ```
-Currently passes **316 / 316 tests (100% green)** across Unit, Architecture, and Integration test suites:
-- **290 Unit Tests** (Domain Edge-Cases, Multi-Domain Cross-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Column Masking)
+Currently passes **354 / 354 tests (100% green)** across Unit, Architecture, and Integration test suites:
+- **321 Unit Tests** (Domain Edge-Cases, Declarative HTTP & REST Pushdown, PluginManager Isolation, Multi-Domain Cross-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Column Masking)
 - **3 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest)
-- **23 Integration Tests** (End-to-end ASP.NET Core GraphQL pipeline, Auth, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Odd Batch DataLoaders)
+- **30 Integration Tests** (End-to-end GraphQL pipeline, Declarative REST & Plugin Zero-Trust enforcement, Auth, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, OpenMetadata webhooks)
 
 ### 3. Run Gateway Locally
 
@@ -222,6 +225,49 @@ Key configuration settings under the `Gateway` section:
     }
   }
 }
+```
+
+---
+
+## 📝 Code Review & Export Artifacts
+
+For offline security audits, external architecture reviews, or LLM-assisted code reviews, pre-bundled review and diff files can be generated in the repository root:
+
+| Artifact | Size | Description | Target Audience |
+| :--- | :--- | :--- | :--- |
+| [`review.txt`](file:///root/gql/review.txt) | ~436 KB | Consolidated bundle of all production C# source code (`src/**/*.cs`, 73 files) with a Table of Contents and standard file separators (`FILE: <path>`). | AI/LLM Reviewers, Single-File Ingestion |
+| [`src_codebase_review.txt`](file:///root/gql/src_codebase_review.txt) | ~436 KB | Exact mirror of `review.txt` for tooling expecting the `src_codebase_review` naming convention. | Automated CI/CD Review Pipelines |
+| [`full_codebase_review.txt`](file:///root/gql/full_codebase_review.txt) | ~812 KB | Extended bundle including all production (`src/`), test (`tests/`), and benchmark (`benchmarks/`) C# code (108 files total). | Comprehensive Test & Benchmark Audits |
+| [`review_diff.patch`](file:///root/gql/review_diff.patch) / [`codebase.diff`](file:///root/gql/codebase.diff) | ~928 KB | Complete unified Git diff across all commits relative to upstream `origin/main`. | Git / Patch Tools, PR Reviewers |
+| [`src_codebase.diff`](file:///root/gql/src_codebase.diff) | ~454 KB | Unified Git diff restricted strictly to production code under `src/`. | Production Code Reviewers |
+
+### Re-generating Review Artifacts
+
+To regenerate these review bundles and diffs after modifying code:
+
+```bash
+# 1. Regenerate production source bundle (review.txt)
+(
+  echo "================================================================================"
+  echo "GQLGATEWAY PRODUCTION SOURCE CODE EXPORT (src/**/*.cs)"
+  echo "Generated: $(date -u '+%Y-%m-%d %H:%M:%SZ')"
+  echo "================================================================================"
+  echo ""
+  echo "TABLE OF CONTENTS:"
+  find src -name "*.cs" | sort | while read -r f; do echo "  - $f"; done
+  echo ""
+  find src -name "*.cs" | sort | while read -r f; do
+    echo "================================================================================"
+    echo "FILE: $f"
+    echo "================================================================================"
+    cat "$f"
+    echo ""
+  done
+) > review.txt
+
+# 2. Regenerate git diffs against origin/main
+git diff origin/main...HEAD > review_diff.patch
+git diff origin/main...HEAD -- src > src_codebase.diff
 ```
 
 ---

@@ -24,6 +24,10 @@ Desktop.ini
 *.swp
 *~
 *.diff
+*.patch
+review_diff.patch
+review.txt
 codebase_review.txt
 src_codebase_review.txt
+full_codebase_review.txt
 
