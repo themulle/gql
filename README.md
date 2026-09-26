@@ -293,6 +293,7 @@ Included benchmark suites:
 For comprehensive engineering and operational guides, consult the `docs/` directory:
 
 - [**arc42 Architecture Documentation**](docs/architecture/arc42.md) – System context, building blocks, runtime view, deployment, and quality goals.
+- [**Configuration Guide**](docs/configuration-guide.md) – Comprehensive reference of all `appsettings.json` sections, environment variables, startup validations, and production hardening.
 - [**Developer Guide**](docs/developer-guide.md) – Guidelines for extending services, adding resolvers, writing TDD tests, and coding standards.
 - [**Threat Model & Security Whitepaper**](docs/threat-model/threat-model.md) – STRIDE analysis, attack surface, mitigation matrices, and cryptographic guarantees.
 - [**Operations & HA Runbook**](docs/operations-runbook.md) – Rolling updates, graceful traffic drain protocol, alerts, backup & restore procedures.
