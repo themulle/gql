@@ -24,10 +24,16 @@ public sealed class PreAuthIpRateLimitingMiddleware
         _rateLimiter = rateLimiter;
     }
 
+    internal static readonly Prometheus.Counter RateLimitExceededCounter = Prometheus.Metrics.CreateCounter(
+        "gqlgateway_ratelimit_rejected_total", "Rate limit rejections count", new Prometheus.CounterConfiguration
+        {
+            LabelNames = new[] { "type" }
+        });
+
     public async Task InvokeAsync(HttpContext context)
     {
-        // Skip health endpoints
-        if (context.Request.Path.StartsWithSegments("/health"))
+        // Skip health and metrics endpoints
+        if (context.Request.Path.StartsWithSegments("/health") || context.Request.Path.StartsWithSegments("/metrics"))
         {
             await _next(context);
             return;
@@ -38,6 +44,7 @@ public sealed class PreAuthIpRateLimitingMiddleware
 
         if (!result.Allowed)
         {
+            RateLimitExceededCounter.WithLabels("pre_auth_ip").Inc();
             context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
             context.Response.Headers.RetryAfter = result.RetryAfterSeconds.ToString();
             context.Response.ContentType = "application/json";
@@ -77,8 +84,8 @@ public sealed class PostAuthSidRateLimitingMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        // Skip health endpoints
-        if (context.Request.Path.StartsWithSegments("/health"))
+        // Skip health and metrics endpoints
+        if (context.Request.Path.StartsWithSegments("/health") || context.Request.Path.StartsWithSegments("/metrics"))
         {
             await _next(context);
             return;
@@ -113,6 +120,7 @@ public sealed class PostAuthSidRateLimitingMiddleware
         var result = await _rateLimiter.CheckPostAuthSidAsync(sid, _options, context.RequestAborted);
         if (!result.Allowed)
         {
+            PreAuthIpRateLimitingMiddleware.RateLimitExceededCounter.WithLabels("post_auth_sid").Inc();
             context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
             context.Response.Headers.RetryAfter = result.RetryAfterSeconds.ToString();
             context.Response.ContentType = "application/json";

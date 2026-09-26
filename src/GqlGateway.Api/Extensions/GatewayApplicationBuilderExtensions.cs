@@ -7,6 +7,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
+using Prometheus;
 
 namespace GqlGateway.Api.Extensions;
 
@@ -137,6 +138,7 @@ public static class GatewayApplicationBuilderExtensions
             await next();
         });
 
+        app.UseHttpMetrics();
         app.UseMiddleware<PreAuthIpRateLimitingMiddleware>();
         app.UseAuthentication();
         app.UseAuthorization();
@@ -147,6 +149,7 @@ public static class GatewayApplicationBuilderExtensions
 
     public static WebApplication MapGatewayEndpoints(this WebApplication app, GatewayOptions gatewayOptions)
     {
+        app.MapMetrics();
         app.MapGet("/health/live", () => Results.Ok(new { status = "Live", timestamp = DateTimeOffset.UtcNow }));
 
         app.MapGet("/health/ready", async (

@@ -21,7 +21,8 @@ public sealed class SqlConnectionFactory : ISqlConnectionFactory
         {
             "sqlite" or "sqlite3" => new SqliteConnection(options.ConnectionString),
             "sqlserver" or "mssql" or "microsoft sql server" => new SqlConnection(options.ConnectionString),
-            _ => throw new NotSupportedException($"SQL provider '{options.Provider}' is not supported. Supported providers are: 'Sqlite', 'SqlServer'.")
+            "postgres" or "postgresql" or "npgsql" => new Npgsql.NpgsqlConnection(options.ConnectionString),
+            _ => throw new NotSupportedException($"SQL provider '{options.Provider}' is not supported. Supported providers are: 'Sqlite', 'SqlServer', 'PostgreSql'.")
         };
 
         try

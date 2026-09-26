@@ -46,6 +46,11 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         });
     }
 
+    private static readonly Prometheus.Counter CacheHits = Prometheus.Metrics.CreateCounter(
+        "gqlgateway_consent_cache_hits_total", "Number of ConsentCache hits");
+    private static readonly Prometheus.Counter CacheMisses = Prometheus.Metrics.CreateCounter(
+        "gqlgateway_consent_cache_misses_total", "Number of ConsentCache misses");
+
     public async Task<TableAccessDecision?> GetCachedDecisionAsync(
         Sid userSid,
         TableIdentifier table,
@@ -55,6 +60,7 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         var cacheKey = BuildCacheKey(userSid, table, contextHash);
         if (!_memoryCache.TryGetValue(cacheKey, out CacheEntryEnvelope? envelope) || envelope == null)
         {
+            CacheMisses.Inc();
             RemoveKeyFromTableIndex(table, cacheKey);
             return null;
         }
@@ -63,11 +69,13 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         var isValid = await _epochValidationService.IsEpochValidAsync(table, envelope.Epoch, ct);
         if (!isValid)
         {
+            CacheMisses.Inc();
             _memoryCache.Remove(cacheKey);
             RemoveKeyFromTableIndex(table, cacheKey);
             return null;
         }
 
+        CacheHits.Inc();
         return envelope.Decision;
     }
 
