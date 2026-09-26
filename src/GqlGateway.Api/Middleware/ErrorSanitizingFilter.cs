@@ -46,9 +46,19 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
     {
         if (error.Exception is GqlGateway.Domain.Exceptions.GatewaySecurityException secEx)
         {
+            var code = secEx.ErrorCode;
+            var message = secEx.Message;
+
+            // Anti-enumeration oracle defense in non-development: Mask NOT_FOUND as unified FORBIDDEN
+            if (!_environment.IsDevelopment() && secEx is GqlGateway.Domain.Exceptions.TableNotFoundException notFoundEx)
+            {
+                code = "FORBIDDEN";
+                message = $"Access denied to table '{notFoundEx.Table}'.";
+            }
+
             error = error
-                .WithMessage(secEx.Message)
-                .WithCode(secEx.ErrorCode);
+                .WithMessage(message)
+                .WithCode(code);
         }
 
         if (_environment.IsDevelopment())

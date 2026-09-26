@@ -24,6 +24,7 @@ Beim Hochfahren des Hosts (`Program.cs`) führt `GatewayServiceCollectionExtensi
 | **NF-HA-01b** | `TerminationGracePeriodSeconds >= DrainDelaySeconds + ShutdownTimeoutSeconds + 10` | Kubelet Grace Period muss den gesamten Drain- und Shutdown-Zyklus abdecken. |
 | **NF-SEC-01** | `environment.IsDevelopment() \|\| !Authentication.EnableTestAuthHandler` | Der `TestAuthHandler` (Header-basiertes SID-Impersonation) ist außerhalb von `Development` **strikt verboten**. |
 | **NF-SEC-03** | Außerhalb von Development: `!string.IsNullOrWhiteSpace(HmacSecretKeyVaultRef)` und nicht gleich Test-Defaults | HMAC-Salts müssen in Staging/Produktion aus einem sicheren Secret-Store stammen. |
+| **NF-SEC-04** | Außerhalb von Development: BasicAuth Benutzer müssen zwingend das gesalzene PBKDF2-Format (`$pbkdf2$...`) verwenden | Klartext- und ungesalzene SHA-256-Passwörter sind in Staging/Produktion verboten und werden zur Laufzeit mit `401 Unauthorized` abgewiesen. |
 
 ---
 
@@ -90,12 +91,18 @@ Ermöglicht direkte Authentifizierung via `Authorization: Basic <base64>` für G
 | :--- | :--- | :--- | :--- | :--- |
 | `Enabled` | `bool` | `true \| false` | `false` | Aktiviert HTTP Basic Auth und den Login-Endpunkt `/api/auth/login`. |
 | `Users` | `List<BasicAuthUserConfig>` | Array | `[]` | Liste konfigurierter Benutzerkonten. |
-| `Users[].Username` | `string` | Text | `""` | Benutzername für Basic Auth. |
-| `Users[].Password` | `string` | Klartext | `""` | Optionales Klartext-Kennwort (wird timing-sicher verglichen). |
-| `Users[].PasswordHashSha256` | `string` | 64-Hex SHA256 | `""` | Empfohlen: SHA-256 Hash des Kennworts. |
+| `Users[].Username` | `string` | Text | `""` | Eindeutiger Benutzername für Basic Auth. |
+| `Users[].Password` | `string` | PBKDF2 / Klartext | `""` | In Produktion: Gesalzener PBKDF2-String im Format `$pbkdf2$<iterations>$<saltBase64>$<hashBase64>`. Klartext ist **nur in `Development`** erlaubt! |
+| `Users[].PasswordHashSha256` | `string` | 64-Hex SHA256 | `""` | Veralteter ungesalzener SHA-256 Hash (**nur in `Development`** erlaubt; in Produktion verboten). |
 | `Users[].Roles` | `List<string>` | Rollen-Array | `[]` | Zugewiesene Rollen (`DataConsumer`, `DataOwner`, `GovernanceAdmin`). |
 | `Users[].UserSid` | `string` | SID-Format | `""` | Zugeordnete Windows-User-SID (z. B. `S-1-5-21-CONSUMER-1`). |
 | `Users[].GroupSids` | `List<string>` | SID-Array | `[]` | Zugeordnete Windows-Gruppen-SIDs. |
+
+> [!IMPORTANT]
+> **Sicherheits-Invariante für Produktion**:
+> - Außerhalb der `Development`-Umgebung werden ungesalzene SHA-256-Hashes (`PasswordHashSha256`) sowie Klartextpasswörter (`Password`) ausnahmslos abgelehnt (`401 Unauthorized`).
+> - Passwörter müssen das PBKDF2-Format aufweisen: `$pbkdf2$<iterations>$<salt>$<hash>` (z. B. `$pbkdf2$100000$c2FsdHNhbHQ=$...`).
+> - **Timing-Angriffsschutz**: Existiert ein angefragter Benutzername nicht, führt das Gateway im Hintergrund eine Dummy-PBKDF2-Berechnung mit derselben Iterationszahl durch, sodass Angreifer über Zeitmessungen keine gültigen Benutzernamen enumerieren können. Alle Hashvergleiche erfolgen via `CryptographicOperations.FixedTimeEquals`.
 
 #### 2.2.4 `Authentication.EntraId` & `Authentication.Adfs` (JWT Bearer)
 Unterstützt moderne OIDC/OAuth2-Bearer-Token aus Microsoft Entra ID (Azure AD) und Active Directory Federation Services (AD FS):
@@ -139,7 +146,7 @@ Unterstützt moderne OIDC/OAuth2-Bearer-Token aus Microsoft Entra ID (Azure AD) 
     "Users": [
       {
         "Username": "service-analyst",
-        "PasswordHashSha256": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+        "Password": "$pbkdf2$100000$ZXhhbXBsZXNhbHQxMjM0NQ==$dGVzdGhhc2hiYXNlNjQ=",
         "Roles": ["DataConsumer"],
         "UserSid": "S-1-5-21-CONSUMER-1",
         "GroupSids": ["S-1-5-21-FINANCE-ANALYSTS"]
@@ -291,6 +298,14 @@ Kombiniert Pre-Authentication IP-Limiting mit Token-Bucket-Verbrauch pro Windows
 }
 ```
 
+> [!TIP]
+> **Resilienz & Hochverfügbarkeit (Failover)**:
+> In Multi-Pod-Umgebungen nutzt `RedisRateLimiterService` Redis für die instanzübergreifende Ratenbegrenzung. Sollte das Redis-Cluster ausfallen oder Verbindungsprobleme melden, schaltet das Gateway **automatisch und transparent** auf den lokalen `InMemoryRateLimiterService` um. Anfragen werden nicht blockiert, und das Gateway bleibt vor DoS-Attacken geschützt.
+> 
+> **Performance auf Hot-Paths**:
+> Der lokale `InMemoryRateLimiterService` pflegt IP- und Bucket-Zähler über atomare `Interlocked.Increment` / `Interlocked.Decrement` Operationen, um Deadlocks und Lock-Contention auf `ConcurrentDictionary.Count` vollständig zu vermeiden.
+
+
 ---
 
 ### 2.6 `GraphQL` (Engine- & Abfrageschutz)
@@ -353,16 +368,17 @@ Konfiguriert die deterministische Pseudonymisierung (`HMAC_SHA256`) sowie Maskie
 
 ---
 
-### 2.8 `Audit` (Unveränderliche SHA256-Audit-Hash-Chain)
+### 2.8 `Audit` (Manipulationssichere HMAC-SHA256 Audit-Hash-Chain)
 
-Protokolliert Datenzugriffe manipulationssicher in einer kryptografischen Hash-Kette.
+Protokolliert Datenzugriffe manipulationssicher in einer kryptografisch verketteten HMAC-SHA256 Prüfkette (`AUDIT_LOG_ENTRIES`). Durch den Einsatz eines geheimen HMAC-Schlüssels (aus Key Vault oder Umgebung) kann die Kette selbst bei direktem Schreibzugriff auf die relationale Governance-DB nicht unbemerkt modifiziert werden.
 
 | Eigenschaft | Typ | Wertebereich | Standard | Beschreibung |
 | :--- | :--- | :--- | :--- | :--- |
-| `TierAEnabled` | `bool` | `true \| false` | `true` | Tier-A Auditierung: Synchrones Schreiben sensibler Zugriffe mit SHA256-Verkettung. |
+| `TierAEnabled` | `bool` | `true \| false` | `true` | Tier-A Auditierung: Synchrones Schreiben sensibler Zugriffe mit HMAC-SHA256-Verkettung. |
 | `TierBAggregationWindowSeconds` | `int` | `1 .. 3600` | `60` | Aggregationsintervall für unkritische Tier-B Massenzugriffe. |
 | `AuditLogRetentionDays` | `int` | `1 .. 7300` | `3650` (10 Jahre) | Gesetzliche Aufbewahrungsfrist für Prüfprotokolle. |
-| `VerifyHashChainIntervalHours` | `int` | `1 .. 168` | `24` | Zyklische Integritätsprüfung der gesamten Prüfkette im Hintergrund. |
+| `VerifyHashChainIntervalHours` | `int` | `1 .. 168` | `24` | Zyklische Integritätsprüfung der gesamten Prüfkette im Hintergrund mit timing-sicherem `FixedTimeEquals`. |
+| `HmacSecretKeyVaultRef` | `string` | Secret-Name | `"GQL-GATEWAY-AUDIT-HMAC-SECRET"` | Key Vault Referenz für den geheimen HMAC-Schlüssel der Audit-Kette. |
 | `ElasticsearchSinkUrl` | `string` | URL | `""` | Optionaler sekundärer Sink für SIEM-Systeme (Splunk / Elasticsearch). |
 
 ```json
@@ -371,6 +387,7 @@ Protokolliert Datenzugriffe manipulationssicher in einer kryptografischen Hash-K
   "TierBAggregationWindowSeconds": 60,
   "AuditLogRetentionDays": 3650,
   "VerifyHashChainIntervalHours": 24,
+  "HmacSecretKeyVaultRef": "GQL-GATEWAY-AUDIT-HMAC-SECRET",
   "ElasticsearchSinkUrl": "https://siem.corp.local:9200"
 }
 ```
@@ -443,6 +460,12 @@ Automatische Synchronisation von Schema-Metadaten, Klassifikations-Tags (`PII.*`
 }
 ```
 
+> [!IMPORTANT]
+> **Webhook Replay-Schutz (`/api/webhooks/openmetadata`)**:
+> - Eingehende Webhooks erfordern zwingend eine gültige HMAC-SHA256-Signatur im Header `X-OpenMetadata-Signature` (geprüft via `FixedTimeEquals`).
+> - Webhook-Payloads müssen zwingend die Felder `id` (eindeutige GUID/ID) und `timestamp` (Unix-Millisekunden) enthalten.
+> - Anfragen mit fehlenden Feldern, verarbeiteten IDs (Deduplizierung) oder Zeitstempeln außerhalb des 5-Minuten-Gleitzeitfensters werden fail-closed mit `HTTP 401/400` abgewiesen.
+
 ---
 
 ### 2.11 `Plugins` (Isolierte C#-Konnektoren)
@@ -460,6 +483,16 @@ Verwaltet dynamische C#-Erweiterungen (`IHttpDataSourcePlugin`) in isolierten `A
   "EnableHotReload": false
 }
 ```
+
+---
+
+### 2.12 `DataSources.Http` (SSRF-Schutz & Egress-Sicherheit für REST)
+
+Für deklarative HTTP-Datenquellen (`DeclarativeHttpDataSourceExecutor`) gelten strikte Zero-Trust Egress-Vorgaben zum Schutz vor Server-Side Request Forgery (SSRF):
+
+- **DNS- & IP-Validierung**: Vor jedem HTTP-Aufruf wird der Ziel-Hostname per DNS aufgelöst. Loopback-Adressen (`127.0.0.0/8`, `::1`), Link-Local (`169.254.0.0/16`, `fe80::/10`) und private Netze nach RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) werden abgewiesen.
+- **Cloud-Metadaten-Schutz**: Hostnamen wie `metadata.google.internal` und `kubernetes.default.svc` sind explizit gesperrt.
+- **Hop-für-Hop Redirect-Prüfung**: Automatisches Folgen von HTTP-Weiterleitungen ist im HTTP-Client deaktiviert (`AllowAutoRedirect = false`). Bei Statuscodes 301, 302, 307 und 308 führt der Executor eine schrittweise Re-Validierung des `Location`-Headers durch (maximal 5 Hops), um SSRF über offene Weiterleitungen auszuschließen.
 
 ---
 

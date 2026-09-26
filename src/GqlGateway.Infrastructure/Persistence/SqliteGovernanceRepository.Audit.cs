@@ -42,11 +42,11 @@ public partial class SqliteGovernanceRepository
             }
         }
 
-        // Compute cryptographic hash chain
+        // Compute cryptographic HMAC-SHA256 hash chain
         entry.PrevHash = _lastAuditHash;
         var payload = $"{entry.Id}|{entry.PrevHash}|{entry.OccurredAt:O}|{entry.EventType}|{entry.ActorSid.Value}|{entry.TargetTable}|{entry.TargetColumn ?? ""}|{entry.Decision}|{entry.TraceId}|{entry.DetailsJson}";
         Span<byte> hashBytes = stackalloc byte[32];
-        SHA256.HashData(Encoding.UTF8.GetBytes(payload), hashBytes);
+        HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload), hashBytes);
         entry.EntryHash = Convert.ToHexString(hashBytes);
 
         using (var cmd = _connection.CreateCommand())
@@ -126,7 +126,6 @@ public partial class SqliteGovernanceRepository
 
             using var reader = await cmd.ExecuteReaderAsync(ct);
             var expectedPrevHash = "GENESIS_0000000000000000000000000000000000000000000000000000000000000000";
-            using var sha = SHA256.Create();
 
             while (await reader.ReadAsync(ct))
             {
@@ -149,7 +148,8 @@ public partial class SqliteGovernanceRepository
 
                 var parsedOccurredAt = DateTimeOffset.Parse(occurredAt);
                 var payload = $"{id}|{prevHash}|{parsedOccurredAt:O}|{eventType}|{actorSid}|{targetTable}|{targetColumn}|{decision}|{traceId}|{detailsJson}";
-                var computedHash = Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(payload)));
+                var computedBytes = HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload));
+                var computedHash = Convert.ToHexString(computedBytes);
 
                 if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(entryHash), Encoding.UTF8.GetBytes(computedHash)))
                 {

@@ -281,7 +281,9 @@ public sealed class OpenMetadataSyncServiceTests
     public async Task HandleWebhookEventAsync_ProcessesTableUpdate()
     {
         var options = CreateOptions("webhook-secret-123");
-        var payload = "{\"eventType\":\"entityUpdated\",\"entityType\":\"table\",\"entityFullyQualifiedName\":\"service.db.schema.products\"}";
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var eventId = Guid.NewGuid();
+        var payload = $"{{\"id\":\"{eventId}\",\"timestamp\":{nowMs},\"eventType\":\"entityUpdated\",\"entityType\":\"table\",\"entityFullyQualifiedName\":\"service.db.schema.products\"}}";
 
         var hash = Convert.ToHexStringLower(HMACSHA256.HashData(Encoding.UTF8.GetBytes("webhook-secret-123"), Encoding.UTF8.GetBytes(payload)));
 

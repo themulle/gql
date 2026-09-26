@@ -40,20 +40,23 @@
   - *Gegenmaßnahme:* Multi-Faktor-Netzwerk- und Secret-Validierung in `ForwardAuthAuthenticationHandler`:
     1. *Proxy-IP-Einschränkung:* Ist `RequireTrustedProxy = true`, werden Anfragen abgewiesen, wenn die Remote-IP nicht exakt in `TrustedNetworks` (CIDR-Subnetze der Traefik-Pods) oder `TrustedProxies` liegt.
     2. *Timing-sicheres Shared Secret:* Abgleich des Headers `X-Forwarded-Secret` mit einem über Key Vault bereitgestellten Secret (`SharedSecretKeyVaultRef`) via `CryptographicOperations.FixedTimeEquals` verhindert Replay- und Spoofing-Attacken.
-- **Bedrohung 1.3: Timing-Angriffe auf Passwörter bei HTTP Basic Authentication.**
-  - *Gefahr:* Angreifer leiten Passwörter über Laufzeitunterschiede bei Stringvergleichen ab.
-  - *Gegenmaßnahme:* `BasicAuthenticationHandler` verwendet ausschließlich konstante Laufzeitvergleiche (`CryptographicOperations.FixedTimeEquals`) auf UTF-8 Byte-Ebene und unterstützt SHA-256 Passwort-Hashes.
+- **Bedrohung 1.3: Timing- und Brute-Force-Angriffe auf Passwörter bei HTTP Basic Authentication.**
+  - *Gefahr:* Angreifer leiten Passwörter über Laufzeitunterschiede ab oder knacken ungesalzene Hashes mittels Rainbow Tables.
+  - *Gegenmaßnahme:* `BasicAuthenticationHandler` erzwingt in Produktion gesalzene PBKDF2-Hashes (`$pbkdf2$<iterations>$<salt>$<hash>`). Klartext- und ungesalzene SHA-256-Passwörter sind **ausschließlich in `Development`** zulässig und werden in Produktion mit `HTTP 401 Unauthorized` abgewiesen. Für nicht existierende Benutzer führt der Handler eine Dummy-PBKDF2-Berechnung mit identischer Iterationszahl aus, um Timing-Angriffe zur Benutzer-Enumeration unmöglich zu machen. Alle Vergleiche erfolgen byte-genau via `CryptographicOperations.FixedTimeEquals`.
 - **Bedrohung 1.4: Ticket-Manipulation (Kerberos PAC Spoofing).**
   - *Gefahr:* Gefälschte Gruppenmitgliedschaften im Kerberos-Ticket.
   - *Gegenmaßnahme:* Kerberos-Validierung gegen das Active Directory mit Signaturprüfung der Privilege Attribute Certificate (PAC). Aufgelöste Gruppen werden maximal für `GroupCacheTtlMinutes` (Standard 5 min) gecacht.
+- **Bedrohung 1.5: Server-Side Request Forgery (SSRF) über deklarative REST-Datenquellen.**
+  - *Gefahr:* Angreifer konfigurieren oder manipulieren Endpunkt-URLs, um interne Cloud-Metadaten (`169.254.169.254`, `metadata.google.internal`), Kubernetes API-Server oder interne Intranet-Dienste abzufragen.
+  - *Gegenmaßnahme:* `DeclarativeHttpDataSourceExecutor` führt vor jedem Request eine DNS-Auflösung durch und blockiert RFC 1918 (private Netze `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), Link-Local (`169.254.0.0/16`), Loopback (`127.0.0.0/8`, `::1`) sowie spezifische Cloud-Metadaten-Hostnamen fail-closed. Zudem ist `AllowAutoRedirect = false` konfiguriert; Weiterleitungen werden per `SendWithRedirectProtectionAsync` Hop-für-Hop isoliert re-validiert (max. 5 Hops), sodass kein SSRF über HTTP 30x Redirects möglich ist.
 
 ### 2.2 Tampering (Daten- und Manipulationsschutz)
 - **Bedrohung 2.1: SQL-Injection über dynamische GraphQL-Filter.**
   - *Gefahr:* Ein Angreifer injiziert SQL-Befehle über `where: { ... }` Argumente.
   - *Gegenmaßnahme:* `SqlFilterProvider` validiert alle Tabellen- und Spaltenbezeichner strikt gegen eine Regex-Whitelist (`^[a-zA-Z_][a-zA-Z0-9_]*$`) und den Metadatenkatalog `TableMetadata.HasColumn(...)`. Unbekannte Felder werfen sofort eine Exception. Alle Filterwerte werden ausnahmslos als typisierte SQL-Parameter (`@p1`, `$1`) gebunden.
 - **Bedrohung 2.2: Manipulation des Audit-Trails.**
-  - *Gefahr:* Ein böswilliger Administrator ändert oder löscht Einträge in `AUDIT_LOG_ENTRIES`.
-  - *Gegenmaßnahme:* Kryptografische SHA-256 Hashverkettung (`entry_hash = SHA256(prev_hash | payload)`). Jede Modifikation oder Auslassung bricht die mathematische Kette nachweisbar. Entzug von `UPDATE`- und `DELETE`-Rechten auf DB-Ebene.
+  - *Gefahr:* Ein böswilliger Administrator mit DB-Schreibzugriff ändert oder löscht Einträge in `AUDIT_LOG_ENTRIES` und berechnet Hashes neu.
+  - *Gegenmaßnahme:* Kryptografische **HMAC-SHA256** Verkettung (`entry_hash = HMACSHA256(auditKey, prev_hash | payload)`). Ohne den im Key Vault isolierten HMAC-Schlüssel kann kein gültiger Nachfolge-Hash erzeugt werden. Integritätsprüfungen vergleichen die Hash-Kette mit `CryptographicOperations.FixedTimeEquals`.
 - **Bedrohung 2.3: Cache-Poisoning im Consent-Cache.**
   - *Gefahr:* Ein Angreifer manipuliert L1/L2 Cache-Einträge, um unberechtigten Zugriff zu erhalten.
   - *Gegenmaßnahme:* Jeder Cache-Eintrag speichert die `epoch`, mit der er berechnet wurde. Vor Rückgabe validiert `IEpochValidationService` atomar gegen die Governance-DB.
@@ -65,6 +68,9 @@
 - **Bedrohung 3.2: Abstreiten von Consent-Genehmigungen.**
   - *Gefahr:* Ein Data Owner bestreitet die Freigabe eines Zugriffsantrags.
   - *Gegenmaßnahme:* Genehmigungen (`APPROVAL_STEPS`) speichern die authentifizierte `ApproverSid`, Entscheidung und exakten Zeitstempel im revisionssicheren Speicher.
+- **Bedrohung 3.3: Webhook-Replay-Angriffe (`/api/webhooks/openmetadata`).**
+  - *Gefahr:* Ein Angreifer fängt ein gültiges OpenMetadata-Katalog-Update ab und sendet es wiederholt, um Cache-Invalidierungen zu spammen oder den Datenstand zurückzurollen.
+  - *Gegenmaßnahme:* `OpenMetadataSyncService` erzwingt neben der HMAC-SHA256-Signatur (`X-OpenMetadata-Signature`) zwingend vorhandene `Id`- und `Timestamp`-Felder. Nachrichten mit Zeitstempel außerhalb des 5-Minuten-Gleitzeitfensters oder bereits verarbeitete Event-IDs werden fail-closed abgewiesen.
 
 ### 2.4 Information Disclosure (Offenlegung von Informationen)
 - **Bedrohung 4.1: Ausspähen von Tabellennamen via Schema-Introspection.**
@@ -72,10 +78,13 @@
   - *Gegenmaßnahme:* Introspection und Hot Chocolate Banana Cake Pop sind in Produktion standardmäßig deaktiviert (`EnableIntrospection: false`, `EnableBananaCakePop: false`).
 - **Bedrohung 4.2: Inferenz-Lecks über Filter/Sortierung auf maskierten Feldern (F-CONS-07 Regel 5).**
   - *Gefahr:* Ein Nutzer filtert auf `where: { salary: { gt: 100000 } }`. Anhand der Treffermenge erfährt er das Gehalt, obwohl die Spalte für ihn als `MASK` definiert ist.
-  - *Gegenmaßnahme:* F-CONS-07 Regel 5 verbietet Filter, Sortierung und Gruppierung auf Spalten, deren effektive Stufe nicht `CLEAR` ist.
+  - *Gegenmaßnahme:* F-CONS-07 Regel 5 verbietet Filter, Sortierung und Gruppierung auf Spalten, deren effektive Stufe nicht `CLEAR` ist. Zudem validiert `SqlDataSourceExecutor` die Zugriffsstufe vor der SQL-Generierung.
 - **Bedrohung 4.3: Stack-Trace- und Exception-Lecks.**
   - *Gefahr:* Fehlerhafte Abfragen geben DB-Verbindungsdaten oder interne Pfade an den Client zurück.
   - *Gegenmaßnahme:* `ErrorSanitizingFilter` fängt unbehandelte Exceptions ab, loggt sie geschützt im Server-Log und gibt dem Client nur neutrale Codes (`INTERNAL_SERVER_ERROR`).
+- **Bedrohung 4.4: Table Oracle / Schema-Enumeration über Fehlermeldungen.**
+  - *Gefahr:* Angreifer probieren gezielt Tabellennamen durch, um anhand von `TableNotFoundException` vs. `AccessDenied` die Existenz interner Tabellen aufzudecken.
+  - *Gegenmaßnahme:* `ErrorSanitizingFilter` maskiert `TableNotFoundException` in Produktionsumgebungen als generischen `FORBIDDEN`-Fehlercode, sodass Angreifer keine Information über die tatsächliche Existenz einer Tabelle erhalten.
 
 ### 2.5 Denial of Service (Verfügbarkeitsangriffe)
 - **Bedrohung 5.1: Kerberos-Handshake-Flooding (Negotiate DoS).**
@@ -86,7 +95,10 @@
   - *Gegenmaßnahme:* Hot Chocolate Query Depth Enforcement (`MaxAllowedExecutionDepth: 10`), Query Complexity Analyzer (Limit: 1500), erzwungenes Keyset-Paging (max. 250 Zeilen) und hartes Timeout (`QueryTimeoutSeconds: 30`).
 - **Bedrohung 5.3: Überlastung durch einzelne Benutzer-SIDs.**
   - *Gefahr:* Ein kompromittiertes Benutzerkonto sendet tausende Abfragen pro Sekunde.
-  - *Gegenmaßnahme:* `PostAuthSidRateLimitingMiddleware` implementiert einen Token-Bucket-Limiter pro SID mit konfigurierbarer Kapazität und Nachfüllrate.
+  - *Gegenmaßnahme:* `PostAuthSidRateLimitingMiddleware` implementiert einen Token-Bucket-Limiter pro SID mit konfigurierbarer Kapazität und Nachfüllrate. Der In-Memory-Limiter verwendet lock-freie atomare `Interlocked`-Zähler zur Vermeidung von Lock-Contention auf Hot-Paths.
+- **Bedrohung 5.4: Ausfall oder Degradierung des Redis-Clusters beim verteilten Rate-Limiting.**
+  - *Gefahr:* Unerreichbarkeit von Redis führt entweder zu ungeschütztem Totalzugriff (Fail-Open) oder zu kompletter Gateway-Blockade (Fail-Closed).
+  - *Gegenmaßnahme:* `RedisRateLimiterService` verfügt über einen automatischen Fallback auf den lokalen `InMemoryRateLimiterService`. Bei Redis-Verbindungsfehlern schützt die lokale Token-Bucket-Engine die Instanz nahtlos weiter, ohne Verbindungen abzubrechen.
 
 ### 2.6 Elevation of Privilege (Rechteausweitung)
 - **Bedrohung 6.1: Selbst-Genehmigung von Rechten (Vier-Augen-Bypass).**

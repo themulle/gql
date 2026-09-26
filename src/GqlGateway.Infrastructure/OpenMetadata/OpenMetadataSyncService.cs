@@ -365,29 +365,31 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
             return false;
         }
 
-        // Validate timestamp to prevent replay attacks (tolerance: 5 minutes)
-        if (webhookEvent.Timestamp.HasValue)
+        // SEC-07: Enforce mandatory Id and Timestamp to prevent replay attacks (fail-closed)
+        if (!webhookEvent.Id.HasValue || !webhookEvent.Timestamp.HasValue)
         {
-            var eventTime = webhookEvent.Timestamp.Value > 10_000_000_000L
-                ? DateTimeOffset.FromUnixTimeMilliseconds(webhookEvent.Timestamp.Value)
-                : DateTimeOffset.FromUnixTimeSeconds(webhookEvent.Timestamp.Value);
+            _logger.LogWarning("Rejecting OpenMetadata webhook: mandatory event 'Id' or 'Timestamp' is missing (fail-closed replay defense).");
+            return false;
+        }
 
-            var skew = Math.Abs((DateTimeOffset.UtcNow - eventTime).TotalMinutes);
-            if (skew > 5)
-            {
-                _logger.LogWarning("Rejecting OpenMetadata webhook: event timestamp is skewed or outside acceptable replay window ({Skew:F1} minutes).", skew);
-                return false;
-            }
+        // Validate timestamp to prevent replay attacks (tolerance: 5 minutes)
+        var eventTime = webhookEvent.Timestamp.Value > 10_000_000_000L
+            ? DateTimeOffset.FromUnixTimeMilliseconds(webhookEvent.Timestamp.Value)
+            : DateTimeOffset.FromUnixTimeSeconds(webhookEvent.Timestamp.Value);
+
+        var skew = Math.Abs((DateTimeOffset.UtcNow - eventTime).TotalMinutes);
+        if (skew > 5)
+        {
+            _logger.LogWarning("Rejecting OpenMetadata webhook: event timestamp is skewed or outside acceptable replay window ({Skew:F1} minutes).", skew);
+            return false;
         }
 
         // Event ID deduplication
-        if (webhookEvent.Id.HasValue)
+        if (!ProcessedWebhookEvents.TryAdd(webhookEvent.Id.Value, DateTimeOffset.UtcNow))
         {
-            if (!ProcessedWebhookEvents.TryAdd(webhookEvent.Id.Value, DateTimeOffset.UtcNow))
-            {
-                _logger.LogInformation("OpenMetadata webhook event {EventId} has already been processed. Skipping duplicate.", webhookEvent.Id.Value);
-                return true;
-            }
+            _logger.LogInformation("OpenMetadata webhook event {EventId} has already been processed. Skipping duplicate.", webhookEvent.Id.Value);
+            return true;
+        }
 
             // Bound the size of the deduplication dictionary
             if (ProcessedWebhookEvents.Count > 10_000)
@@ -401,7 +403,6 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
                     }
                 }
             }
-        }
 
         _logger.LogInformation(
             "Processing OpenMetadata webhook event: Type={Type}, EntityType={Entity}, FQN={Fqn}",

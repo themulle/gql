@@ -53,18 +53,43 @@ public class AuthenticationSecurityTests
         return Options.Create(options);
     }
 
-    private static (BasicAuthenticationHandler Handler, DefaultHttpContext Context) CreateHandler(IOptions<GatewayOptions> options)
+    private static (BasicAuthenticationHandler Handler, DefaultHttpContext Context) CreateHandler(
+        IOptions<GatewayOptions> options,
+        Microsoft.AspNetCore.Hosting.IWebHostEnvironment? env = null)
     {
+        if (env == null)
+        {
+            var mockEnv = Substitute.For<Microsoft.AspNetCore.Hosting.IWebHostEnvironment>();
+            mockEnv.EnvironmentName.Returns("Development");
+            env = mockEnv;
+        }
+
         var schemeOptionsMonitor = new TestOptionsMonitor<AuthenticationSchemeOptions>(new AuthenticationSchemeOptions());
         var handler = new BasicAuthenticationHandler(
             schemeOptionsMonitor,
             NullLoggerFactory.Instance,
             UrlEncoder.Default,
-            options);
+            options,
+            env);
 
         var context = new DefaultHttpContext();
         handler.InitializeAsync(new AuthenticationScheme(GatewayAuthSchemes.Basic, "Basic", typeof(BasicAuthenticationHandler)), context).GetAwaiter().GetResult();
         return (handler, context);
+    }
+
+    [Fact]
+    public async Task BasicAuth_InProduction_PlaintextPassword_FailsAuthentication()
+    {
+        var mockEnv = Substitute.For<Microsoft.AspNetCore.Hosting.IWebHostEnvironment>();
+        mockEnv.EnvironmentName.Returns("Production");
+
+        var (handler, context) = CreateHandler(CreateGatewayOptions(), env: mockEnv);
+        var creds = Convert.ToBase64String(Encoding.UTF8.GetBytes("alice:secretPassword123"));
+        context.Request.Headers.Authorization = $"Basic {creds}";
+
+        var result = await handler.AuthenticateAsync();
+
+        result.Succeeded.ShouldBeFalse();
     }
 
     [Fact]

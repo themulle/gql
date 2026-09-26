@@ -23,14 +23,14 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
 - **Multi-Protocol Enterprise Identity & ForwardAuth (Kubernetes / Traefik)**:
   - **Traefik Ingress ForwardAuth**: Native support for Kubernetes ingress authentication offloading (Authelia, Keycloak, Authentik, OAuth2-Proxy). Validates proxy network CIDRs (`TrustedNetworks`, `TrustedProxies`) and timing-safe shared secrets (`X-Forwarded-Secret`), extracting `X-Forwarded-User`, `X-Forwarded-Groups`, `X-Forwarded-Roles`, and `X-Forwarded-Email`.
   - **Microsoft Entra ID (Azure AD) & AD FS**: Native JWT Bearer token authentication with normalized enterprise claims transformation (`EnterpriseClaimsTransformation`) mapping `oid`, `onprem_sid`, `primarygroupsid`, and claim roles into canonical `Sid` value objects.
-  - **HTTP Basic Authentication**: Support for direct Basic Auth headers on GraphQL queries and a dedicated credential verification endpoint (`GET` / `POST /api/auth/login`) with constant-time equality comparisons (`FixedTimeEquals`).
+  - **HTTP Basic Authentication**: Support for direct Basic Auth headers on GraphQL queries and a dedicated credential verification endpoint (`GET` / `POST /api/auth/login`). Production enforces salted PBKDF2 (`$pbkdf2$...`) with dynamic dummy-iteration parity for non-existent users; plaintext and unsalted SHA-256 are strictly restricted to `Development`. All comparisons use `CryptographicOperations.FixedTimeEquals`.
   - **Kerberos / SPNEGO Negotiate**: Windows Integrated Authentication with strict Kerberos-only enforcement and group SID resolution.
   - **Smart Dynamic Scheme Selector**: Automatic header-based protocol arbitration dispatching requests to ForwardAuth, Bearer, Basic, or Negotiate schemes.
 
 - **Heterogeneous Multi-Source Data Architecture & Real SQL Execution**:
   - Dynamic type projection and schema generation based on the active governance catalog.
   - **Native SQL Execution with RLS Pushdown**: Direct ADO.NET execution via `ISqlConnectionFactory` supporting **MSSQL (SQL Server)**, **SQLite**, **PostgreSQL**, **Databricks**, and **Oracle**. Row-Level Security (RLS) filters are pushed down directly into generated SQL queries (`CombinedRowFilterSql`), preventing unauthorized rows from ever leaving the database engine.
-  - **Declarative REST Data Source Engine (Pattern 3)**: Expose external REST APIs with URL-template parameter substitution (`/api/v1/customers/{id}`), header/query pushdown (`X-Tenant-Id`, `X-User-Sid`), bearer token forwarding / API keys, JSONPath extraction, and adaptive batching (`QueryParameterList`, `JsonBodyArray`, `ParallelSingleRequests` throttled via `SemaphoreSlim`).
+  - **Declarative REST Data Source Engine (Pattern 3)**: Expose external REST APIs with URL-template parameter substitution (`/api/v1/customers/{id}`), header/query pushdown (`X-Tenant-Id`, `X-User-Sid`), bearer token forwarding / API keys, JSONPath extraction, and adaptive batching (`QueryParameterList`, `JsonBodyArray`, `ParallelSingleRequests` throttled via `SemaphoreSlim`). Integrated **SSRF Defense** with DNS pre-resolution (blocking RFC 1918, link-local, loopback, and cloud metadata) and hop-by-hop HTTP redirect protection (`AllowAutoRedirect = false`).
   - **Isolated C# Plugin System (Pattern 4)**: Host specialized HTTP/data connectors in isolated, collectible `AssemblyLoadContext` instances (`IHttpDataSourcePlugin`) preventing dependency collisions with host packages.
   - **Central Zero-Trust Pipeline**: Regardless of source (SQL, REST, or Plugin), all data passes through central consent evaluation (`GatewayExecutionService`), in-memory RLS post-filtering, central column masking, response budgeting, and audit logging.
   - Efficient DataLoader-based batching and selective child relation loading with chunking to protect underlying database parameter limits (e.g. SQLite 999, Oracle 1000, MSSQL 2100, PostgreSQL/Databricks 10000).
@@ -38,12 +38,12 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
 
 - **Distributed Multi-Instance Clustering (Redis)**:
   - **Redis Pub/Sub Event Bus (`RedisEventBus`)**: Real-time cross-pod propagation of catalog and policy epoch increments, invalidating distributed caches across all cluster nodes simultaneously.
-  - **Distributed Token-Bucket Rate Limiting (`RedisRateLimiterService`)**: Sliding-window IP rate limiting and atomic token-bucket consumption per user SID across multi-node Kubernetes deployments.
+  - **Resilient Distributed Token-Bucket Rate Limiting (`RedisRateLimiterService`)**: Sliding-window IP rate limiting and atomic token-bucket consumption per user SID across multi-node Kubernetes deployments with **transparent automatic fallback** to local `InMemoryRateLimiterService` (featuring lock-free atomic `Interlocked` counters) upon Redis cluster degradation.
   - **Distributed Mutation Idempotency (`RedisIdempotencyStore`)**: High-availability deduplication of sensitive governance mutations across gateway instances.
   - **Deep Cluster Health Checks (`IGatewayHealthCheckService`)**: Comprehensive Kubernetes readiness probes checking Governance DB, Redis cluster, and Active Directory connectivity.
 
 - **Column-Level Data Masking & Dynamic RLS**:
-  - Transparent column-level policies: `Clear`, `Mask` (redaction / format-preserving masking / zero-allocation HMAC-SHA256 pseudonymization via `HMACSHA256.HashData` and stack memory), or `Deny`.
+  - Transparent column-level policies: `Clear`, `Mask` (redaction / zero-allocation format-preserving masking via `ReadOnlySpan<char>` and `string.Create` / HMAC-SHA256 pseudonymization via `HMACSHA256.HashData` and stack memory), or `Deny`.
   - Side-channel inference defense (Rule 5 compliance): GraphQL AST `where` clauses referencing `Mask` or `Deny` columns are strictly rejected with a `SecurityException`, thwarting binary search inference attacks.
   - Dialect-aware SQL Row-Level Security (RLS) generation supporting SQLite, SQL Server (T-SQL), PostgreSQL (PL/pgSQL), Databricks, and Oracle with full row filter propagation across nested child DataLoaders.
   - Support for comparison operators, set inclusion (`IN`, tuple `IN`), temporal validity filters, and parameterized subqueries (`EXISTS`).
@@ -54,22 +54,23 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - **Epoch-based Invalidation**: Monotonic policy epochs invalidate stale cache entries across all gateway instances without cache stampedes.
   - High-throughput batch hydration for active consents (`WHERE consent_id IN (...)`) eliminating N+1 query overhead.
 
-- **Tamper-Evident SHA-256 Audit Hash Chain**:
+- **Tamper-Evident HMAC-SHA256 Audit Hash Chain**:
   - Every access evaluation, consent creation, approval, and revocation records an immutable audit entry.
-  - Transaction-safe atomic audit log persistence with zero-allocation `SHA256.HashData(payloadBytes, hashBytes)` preventing hash chain forking under high concurrency.
-  - Continuous cryptographic SHA-256 hash chaining (`PrevHash -> EntryHash`) persisted across gateway restarts and verifiable via automated health routines.
+  - Transaction-safe atomic audit log persistence with keyed `HMACSHA256.HashData(secretKey, payload)` preventing hash chain tampering even with direct database write access.
+  - Continuous cryptographic HMAC-SHA256 hash chaining (`PrevHash -> EntryHash`) persisted across gateway restarts and verifiable via automated health routines using timing-safe `CryptographicOperations.FixedTimeEquals`.
 
 - **OpenMetadata Enterprise Governance Integration**:
   - Direct synchronization of enterprise catalog tables, schemas, columns, and tags from **OpenMetadata**.
   - Automatic column masking generation based on classification tags (e.g. `PII.Sensitive` -> REDACT, `PII.Email` -> MASK_EMAIL, `PII.Pseudonym` -> HMAC_SHA256).
   - OpenMetadata Policies, Rules, Roles, Teams, and Users mapped deterministically to GqlGateway `Consent` entries with Active Directory SID resolution (`TeamToGroupSidMap`, `UserToUserSidMap`).
-  - Real-time webhook ingestion (`POST /api/webhooks/openmetadata`) protected by HMAC-SHA256 signature verification (`X-OpenMetadata-Signature`).
+  - Real-time webhook ingestion (`POST /api/webhooks/openmetadata`) protected by HMAC-SHA256 signature verification (`X-OpenMetadata-Signature`) and fail-closed replay defense requiring mandatory `Id` and `Timestamp` (5-minute sliding window).
   - Background periodic synchronization service (`OpenMetadataSyncBackgroundService`) and administrative GraphQL mutation (`syncOpenMetadata(dryRun: Boolean)`).
   - Immediate multi-instance cache invalidation via monotonic policy epoch incrementation upon catalog/permission sync.
 
 - **Enterprise Network & Edge Protection**:
   - Pre-Authentication IP Rate Limiting and Post-Authentication SID Token-Bucket Concurrency Limiting.
   - Anti-CSRF Preflight enforcement on GraphQL endpoints.
+  - Table Oracle Defense: `ErrorSanitizingFilter` masks `TableNotFoundException` as generic `FORBIDDEN` in non-development environments to prevent schema probing.
   - Secure `ReverseProxyOptions` with populated `KnownIPNetworks` (`System.Net.IPNetwork`) and `KnownProxies` to prevent `X-Forwarded-For` spoofing.
   - Dual Kubernetes probes (`/health/live`, `/health/ready`) and 6-phase graceful traffic drain controller for zero-downtime rolling deployments.
 
@@ -118,7 +119,7 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 | [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 14 GraphQL engine, dynamic schemas, types, queries, mutations (`syncOpenMetadata`), DataLoader execution |
 | [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Host, Basic Auth Login (`/api/auth/login`), ForwardAuth header security, rate limiting, anti-CSRF, health probes, OpenMetadata webhooks |
 | [`GqlGateway.Benchmarks`](benchmarks/GqlGateway.Benchmarks) | `net10.0` | BenchmarkDotNet suites for throughput, cache hit/miss, and masking allocations |
-| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 333 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
+| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 391 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
 | [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | NetArchTest rules enforcing Clean Architecture dependency directions |
 | [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 33 End-to-end integration tests using `WebApplicationFactory<Program>` |
 
@@ -143,8 +144,8 @@ dotnet build GqlGateway.sln -c Release
 ```bash
 dotnet test GqlGateway.sln -c Release
 ```
-Currently passes **371 / 371 tests (100% green)** across Unit, Architecture, and Integration test suites:
-- **333 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Column Masking)
+Currently passes **429 / 429 tests (100% green)** across Unit, Architecture, and Integration test suites:
+- **391 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking)
 - **5 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application)
 - **33 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, OpenMetadata webhooks)
 

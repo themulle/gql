@@ -76,6 +76,8 @@ public sealed class RedisRateLimiterService : IRateLimiterService
         }
     }
 
+    private readonly InMemoryRateLimiterService _inMemoryFallback = new();
+
     public async Task<RateLimitResult> CheckPreAuthIpAsync(string ip, PreAuthIpRateLimitOptions options, CancellationToken ct = default)
     {
         try
@@ -98,7 +100,8 @@ public sealed class RedisRateLimiterService : IRateLimiterService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Redis rate limiting failed for IP {Ip}. Degrading gracefully (fail-open for rate limiter only).", ip);
+            _logger.LogWarning(ex, "Redis rate limiting failed for IP {Ip}. Falling back to local in-memory rate limiter.", ip);
+            return await _inMemoryFallback.CheckPreAuthIpAsync(ip, options, ct).ConfigureAwait(false);
         }
 
         return new RateLimitResult(true, 0);
@@ -138,7 +141,8 @@ public sealed class RedisRateLimiterService : IRateLimiterService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Redis post-auth rate limiting failed for SID {Sid}. Degrading gracefully.", sid);
+            _logger.LogWarning(ex, "Redis post-auth rate limiting failed for SID {Sid}. Falling back to local in-memory token bucket.", sid);
+            return await _inMemoryFallback.CheckPostAuthSidAsync(sid, options, ct).ConfigureAwait(false);
         }
 
         return new RateLimitResult(true, 0);

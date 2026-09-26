@@ -48,7 +48,9 @@ public class OpenMetadataIntegrationTests : IClassFixture<WebApplicationFactory<
     public async Task Webhook_WithValidSignature_ReturnsOk()
     {
         var client = _factory.CreateClient();
-        var payload = "{\"eventType\":\"entityUpdated\",\"entityType\":\"table\",\"entityFullyQualifiedName\":\"service.db.schema.customers\"}";
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var eventId = Guid.NewGuid();
+        var payload = $"{{\"id\":\"{eventId}\",\"timestamp\":{nowMs},\"eventType\":\"entityUpdated\",\"entityType\":\"table\",\"entityFullyQualifiedName\":\"service.db.schema.customers\"}}";
 
         var hash = HMACSHA256.HashData(Encoding.UTF8.GetBytes("test-webhook-secret-999"), Encoding.UTF8.GetBytes(payload));
         var hex = Convert.ToHexStringLower(hash);

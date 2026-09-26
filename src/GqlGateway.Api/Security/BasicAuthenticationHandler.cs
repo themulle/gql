@@ -18,14 +18,38 @@ public sealed class BasicAuthenticationHandler : AuthenticationHandler<Authentic
     private static readonly byte[] DummySalt = "GqlGatewayTimingDefenseSalt2026!"u8.ToArray();
     private static readonly byte[] DummyTargetHash = new byte[32];
 
+    private readonly bool _isDevelopment;
+    private readonly int _dummyIterations;
+
     public BasicAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
         UrlEncoder encoder,
-        IOptions<GatewayOptions> gatewayOptions)
+        IOptions<GatewayOptions> gatewayOptions,
+        Microsoft.AspNetCore.Hosting.IWebHostEnvironment? environment = null)
         : base(options, logger, encoder)
     {
         _gatewayOptions = gatewayOptions?.Value ?? new GatewayOptions();
+        _isDevelopment = string.Equals(environment?.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"), "Development", StringComparison.OrdinalIgnoreCase);
+
+        _dummyIterations = DetermineDummyIterations(_gatewayOptions.Authentication.BasicAuth.Users);
+    }
+
+    private static int DetermineDummyIterations(IEnumerable<BasicAuthUserConfig> users)
+    {
+        foreach (var user in users)
+        {
+            if (user.Password != null && user.Password.StartsWith("$pbkdf2$", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = user.Password.Split('$');
+                if (parts.Length == 5 && int.TryParse(parts[2], out var iters) && iters > 0)
+                {
+                    return iters;
+                }
+            }
+        }
+        return 10_000;
     }
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
@@ -68,11 +92,11 @@ public sealed class BasicAuthenticationHandler : AuthenticationHandler<Authentic
 
         if (configuredUser == null)
         {
-            // SEC-03: Mitigate user enumeration timing attacks by running equivalent cryptographic hash calculation
+            // SEC-03: Mitigate user enumeration timing attacks by running equivalent cryptographic hash calculation with mirrored iterations
             var dummyDerived = Rfc2898DeriveBytes.Pbkdf2(
                 password,
                 DummySalt,
-                iterations: 10_000,
+                iterations: _dummyIterations,
                 HashAlgorithmName.SHA256,
                 outputLength: 32);
             CryptographicOperations.FixedTimeEquals(dummyDerived, DummyTargetHash);
@@ -80,7 +104,7 @@ public sealed class BasicAuthenticationHandler : AuthenticationHandler<Authentic
             return Task.FromResult(AuthenticateResult.Fail("Invalid username or password."));
         }
 
-        bool passwordMatches = VerifyPassword(password, configuredUser.Password);
+        bool passwordMatches = VerifyPassword(password, configuredUser.Password, username);
 
         if (!passwordMatches)
         {
@@ -116,7 +140,7 @@ public sealed class BasicAuthenticationHandler : AuthenticationHandler<Authentic
         return Task.FromResult(AuthenticateResult.Success(ticket));
     }
 
-    private static bool VerifyPassword(string inputPassword, string storedPassword)
+    private bool VerifyPassword(string inputPassword, string storedPassword, string username)
     {
         // 1. Support modern Salted PBKDF2: $pbkdf2$iterations$salt$hash
         if (storedPassword.StartsWith("$pbkdf2$", StringComparison.OrdinalIgnoreCase))
@@ -146,16 +170,23 @@ public sealed class BasicAuthenticationHandler : AuthenticationHandler<Authentic
             }
         }
 
+        // 2. Plaintext or unsalted SHA-256 passwords are strictly prohibited outside of Development
+        if (!_isDevelopment)
+        {
+            Logger.LogError("Basic authentication rejected user '{Username}': Plaintext or unsalted SHA-256 passwords are strictly prohibited outside of Development.", username);
+            return false;
+        }
+
         var userPasswordBytes = Encoding.UTF8.GetBytes(storedPassword);
         var inputPasswordBytes = Encoding.UTF8.GetBytes(inputPassword);
 
-        // 2. Exact match (e.g. Development / test plaintext)
+        // 2a. Exact match (Development / test plaintext only)
         if (CryptographicOperations.FixedTimeEquals(userPasswordBytes, inputPasswordBytes))
         {
             return true;
         }
 
-        // 3. SHA-256 Hex Hash match
+        // 2b. SHA-256 Hex Hash match (Development only)
         var inputHash = Convert.ToHexString(SHA256.HashData(inputPasswordBytes));
         var inputHashBytes = Encoding.UTF8.GetBytes(inputHash);
         if (CryptographicOperations.FixedTimeEquals(userPasswordBytes, inputHashBytes))

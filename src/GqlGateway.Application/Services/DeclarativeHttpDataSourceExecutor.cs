@@ -36,6 +36,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         "X-Rewrite-URL", "X-Real-IP", "X-Gateway-Identity"
     };
 
+    public const string HttpClientName = "DeclarativeHttp";
     public DataSourceType SupportedType => DataSourceType.HttpDeclarative;
 
     public DeclarativeHttpDataSourceExecutor(
@@ -119,7 +120,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         IReadOnlyDictionary<string, object?> arguments,
         CancellationToken ct)
     {
-        var client = _httpClientFactory.CreateClient();
+        var client = _httpClientFactory.CreateClient(HttpClientName);
         using var timeoutCts = descriptor.Timeout > TimeSpan.Zero
             ? CancellationTokenSource.CreateLinkedTokenSource(ct)
             : null;
@@ -138,7 +139,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
 
         _logger.LogDebug("Executing Declarative HTTP {Method} {Url} for {Table}", method, url, context.Metadata.Identifier);
 
-        using var response = await client.SendAsync(request, effectiveCt);
+        using var response = await SendWithRedirectProtectionAsync(client, request, descriptor, context, effectiveCt);
         response.EnsureSuccessStatusCode();
 
         await using var stream = await response.Content.ReadAsStreamAsync(effectiveCt);
@@ -153,7 +154,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         IReadOnlyList<string> keys,
         CancellationToken ct)
     {
-        var client = _httpClientFactory.CreateClient();
+        var client = _httpClientFactory.CreateClient(HttpClientName);
         using var timeoutCts = descriptor.Timeout > TimeSpan.Zero
             ? CancellationTokenSource.CreateLinkedTokenSource(ct)
             : null;
@@ -171,7 +172,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         var jsonBody = JsonSerializer.Serialize(keys);
         request.Content = new StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
 
-        using var response = await client.SendAsync(request, effectiveCt);
+        using var response = await SendWithRedirectProtectionAsync(client, request, descriptor, context, effectiveCt);
         response.EnsureSuccessStatusCode();
 
         await using var stream = await response.Content.ReadAsStreamAsync(effectiveCt);
@@ -179,6 +180,60 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
 
         return ExtractRowsFromJson(jsonDoc.RootElement, descriptor.JsonRootPath);
     }
+
+    private async Task<HttpResponseMessage> SendWithRedirectProtectionAsync(
+        HttpClient client,
+        HttpRequestMessage initialRequest,
+        HttpEndpointDescriptor descriptor,
+        DataSourceExecutionContext context,
+        CancellationToken ct)
+    {
+        var currentRequest = initialRequest;
+        var currentUrl = initialRequest.RequestUri?.ToString() ?? string.Empty;
+        const int maxRedirects = 3;
+        int redirectCount = 0;
+
+        while (true)
+        {
+            var response = await client.SendAsync(currentRequest, ct);
+
+            if (IsRedirectStatusCode(response.StatusCode) && response.Headers.Location != null)
+            {
+                if (redirectCount >= maxRedirects)
+                {
+                    response.Dispose();
+                    throw new SecurityException($"Too many HTTP redirects (exceeded limit of {maxRedirects}).");
+                }
+
+                redirectCount++;
+                var targetUri = response.Headers.Location.IsAbsoluteUri
+                    ? response.Headers.Location
+                    : new Uri(new Uri(currentUrl), response.Headers.Location);
+
+                var targetUrl = targetUri.ToString();
+                await ValidateDestinationUrl(targetUrl, ct);
+
+                _logger.LogInformation("Following validated HTTP redirect #{Hop} from {Source} to {Target}",
+                    redirectCount, currentUrl, targetUrl);
+
+                response.Dispose();
+
+                var newMethod = response.StatusCode == HttpStatusCode.SeeOther ? HttpMethod.Get : currentRequest.Method;
+                var newRequest = new HttpRequestMessage(newMethod, targetUrl);
+                ApplyHeadersAndAuth(newRequest, descriptor, context);
+
+                currentRequest = newRequest;
+                currentUrl = targetUrl;
+                continue;
+            }
+
+            return response;
+        }
+    }
+
+    private static bool IsRedirectStatusCode(HttpStatusCode code) =>
+        code is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or HttpStatusCode.SeeOther
+             or HttpStatusCode.TemporaryRedirect or (HttpStatusCode)308;
 
     private async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> ExecuteThrottledParallelRequestsAsync(
         HttpEndpointDescriptor descriptor,

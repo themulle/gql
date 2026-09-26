@@ -227,13 +227,23 @@ sequenceDiagram
 ## 8. Cross-Cutting Concepts
 
 ### 8.1 Security & Authentication
-- Authenticated SID extraction from `WindowsIdentity` with strict validation.
-- Dual-layer rate limiting: Pre-Auth by Client IP, Post-Auth by User SID using Token Bucket algorithms.
+- Authenticated SID extraction from `WindowsIdentity`, Traefik Ingress ForwardAuth headers, Entra ID / AD FS Bearer JWTs, and Basic Authentication.
+- **Enterprise Basic Auth**: Salted PBKDF2 (`$pbkdf2$...`) enforced in production; plaintext and unsalted SHA-256 strictly rejected outside Development; dummy-PBKDF2 iteration parity to thwart username enumeration timing attacks.
+- **SSRF Defense for REST Data Sources**: Destination hostname DNS resolution checking against RFC 1918 private IP subnets, loopback, link-local, and cloud metadata endpoints; hop-by-hop HTTP redirect re-validation (`AllowAutoRedirect = false`).
+- **Tamper-Evident HMAC-SHA256 Audit Hash Chain**: Transactional audit logging chained with keyed `HMACSHA256` and verified via `CryptographicOperations.FixedTimeEquals`.
+- **Webhook Replay Defense**: OpenMetadata webhook ingestion (`/api/webhooks/openmetadata`) verifies HMAC-SHA256 signatures, deduplicates event IDs, and enforces a 5-minute replay window on timestamps fail-closed.
+- Dual-layer rate limiting: Pre-Auth by Client IP, Post-Auth by User SID using Token Bucket algorithms. Redis rate limiter fails over automatically to local in-memory token bucket if Redis is degraded.
 - AST query depth and complexity limits to defend against denial-of-service GraphQL queries.
 
-### 8.2 Error Sanitization
+### 8.2 Error Sanitization & Table Oracle Defense
 - `ErrorSanitizingFilter` prevents database connection strings, internal stack traces, and SQL syntax details from leaking to clients.
+- Masks `TableNotFoundException` as generic `FORBIDDEN` in non-development environments to prevent schema probing and table oracle attacks.
 - Sanitized responses return standardized domain codes: `FORBIDDEN`, `UNAUTHENTICATED`, `NOT_FOUND`, `INVALID_REQUEST`.
+
+### 8.3 Performance & Allocation Optimizations
+- **Zero-Allocation Column Masking**: `ColumnMaskingProvider` utilizes `ReadOnlySpan<char>` slicing, `stackalloc char[]` buffers, and `string.Create` to eliminate intermediate object allocations during email and IBAN masking.
+- **Lock-Free Concurrency**: `InMemoryRateLimiterService` uses atomic `Interlocked.Increment` and `Interlocked.Decrement` counters, avoiding lock contention on `ConcurrentDictionary.Count`.
+- **Direct SQL RLS Pushdown**: Row filters pushed directly into database query predicates bypass in-memory `DataTable` post-filtering overhead.
 
 ---
 
@@ -242,7 +252,7 @@ sequenceDiagram
 - [ADR-002: Multi-Tier Consent Caching with Policy Epochs](../adr/ADR-002-epoch-cache-validation.md)
 - [ADR-003: Dynamic Object Type Mapping](../adr/ADR-003-dynamic-object-type-mapping.md)
 - [ADR-004: Parameterized SQL Translation with Whitelisting](../adr/ADR-004-ast-to-sql-provider.md)
-- [ADR-005: Tamper-Evident SHA-256 Audit Log Hash Chain](../adr/ADR-005-sha256-hash-chain-audit.md)
+- [ADR-005: Tamper-Evident HMAC-SHA256 Audit Log Hash Chain](../adr/ADR-005-sha256-hash-chain-audit.md)
 - [ADR-006: Kerberos-Only HA Cluster Traffic Drain](../adr/ADR-006-kerberos-only-ha-cluster.md)
 - [ADR-007: Permissive Union Semantics](../adr/ADR-007-permissive-union-semantics.md)
 - [ADR-008: Composite Keys, Parameter Budgeting & Four-Eyes Governance Workflow](../adr/ADR-008-composite-keys-and-four-eyes.md)
@@ -253,14 +263,14 @@ sequenceDiagram
 ## 10. Quality Requirements
 - **Quality Gate 1 (Zero Warnings & Strict Typing)**: Solution compiles with zero warnings under `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
 - **Quality Gate 2 (Architecture Integrity)**: NetArchTest asserts Domain and Application have zero inward or improper dependencies, isolating Hot Chocolate to GraphQL.
-- **Quality Gate 3 (TDD Verification)**: 100% test pass rate (371 / 371 tests green across 333 Unit, 5 Architecture, and 33 Integration tests).
+- **Quality Gate 3 (TDD Verification)**: 100% test pass rate (429 / 429 tests green across 391 Unit, 5 Architecture, and 33 Integration tests).
 - **Quality Gate 4 (Walking Skeleton End-to-End)**: Integration tests verify full request pipeline, Traefik ForwardAuth Ingress, Basic Auth login, consent resolution, and graceful drain.
 
 ---
 
 ## 11. Risks and Technical Debt
 - **Direct ADO.NET vs ORM**: Handled via typed parameter mapping and whitelisting to maximize performance and avoid ORM impedance mismatches.
-- **Redis High Availability**: If Redis fails, gateway automatically falls back to in-memory caching and direct epoch checks against the database without dropping client requests.
+- **Redis High Availability & Resilience**: If Redis fails, gateway automatically falls back to in-memory caching and in-memory rate limiting without dropping client requests or sacrificing protection.
 
 ---
 

@@ -18,11 +18,13 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
     private readonly IEpochValidationService _epochValidationService;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private string _lastAuditHash = "GENESIS_0000000000000000000000000000000000000000000000000000000000000000";
+    private readonly byte[] _auditHmacKey;
 
     public SqliteGovernanceRepository(
         IEpochValidationService epochValidationService,
         IOptions<GatewayOptions>? options = null,
-        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null)
+        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null,
+        IKeyVaultSecretProvider? secretProvider = null)
     {
         _epochValidationService = epochValidationService;
         var connStr = options?.Value?.GovernanceDb?.ConnectionString ?? $"Data Source=governance_{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
@@ -30,6 +32,21 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
         _connection.Open();
 
         InitializeDatabase();
+
+        // SEC-04: Derive HMAC-SHA256 key for authentic tamper-evident audit logging
+        byte[]? key = null;
+        if (secretProvider != null && !string.IsNullOrWhiteSpace(options?.Value?.DataMasking?.HmacSecretKeyVaultRef))
+        {
+            try
+            {
+                key = secretProvider.GetSecretBytes(options.Value.DataMasking.HmacSecretKeyVaultRef);
+            }
+            catch
+            {
+                // Fallback to default secret below
+            }
+        }
+        _auditHmacKey = key ?? "GqlGatewayAuditLogHmacTamperEvidenceSecret2026!"u8.ToArray();
 
         bool isMemory = connStr.Contains(":memory:", StringComparison.OrdinalIgnoreCase) || connStr.Contains("Mode=Memory", StringComparison.OrdinalIgnoreCase);
         bool isDev = environment == null || string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);

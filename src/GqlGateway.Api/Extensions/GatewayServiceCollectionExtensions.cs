@@ -171,6 +171,11 @@ public static class GatewayServiceCollectionExtensions
 
         // HTTP & Plugin Data Sources
         services.AddHttpClient();
+        services.AddHttpClient(DeclarativeHttpDataSourceExecutor.HttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false
+            });
         services.AddSingleton<IPluginManager, PluginManager>();
         services.AddSingleton<IDataSourceExecutor, SqlDataSourceExecutor>();
         services.AddSingleton<IDataSourceExecutor, DeclarativeHttpDataSourceExecutor>();
