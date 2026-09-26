@@ -1,19 +1,13 @@
-using System.Security.Claims;
-using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Model;
 using GqlGateway.GraphQL.Loaders;
-using GqlGateway.GraphQL.Services;
 using HotChocolate;
-using Microsoft.AspNetCore.Http;
+using HotChocolate.Types;
 
 namespace GqlGateway.GraphQL.Types;
 
-public sealed class InvoiceRecord
+[ExtendObjectType(typeof(InvoiceRecord))]
+public sealed class InvoiceRecordExtensions
 {
-    public string Id { get; init; } = string.Empty;
-    public decimal Amount { get; init; }
-    public string Vendor { get; init; } = string.Empty;
-    public string? Email { get; init; }
-
     public async Task<IReadOnlyList<InvoiceItemRecord>?> GetItemsAsync(
         [Parent] InvoiceRecord invoice,
         InvoiceItemDataLoader dataLoader,
@@ -23,13 +17,4 @@ public sealed class InvoiceRecord
         // and LoadInvoiceItemsBatchAsync enforces consent and audits the child table once.
         return await dataLoader.LoadAsync(invoice.Id, ct);
     }
-}
-
-public sealed class InvoiceItemRecord
-{
-    public string Id { get; init; } = string.Empty;
-    public string InvoiceId { get; init; } = string.Empty;
-    public string? ProductName { get; init; }
-    public decimal Price { get; init; }
-    public string? SensitiveNote { get; init; }
 }

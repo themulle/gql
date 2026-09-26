@@ -20,6 +20,16 @@ public sealed class EpochValidationService : IEpochValidationService
         _options = options?.Value?.Caching?.EpochValidation ?? new EpochValidationOptions();
         _invalidationChannel = options?.Value?.Caching?.Redis?.InvalidationChannel ?? "consent:invalidations";
         _eventBus = eventBus ?? new Messaging.InProcessChannelEventBus();
+
+        _eventBus.Subscribe<string>(_invalidationChannel, message =>
+        {
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                var key = message.ToLowerInvariant();
+                _epochs.AddOrUpdate(key, 2, (_, current) => current + 1);
+            }
+            return Task.CompletedTask;
+        });
     }
 
     public Task<long> GetCurrentEpochAsync(TableIdentifier table, CancellationToken ct = default)

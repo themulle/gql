@@ -342,7 +342,7 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
             return false;
         }
 
-        if (!VerifyWebhookSignature(eventPayload, signatureHeader, omOptions.WebhookSecret))
+        if (!VerifyWebhookSignature(eventPayload, signatureHeader, omOptions.WebhookSecret, _logger))
         {
             _logger.LogWarning("Rejecting OpenMetadata webhook: signature verification failed.");
             return false;
@@ -432,7 +432,7 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
         return true;
     }
 
-    public static bool VerifyWebhookSignature(string payload, string signatureHeader, string secret)
+    public static bool VerifyWebhookSignature(string payload, string signatureHeader, string secret, ILogger? logger = null)
     {
         try
         {
@@ -449,8 +449,9 @@ public sealed class OpenMetadataSyncService : IOpenMetadataSyncService
                 Encoding.UTF8.GetBytes(expectedHex),
                 Encoding.UTF8.GetBytes(cleanSignature.ToLowerInvariant()));
         }
-        catch
+        catch (Exception ex)
         {
+            logger?.LogWarning(ex, "OpenMetadata webhook signature verification failed due to an exception.");
             return false;
         }
     }

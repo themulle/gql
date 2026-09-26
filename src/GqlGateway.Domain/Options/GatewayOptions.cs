@@ -17,6 +17,7 @@ public sealed class GatewayOptions
     [Required] public ReverseProxyOptions ReverseProxy { get; init; } = new();
     [Required] public OpenMetadataOptions OpenMetadata { get; init; } = new();
     [Required] public PluginsOptions Plugins { get; init; } = new();
+    [Required] public SqlDataSourceOptions DataSources { get; init; } = new();
 }
 
 public sealed class PluginsOptions
@@ -47,15 +48,77 @@ public sealed class AuthenticationOptions
     public bool RequireKerberosOnly { get; init; } = true;
     [Range(1, 60)] public int GroupCacheTtlMinutes { get; init; } = 5;
     public bool EnableTestAuthHandler { get; init; }
+
+    public BasicAuthOptions BasicAuth { get; init; } = new();
+    public EntraIdAuthOptions EntraId { get; init; } = new();
+    public AdfsAuthOptions Adfs { get; init; } = new();
+    public ForwardAuthOptions ForwardAuth { get; init; } = new();
+}
+
+public sealed class ForwardAuthOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string UserHeader { get; init; } = "X-Forwarded-User";
+    public string EmailHeader { get; init; } = "X-Forwarded-Email";
+    public string GroupsHeader { get; init; } = "X-Forwarded-Groups";
+    public string RolesHeader { get; init; } = "X-Forwarded-Roles";
+    public string? SharedSecretKeyVaultRef { get; init; }
+    public string? SharedSecret { get; init; }
+    public string SharedSecretHeader { get; init; } = "X-Forwarded-Secret";
+    public bool RequireTrustedProxy { get; init; } = true;
+    public List<string> TrustedProxies { get; init; } = [];
+    public List<string> TrustedNetworks { get; init; } = [];
+}
+
+public sealed class BasicAuthOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string Realm { get; init; } = "GqlGateway";
+    public List<BasicAuthUserConfig> Users { get; init; } = [];
+}
+
+public sealed class BasicAuthUserConfig
+{
+    public string Username { get; init; } = string.Empty;
+    public string Password { get; init; } = string.Empty;
+    public string? Sid { get; init; }
+    public List<string> Roles { get; init; } = [];
+    public List<string> GroupSids { get; init; } = [];
+}
+
+public sealed class EntraIdAuthOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string Instance { get; init; } = "https://login.microsoftonline.com/";
+    public string TenantId { get; init; } = string.Empty;
+    public string ClientId { get; init; } = string.Empty;
+    public string Audience { get; init; } = string.Empty;
+    public string MetadataAddress { get; init; } = string.Empty;
+    public bool RequireHttpsMetadata { get; init; } = true;
+    public string SidClaimType { get; init; } = "oid";
+    public string GroupsClaimType { get; init; } = "groups";
+    public string RolesClaimType { get; init; } = "roles";
+}
+
+public sealed class AdfsAuthOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string Authority { get; init; } = string.Empty;
+    public string MetadataAddress { get; init; } = string.Empty;
+    public string Audience { get; init; } = string.Empty;
+    public bool RequireHttpsMetadata { get; init; } = true;
+    public string SidClaimType { get; init; } = "primarysid";
+    public string GroupSidClaimType { get; init; } = "groupsid";
+    public string RolesClaimType { get; init; } = "role";
 }
 
 public sealed class GovernanceDbOptions
 {
-    public string Provider { get; init; } = "SqlServer"; // SqlServer, PostgreSql, Sqlite
+    public string Provider { get; init; } = "Sqlite"; // Sqlite (SqlServer & PostgreSql planned for future releases)
     public string ConnectionString { get; init; } = "Data Source=:memory:;Mode=Memory;Cache=Shared";
     [Range(1, 60)] public int CommandTimeoutSeconds { get; init; } = 15;
     public bool EnableOutboxProcessor { get; init; } = true;
-    public bool SeedDemoData { get; init; } = true;
+    public bool? SeedDemoData { get; init; } = null;
 }
 
 public sealed class CachingOptions
@@ -74,6 +137,7 @@ public sealed class L1MemoryCacheOptions
 
 public sealed class RedisOptions
 {
+    public bool Enabled { get; init; } = false;
     public string Configuration { get; init; } = "localhost:6379,abortConnect=false";
     public string InstanceName { get; init; } = "GqlGateway:";
     public string InvalidationChannel { get; init; } = "consent:invalidations";
@@ -156,3 +220,16 @@ public sealed class OpenMetadataOptions
     public Dictionary<string, string> TeamToGroupSidMap { get; init; } = new();
     public Dictionary<string, string> UserToUserSidMap { get; init; } = new();
 }
+
+public sealed class SqlDataSourceOptions
+{
+    public Dictionary<string, DataSourceConnectionOptions> Connections { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class DataSourceConnectionOptions
+{
+    public string Provider { get; init; } = "Sqlite"; // "Sqlite", "SqlServer", "PostgreSql"
+    public string ConnectionString { get; init; } = string.Empty;
+    [Range(1, 300)] public int CommandTimeoutSeconds { get; init; } = 30;
+}
+

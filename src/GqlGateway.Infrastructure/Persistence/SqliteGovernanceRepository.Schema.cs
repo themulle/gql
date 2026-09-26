@@ -383,6 +383,12 @@ public partial class SqliteGovernanceRepository
                 cmd.ExecuteNonQuery();
             }
 
+            ownerId = ResolveOwnerId(_connection, trans, ownerSid, ownerId);
+            salesOwnerId = ResolveOwnerId(_connection, trans, salesOwnerSid, salesOwnerId);
+            approverId = ResolveOwnerId(_connection, trans, approverSid, approverId);
+            approverAId = ResolveOwnerId(_connection, trans, approverASid, approverAId);
+            approverBId = ResolveOwnerId(_connection, trans, approverBSid, approverBId);
+
             foreach (var domain in domains)
             {
                 for (int t = 1; t <= 10; t++)
@@ -407,11 +413,25 @@ public partial class SqliteGovernanceRepository
                         cmd.ExecuteNonQuery();
                     }
 
+                    using (var idCmd = _connection.CreateCommand())
+                    {
+                        idCmd.Transaction = trans;
+                        idCmd.CommandText = "SELECT id FROM TABLES WHERE source_name = @domain AND schema_name = @schema AND table_name = @name LIMIT 1";
+                        idCmd.Parameters.AddWithValue("@domain", domain);
+                        idCmd.Parameters.AddWithValue("@schema", schema);
+                        idCmd.Parameters.AddWithValue("@name", tableName);
+                        var actualId = idCmd.ExecuteScalar()?.ToString();
+                        if (!string.IsNullOrEmpty(actualId))
+                        {
+                            tableId = actualId;
+                        }
+                    }
+
                     if (domain == "finance" && t == 1)
                     {
                         using var towCmd = _connection.CreateCommand();
                         towCmd.Transaction = trans;
-                        towCmd.CommandText = @"INSERT INTO TABLE_OWNERS (id, table_id, data_owner_id, owner_role)
+                        towCmd.CommandText = @"INSERT OR IGNORE INTO TABLE_OWNERS (id, table_id, data_owner_id, owner_role)
                                               VALUES (@id1, @tid, @oid1, 'PRIMARY'),
                                                      (@id2, @tid, @oid2, 'DELEGATE');";
                         towCmd.Parameters.AddWithValue("@id1", Guid.NewGuid().ToString());
@@ -425,7 +445,7 @@ public partial class SqliteGovernanceRepository
                     {
                         using var towCmd = _connection.CreateCommand();
                         towCmd.Transaction = trans;
-                        towCmd.CommandText = @"INSERT INTO TABLE_OWNERS (id, table_id, data_owner_id, owner_role)
+                        towCmd.CommandText = @"INSERT OR IGNORE INTO TABLE_OWNERS (id, table_id, data_owner_id, owner_role)
                                               VALUES (@id1, @tid, @oid1, 'PRIMARY'),
                                                      (@id2, @tid, @oid2, 'DELEGATE'),
                                                      (@id3, @tid, @oid3, 'DELEGATE');";
@@ -442,7 +462,7 @@ public partial class SqliteGovernanceRepository
                     {
                         using var towCmd = _connection.CreateCommand();
                         towCmd.Transaction = trans;
-                        towCmd.CommandText = @"INSERT INTO TABLE_OWNERS (id, table_id, data_owner_id, owner_role)
+                        towCmd.CommandText = @"INSERT OR IGNORE INTO TABLE_OWNERS (id, table_id, data_owner_id, owner_role)
                                               VALUES (@id, @tid, @oid, 'PRIMARY');";
                         towCmd.Parameters.AddWithValue("@id", Guid.NewGuid().ToString());
                         towCmd.Parameters.AddWithValue("@tid", tableId);
@@ -490,6 +510,19 @@ public partial class SqliteGovernanceRepository
                             cmd.ExecuteNonQuery();
                         }
 
+                        using (var colIdCmd = _connection.CreateCommand())
+                        {
+                            colIdCmd.Transaction = trans;
+                            colIdCmd.CommandText = "SELECT id FROM TABLE_COLUMNS WHERE table_id = @tid AND column_name = @name LIMIT 1";
+                            colIdCmd.Parameters.AddWithValue("@tid", tableId);
+                            colIdCmd.Parameters.AddWithValue("@name", cName);
+                            var actualColId = colIdCmd.ExecuteScalar()?.ToString();
+                            if (!string.IsNullOrEmpty(actualColId))
+                            {
+                                colId = actualColId;
+                            }
+                        }
+
                         if (cSens)
                         {
                             using var cmd = _connection.CreateCommand();
@@ -513,6 +546,17 @@ public partial class SqliteGovernanceRepository
                                     VALUES (@id, 'SqlServer', 'finance', 'dbo', 'finance_items', 'Finance Items', 'NORMAL', 0, 1);";
                 cmd.Parameters.AddWithValue("@id", childTableId);
                 cmd.ExecuteNonQuery();
+            }
+
+            using (var idCmd = _connection.CreateCommand())
+            {
+                idCmd.Transaction = trans;
+                idCmd.CommandText = "SELECT id FROM TABLES WHERE source_name = 'finance' AND schema_name = 'dbo' AND table_name = 'finance_items' LIMIT 1";
+                var actualChildId = idCmd.ExecuteScalar()?.ToString();
+                if (!string.IsNullOrEmpty(actualChildId))
+                {
+                    childTableId = actualChildId;
+                }
             }
 
             using (var cmd = _connection.CreateCommand())
@@ -546,6 +590,19 @@ public partial class SqliteGovernanceRepository
                 cmd.Parameters.AddWithValue("@type", cType);
                 cmd.Parameters.AddWithValue("@sens", cSens ? 1 : 0);
                 cmd.ExecuteNonQuery();
+
+                using (var colIdCmd = _connection.CreateCommand())
+                {
+                    colIdCmd.Transaction = trans;
+                    colIdCmd.CommandText = "SELECT id FROM TABLE_COLUMNS WHERE table_id = @tid AND column_name = @name LIMIT 1";
+                    colIdCmd.Parameters.AddWithValue("@tid", childTableId);
+                    colIdCmd.Parameters.AddWithValue("@name", cName);
+                    var actualColId = colIdCmd.ExecuteScalar()?.ToString();
+                    if (!string.IsNullOrEmpty(actualColId))
+                    {
+                        colId = actualColId;
+                    }
+                }
 
                 if (cSens)
                 {
@@ -581,4 +638,13 @@ public partial class SqliteGovernanceRepository
         }
     }
 
+    private static string ResolveOwnerId(SqliteConnection connection, SqliteTransaction trans, string sid, string fallbackId)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = trans;
+        cmd.CommandText = "SELECT id FROM DATA_OWNERS WHERE ad_sid = @sid LIMIT 1";
+        cmd.Parameters.AddWithValue("@sid", sid);
+        var existing = cmd.ExecuteScalar()?.ToString();
+        return !string.IsNullOrEmpty(existing) ? existing : fallbackId;
+    }
 }

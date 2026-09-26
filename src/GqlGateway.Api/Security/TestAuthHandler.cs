@@ -4,7 +4,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace GqlGateway.Infrastructure.Security;
+namespace GqlGateway.Api.Security;
 
 public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 {
@@ -64,5 +64,11 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
         var ticket = new AuthenticationTicket(principal, SchemeName);
 
         return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+
+    protected override Task HandleChallengeAsync(AuthenticationProperties properties)
+    {
+        Response.StatusCode = Microsoft.AspNetCore.Http.StatusCodes.Status401Unauthorized;
+        return Task.CompletedTask;
     }
 }

@@ -8,7 +8,6 @@ using GqlGateway.Application.Services;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
-using GqlGateway.GraphQL.Services;
 using GqlGateway.Infrastructure.Cache;
 using GqlGateway.Infrastructure.Messaging;
 using GqlGateway.Infrastructure.Persistence;

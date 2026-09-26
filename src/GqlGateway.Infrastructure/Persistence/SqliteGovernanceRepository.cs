@@ -31,8 +31,9 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
 
         InitializeDatabase();
 
-        bool shouldSeed = (options?.Value?.GovernanceDb?.SeedDemoData ?? true) &&
-                          (environment == null || string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase));
+        bool isMemory = connStr.Contains(":memory:", StringComparison.OrdinalIgnoreCase) || connStr.Contains("Mode=Memory", StringComparison.OrdinalIgnoreCase);
+        bool isDev = environment == null || string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
+        bool shouldSeed = options?.Value?.GovernanceDb?.SeedDemoData ?? (isMemory && isDev);
         if (shouldSeed)
         {
             SeedInitialCatalog();

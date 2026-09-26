@@ -34,8 +34,16 @@
 ### 2.1 Spoofing (Identitätsanmaßung)
 - **Bedrohung 1.1: Spoofing von Benutzer-Identitätsheadern (`X-Test-User-Sid`).**
   - *Gefahr:* Ein Angreifer sendet gefälschte Header, um sich als privilegierter Benutzer oder Data Owner auszugeben.
-  - *Gegenmaßnahme:* Startup-Validierung in `Program.cs` (`ValidateOnStart()`): `EnableTestAuthHandler` führt in Produktionsumgebungen (`builder.Environment.IsProduction()`) zum **sofortigen Boot-Absturz**. In Produktion akzeptiert das Gateway ausschließlich validierte Kerberos-Tickets via `Microsoft.AspNetCore.Authentication.Negotiate`.
-- **Bedrohung 1.2: Ticket-Manipulation (Kerberos PAC Spoofing).**
+  - *Gegenmaßnahme:* Startup-Validierung in `Program.cs` (`ValidateOnStart()`): `EnableTestAuthHandler` führt in Produktionsumgebungen (`builder.Environment.IsProduction()`) zum **sofortigen Boot-Absturz**. In Produktion akzeptiert das Gateway ausschließlich verifizierte Protokolle (ForwardAuth, Entra ID / AD FS Bearer, Basic Auth oder Kerberos).
+- **Bedrohung 1.2: Spoofing von Traefik ForwardAuth-Headern (`X-Forwarded-User`, `X-Forwarded-Groups`).**
+  - *Gefahr:* Ein Angreifer im internen Netzwerk sendet direkt gefälschte `X-Forwarded-*`-Header an das Gateway, um Identitäten oder Rollen vorzutäuschen.
+  - *Gegenmaßnahme:* Multi-Faktor-Netzwerk- und Secret-Validierung in `ForwardAuthAuthenticationHandler`:
+    1. *Proxy-IP-Einschränkung:* Ist `RequireTrustedProxy = true`, werden Anfragen abgewiesen, wenn die Remote-IP nicht exakt in `TrustedNetworks` (CIDR-Subnetze der Traefik-Pods) oder `TrustedProxies` liegt.
+    2. *Timing-sicheres Shared Secret:* Abgleich des Headers `X-Forwarded-Secret` mit einem über Key Vault bereitgestellten Secret (`SharedSecretKeyVaultRef`) via `CryptographicOperations.FixedTimeEquals` verhindert Replay- und Spoofing-Attacken.
+- **Bedrohung 1.3: Timing-Angriffe auf Passwörter bei HTTP Basic Authentication.**
+  - *Gefahr:* Angreifer leiten Passwörter über Laufzeitunterschiede bei Stringvergleichen ab.
+  - *Gegenmaßnahme:* `BasicAuthenticationHandler` verwendet ausschließlich konstante Laufzeitvergleiche (`CryptographicOperations.FixedTimeEquals`) auf UTF-8 Byte-Ebene und unterstützt SHA-256 Passwort-Hashes.
+- **Bedrohung 1.4: Ticket-Manipulation (Kerberos PAC Spoofing).**
   - *Gefahr:* Gefälschte Gruppenmitgliedschaften im Kerberos-Ticket.
   - *Gegenmaßnahme:* Kerberos-Validierung gegen das Active Directory mit Signaturprüfung der Privilege Attribute Certificate (PAC). Aufgelöste Gruppen werden maximal für `GroupCacheTtlMinutes` (Standard 5 min) gecacht.
 

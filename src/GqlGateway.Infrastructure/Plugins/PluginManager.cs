@@ -12,13 +12,15 @@ namespace GqlGateway.Infrastructure.Plugins;
 public sealed class PluginManager : IPluginManager, IDisposable
 {
     private readonly ILogger<PluginManager> _logger;
+    private readonly IServiceProvider? _serviceProvider;
     private readonly ConcurrentDictionary<string, PluginEntry> _plugins = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record PluginEntry(IHttpDataSourcePlugin Plugin, PluginAssemblyLoadContext? Context);
 
-    public PluginManager(ILogger<PluginManager> logger)
+    public PluginManager(ILogger<PluginManager> logger, IServiceProvider? serviceProvider = null)
     {
         _logger = logger;
+        _serviceProvider = serviceProvider;
     }
 
     public IReadOnlyCollection<IHttpDataSourcePlugin> GetAllPlugins() =>
@@ -61,7 +63,22 @@ public sealed class PluginManager : IPluginManager, IDisposable
                 {
                     try
                     {
-                        if (Activator.CreateInstance(type) is IHttpDataSourcePlugin pluginInstance)
+                        object? instance = null;
+                        if (_serviceProvider != null)
+                        {
+                            try
+                            {
+                                instance = Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(_serviceProvider, type);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogDebug(ex, "ActivatorUtilities could not instantiate plugin type '{Type}', falling back to default constructor.", type.FullName);
+                            }
+                        }
+
+                        instance ??= Activator.CreateInstance(type);
+
+                        if (instance is IHttpDataSourcePlugin pluginInstance)
                         {
                             _plugins[pluginInstance.Name] = new PluginEntry(pluginInstance, alc);
                             _logger.LogInformation("Successfully loaded plugin '{PluginName}' from {DllPath} ({Type})",

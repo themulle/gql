@@ -31,19 +31,46 @@ The server will start on `http://localhost:5000`. Hot Chocolate Nitro Banana Cak
 
 ## 3. Simulating Authentication in Development
 
-When running in `Development` mode, the `TestAuthHandler` is enabled. You can impersonate any Windows User or Group SID by passing custom HTTP headers:
+The gateway supports multiple authentication schemes in development:
 
+### 3.1 TestAuthHandler (Header-based Simulation)
+When running in `Development` mode, the `TestAuthHandler` is enabled. You can impersonate any Windows User or Group SID by passing custom HTTP headers:
 - `X-Test-User-Sid`: The calling user's SID (e.g. `S-1-5-21-1001`)
 - `X-Test-Group-Sids`: Comma-separated group SIDs (e.g. `S-1-5-21-FINANCE-ANALYSTS,S-1-5-21-ALL-STAFF`)
-- `X-Test-Roles`: Comma-separated application roles (e.g. `DataConsumer,DataOwner`)
+- `X-Test-Roles`: Comma-separated application roles (e.g. `DataConsumer,DataOwner,GovernanceAdmin`)
 
-### Example GraphQL Request via cURL:
 ```bash
 curl -X POST http://localhost:5000/graphql \
   -H "Content-Type: application/json" \
+  -H "GraphQL-Preflight: 1" \
   -H "X-Test-User-Sid: S-1-5-21-1001" \
   -H "X-Test-Group-Sids: S-1-5-21-FINANCE-ANALYSTS" \
-  -d '{"query": "{ financeRecords { transactionId amount vendor email } }"}'
+  -d '{"query": "{ catalog { domain schemaName tableName displayName } }"}'
+```
+
+### 3.2 Traefik ForwardAuth (Kubernetes Ingress Simulation)
+Simulate requests originating from a Traefik Ingress controller:
+```bash
+curl -X POST http://localhost:5000/graphql \
+  -H "Content-Type: application/json" \
+  -H "GraphQL-Preflight: 1" \
+  -H "X-Forwarded-User: S-1-5-21-1001" \
+  -H "X-Forwarded-Groups: S-1-5-21-FINANCE-ANALYSTS" \
+  -d '{"query": "{ catalog { domain schemaName tableName } }"}'
+```
+
+### 3.3 HTTP Basic Authentication & `/api/auth/login`
+Test credential validation and direct Basic Auth GraphQL queries:
+```bash
+# Verify credentials
+curl -u "analyst:Secret123!" http://localhost:5000/api/auth/login
+
+# Direct GraphQL query
+curl -X POST http://localhost:5000/graphql \
+  -u "analyst:Secret123!" \
+  -H "Content-Type: application/json" \
+  -H "GraphQL-Preflight: 1" \
+  -d '{"query": "{ catalog { domain schemaName tableName } }"}'
 ```
 
 ---
@@ -52,10 +79,10 @@ curl -X POST http://localhost:5000/graphql \
 
 The codebase follows **Clean Architecture**:
 - `GqlGateway.Domain`: Pure business rules, entities, and domain calculation services. Zero dependencies on external libraries or frameworks.
-- `GqlGateway.Application`: Use cases, interfaces (`IGovernanceRepository`, `IConsentCacheService`, `ISqlFilterProvider`), and DTOs.
-- `GqlGateway.Infrastructure`: ADO.NET SQLite repository, caching, event bus, and cryptographic hash chain implementations.
-- `GqlGateway.GraphQL`: Hot Chocolate schema configuration, dynamic types, field masking middleware, queries, and mutations.
-- `GqlGateway.Api`: ASP.NET Core host, rate limiting middlewares, health check endpoints, and graceful drain hosted service.
+- `GqlGateway.Application`: Core execution engine (`GatewayExecutionService`, `IGatewayExecutionService`), business services (`ConsentResolutionService`, `ColumnMaskingProvider`, `RlsFilterGenerator`, `ChunkedQueryExecutor`), data source executors (`SqlDataSourceExecutor`), and repository contracts.
+- `GqlGateway.Infrastructure`: ADO.NET SQL persistence (`SqlConnectionFactory`, `SqliteGovernanceRepository`), Redis multi-instance messaging (`RedisEventBus`), rate limiters, idempotency stores, and authentication handlers (`ForwardAuthAuthenticationHandler`, `BasicAuthenticationHandler`, `EnterpriseClaimsTransformation`).
+- `GqlGateway.GraphQL`: Hot Chocolate schema configuration, dynamic types, queries, and mutations.
+- `GqlGateway.Api`: ASP.NET Core host, Basic Auth login endpoint, rate limiting middlewares, health check probes, and graceful drain hosted service.
 
 ### 4.1 Running Automated Tests
 ```bash

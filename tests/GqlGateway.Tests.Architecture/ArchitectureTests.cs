@@ -47,4 +47,28 @@ public class ArchitectureTests
         result.IsSuccessful.ShouldBeTrue(
             $"Infrastructure layer violates Clean Architecture dependencies: {string.Join(", ", result.FailingTypeNames ?? Array.Empty<string>())}");
     }
+
+    [Fact]
+    public void Application_ShouldNotHaveDependencyOnAspNetCore()
+    {
+        var result = Types.InAssembly(typeof(GqlGateway.Application.Services.ConsentResolutionService).Assembly)
+            .ShouldNot()
+            .HaveDependencyOn("Microsoft.AspNetCore")
+            .GetResult();
+
+        result.IsSuccessful.ShouldBeTrue(
+            $"Application layer has forbidden dependency on Microsoft.AspNetCore: {string.Join(", ", result.FailingTypeNames ?? Array.Empty<string>())}");
+    }
+
+    [Fact]
+    public void Domain_ShouldNotHaveDependencyOnAspNetCore()
+    {
+        var result = Types.InAssembly(typeof(GqlGateway.Domain.Common.Sid).Assembly)
+            .ShouldNot()
+            .HaveDependencyOn("Microsoft.AspNetCore")
+            .GetResult();
+
+        result.IsSuccessful.ShouldBeTrue(
+            $"Domain layer has forbidden dependency on Microsoft.AspNetCore: {string.Join(", ", result.FailingTypeNames ?? Array.Empty<string>())}");
+    }
 }

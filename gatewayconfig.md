@@ -41,7 +41,44 @@ Das Gateway folgt der **12-Factor-App**-Methodik und dem Prinzip des **Fail-Fast
       "ServicePrincipalName": "HTTP/gql-gateway.corp.local",
       "RequireKerberosOnly": true,
       "GroupCacheTtlMinutes": 5,
-      "EnableTestAuthHandler": false
+      "EnableTestAuthHandler": false,
+      "ForwardAuth": {
+        "Enabled": true,
+        "UserHeader": "X-Forwarded-User",
+        "GroupsHeader": "X-Forwarded-Groups",
+        "RolesHeader": "X-Forwarded-Roles",
+        "SharedSecretHeader": "X-Forwarded-Secret",
+        "SharedSecretKeyVaultRef": "GQL-FORWARD-AUTH-SECRET",
+        "RequireTrustedProxy": true,
+        "TrustedNetworks": [
+          "127.0.0.1/32",
+          "::1/128",
+          "10.244.0.0/16"
+        ]
+      },
+      "BasicAuth": {
+        "Enabled": true,
+        "Users": [
+          {
+            "Username": "service-analyst",
+            "PasswordHashSha256": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+            "Roles": ["DataConsumer"],
+            "UserSid": "S-1-5-21-CONSUMER-1",
+            "GroupSids": ["S-1-5-21-FINANCE-ANALYSTS"]
+          }
+        ]
+      },
+      "EntraId": {
+        "Enabled": true,
+        "TenantId": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+        "ClientId": "a820c78a-f326-4d1d-91b4-2195f1342618",
+        "Audience": "api://gql-gateway"
+      },
+      "Adfs": {
+        "Enabled": false,
+        "MetadataAddress": "https://adfs.corp.local/federationmetadata/2007-06/federationmetadata.xml",
+        "Audience": "microsoft:identityserver:gql-gateway"
+      }
     },
 
     "GovernanceDb": {
@@ -49,6 +86,17 @@ Das Gateway folgt der **12-Factor-App**-Methodik und dem Prinzip des **Fail-Fast
       "ConnectionString": "Server=gov-db.corp.local;Database=GqlGovernance;Integrated Security=true;TrustServerCertificate=false;",
       "CommandTimeoutSeconds": 15,
       "EnableOutboxProcessor": true
+    },
+
+    "DataSources": {
+      "finance": {
+        "Provider": "SqlServer",
+        "ConnectionString": "Server=sql-finance.corp.local;Database=FinanceDb;Integrated Security=SSPI;TrustServerCertificate=true;"
+      },
+      "hr": {
+        "Provider": "PostgreSql",
+        "ConnectionString": "Host=pg-hr.corp.local;Port=5432;Database=HrDb;Username=gql_app;Password=SuperSecretPass!;SSL Mode=Require;"
+      }
     },
 
     "Caching": {
@@ -221,9 +269,10 @@ Implementiert die 6 Phasen des Zero-Downtime Reboots gemäß **NF-HA-01**.
 
 ---
 
-### 4.2 Authentifizierung & Active Directory (`Gateway:Authentication`)
-Steuert Windows SSO, Kerberos-Validierung und AD-Gruppenauflösung (**F-AUTH-01 bis F-AUTH-05**).
+### 4.2 Authentifizierung & Multi-Protocol Identity (`Gateway:Authentication`)
+Steuert Windows SSO, Kerberos-Validierung, Traefik ForwardAuth Ingress, Basic Auth, Microsoft Entra ID (Azure AD), AD FS und AD-Gruppenauflösung (**F-AUTH-01 bis F-AUTH-05**).
 
+#### 4.2.1 Kerberos & Base Auth
 | Schlüssel | Typ | Standard | Gültiger Bereich | Anforderung | Beschreibung |
 |:---|:---:|:---:|:---:|:---:|:---|
 | `Domain` | `string` | `"CORP.LOCAL"` | Gültiger FQDN | F-AUTH-01 | Active Directory Domäne. |
@@ -231,6 +280,47 @@ Steuert Windows SSO, Kerberos-Validierung und AD-Gruppenauflösung (**F-AUTH-01 
 | `RequireKerberosOnly` | `bool` | `true` | `true / false` | F-AUTH-04 | Verhindert NTLM-Fallbacks im Cluster-Betrieb (NTLM ist zustandsbehaftet). |
 | `GroupCacheTtlMinutes` | `int` | `5` | 1 – 60 min | F-AUTH-01 | Cache-Dauer für aufgelöste transitive AD-Gruppen-SIDs im Redis. |
 | `EnableTestAuthHandler` | `bool` | `false` | `true / false` | QA | Aktiviert Injection von Benutzer-SIDs via Header (`X-Test-User-Sid`). In Produktion streng verboten! |
+
+#### 4.2.2 Kubernetes Ingress ForwardAuth (`Gateway:Authentication:ForwardAuth`)
+| Schlüssel | Typ | Standard | Anforderung | Beschreibung |
+|:---|:---:|:---:|:---:|:---|
+| `Enabled` | `bool` | `false` | F-AUTH-06 | Aktiviert Traefik / Kubernetes Ingress ForwardAuth Scheme. |
+| `UserHeader` | `string` | `"X-Forwarded-User"` | F-AUTH-06 | HTTP-Header für Benutzer-Identifikator oder SID. |
+| `EmailHeader` | `string` | `"X-Forwarded-Email"` | F-AUTH-06 | HTTP-Header für Benutzer-E-Mail. |
+| `GroupsHeader` | `string` | `"X-Forwarded-Groups"` | F-AUTH-06 | HTTP-Header für kommagetrennte Gruppen-SIDs / Gruppennamen. |
+| `RolesHeader` | `string` | `"X-Forwarded-Roles"` | F-AUTH-06 | HTTP-Header für kommagetrennte Gateway-Rollen. |
+| `SharedSecretHeader` | `string` | `"X-Forwarded-Secret"` | NF-SEC-01 | HTTP-Header für Pre-Shared Secret zwischen Traefik und Gateway. |
+| `SharedSecretKeyVaultRef`| `string` | `""` | NF-SEC-03 | Key Vault Secret-Referenz für das Shared Secret. |
+| `RequireTrustedProxy` | `bool` | `true` | NF-SEC-01 | Zero-Trust: Erfordert zwingend, dass ForwardAuth-Header nur von IPs aus `TrustedNetworks` oder `TrustedProxies` stammen. |
+| `TrustedNetworks` | `List<string>` | `["127.0.0.1/32", "::1/128"]` | NF-SEC-01 | CIDR-Netzwerke vertrauenswürdiger Proxies (z. B. Kubernetes Pod-CIDR `"10.244.0.0/16"`). |
+| `TrustedProxies` | `List<string>` | `[]` | NF-SEC-01 | Feste IP-Adressen vertrauenswürdiger Ingress-Controller. |
+
+#### 4.2.3 Basic Authentication (`Gateway:Authentication:BasicAuth`)
+| Schlüssel | Typ | Standard | Anforderung | Beschreibung |
+|:---|:---:|:---:|:---:|:---|
+| `Enabled` | `bool` | `false` | F-AUTH-07 | Aktiviert HTTP Basic Auth auf `/graphql` und den Login-Endpunkt `/api/auth/login`. |
+| `Users` | `List<User>` | `[]` | F-AUTH-07 | Konfigurierte Konten mit `Username`, `PasswordHashSha256`, `Roles`, `UserSid` und `GroupSids`. |
+
+#### 4.2.4 Microsoft Entra ID & AD FS (`Gateway:Authentication:EntraId` / `Adfs`)
+| Sektion / Schlüssel | Typ | Standard | Anforderung | Beschreibung |
+|:---|:---:|:---:|:---:|:---|
+| `EntraId:Enabled` | `bool` | `false` | F-AUTH-08 | Aktiviert JWT Bearer Validierung für Microsoft Entra ID (Azure AD). |
+| `EntraId:TenantId` | `string` | `""` | F-AUTH-08 | Azure AD Tenant-ID GUID. |
+| `EntraId:ClientId` | `string` | `""` | F-AUTH-08 | Azure AD App Client-ID. |
+| `EntraId:Audience` | `string` | `""` | F-AUTH-08 | Erwartete Audience (z. B. `"api://gql-gateway"`). |
+| `Adfs:Enabled` | `bool` | `false` | F-AUTH-09 | Aktiviert JWT Bearer Validierung für AD FS. |
+| `Adfs:MetadataAddress` | `string` | `""` | F-AUTH-09 | AD FS Federation Metadata Endpoint URL. |
+| `Adfs:Audience` | `string` | `""` | F-AUTH-09 | AD FS Relying Party Identifier. |
+
+---
+
+### 4.3 Fachdaten-Verbindungen & RLS-Pushdown (`Gateway:DataSources`)
+Konfiguriert relationale Datenbanken für Fachdatenabfragen mit SQL-Where-Pushdown (**F-DATA-01, NF-SEC-02**).
+
+| Schlüssel | Typ | Standard | Optionen | Anforderung | Beschreibung |
+|:---|:---:|:---:|:---:|:---:|:---|
+| `DataSources:{name}:Provider` | `string` | `"SqlServer"` | `SqlServer`, `PostgreSql`, `Sqlite`, `Oracle`, `Databricks` | F-DATA-01 | Zieldatenbank-Dialekt. |
+| `DataSources:{name}:ConnectionString` | `string` | *(geheim)* | Gültige Connection String | F-DATA-01 | Verbindung zur Zieldatenbank. RLS-Filter werden direkt als SQL WHERE gepusht. |
 
 ---
 

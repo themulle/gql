@@ -2,8 +2,11 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
-using System.Net.Http.Headers;
+using System.Net.Sockets;
+using System.Runtime.CompilerServices;
+using System.Security;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Threading;
@@ -11,7 +14,10 @@ using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+
+[assembly: InternalsVisibleTo("GqlGateway.Tests.Unit")]
 
 namespace GqlGateway.Application.Services;
 
@@ -19,15 +25,29 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<DeclarativeHttpDataSourceExecutor> _logger;
+    private readonly IKeyVaultSecretProvider? _secretProvider;
+    private readonly IHostEnvironment? _environment;
+
+    private static readonly HashSet<string> DisallowedForwardHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization", "Cookie", "Set-Cookie", "Host", "Proxy-Authorization",
+        "Proxy-Authenticate", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto",
+        "X-User-Sid", "X-Tenant-Id", "X-Tenant-ID", "Forwarded", "X-Original-URL",
+        "X-Rewrite-URL", "X-Real-IP", "X-Gateway-Identity"
+    };
 
     public DataSourceType SupportedType => DataSourceType.HttpDeclarative;
 
     public DeclarativeHttpDataSourceExecutor(
         IHttpClientFactory httpClientFactory,
-        ILogger<DeclarativeHttpDataSourceExecutor> logger)
+        ILogger<DeclarativeHttpDataSourceExecutor> logger,
+        IKeyVaultSecretProvider? secretProvider = null,
+        IHostEnvironment? environment = null)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _secretProvider = secretProvider;
+        _environment = environment;
     }
 
     public async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> ExecuteAsync(
@@ -110,6 +130,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         var effectiveCt = timeoutCts?.Token ?? ct;
 
         var url = BuildUrl(descriptor, arguments, context.Principal);
+        await ValidateDestinationUrl(url, effectiveCt);
         var method = new HttpMethod(descriptor.Method ?? "GET");
 
         using var request = new HttpRequestMessage(method, url);
@@ -143,6 +164,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         var effectiveCt = timeoutCts?.Token ?? ct;
 
         var url = BuildUrl(descriptor, context.Arguments, context.Principal);
+        await ValidateDestinationUrl(url, effectiveCt);
         using var request = new HttpRequestMessage(HttpMethod.Post, url);
         ApplyHeadersAndAuth(request, descriptor, context);
 
@@ -195,7 +217,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         return allRows.ToList();
     }
 
-    private static string BuildUrl(
+    private string BuildUrl(
         HttpEndpointDescriptor descriptor,
         IReadOnlyDictionary<string, object?> arguments,
         ClaimsPrincipal principal)
@@ -251,26 +273,151 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         return fullUrl;
     }
 
-    private static void ApplyHeadersAndAuth(
+    internal void ValidateDestinationUrlSync(string fullUrl)
+    {
+        ValidateDestinationUrl(fullUrl, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    internal async Task ValidateDestinationUrl(string fullUrl, CancellationToken ct = default)
+    {
+        if (!Uri.TryCreate(fullUrl, UriKind.Absolute, out var uri))
+        {
+            throw new SecurityException($"Invalid destination URL: '{fullUrl}'.");
+        }
+
+        bool isDev = _environment?.IsDevelopment() ?? false;
+        if (!isDev && !string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SecurityException($"Insecure HTTP scheme '{uri.Scheme}' not permitted for outbound data sources in non-development environments.");
+        }
+
+        var host = uri.Host.TrimEnd('.').ToLowerInvariant();
+
+        // 1. Explicitly forbidden cloud metadata and cluster internal service hosts
+        if (host == "metadata.google.internal" ||
+            host.EndsWith(".metadata.google.internal", StringComparison.OrdinalIgnoreCase) ||
+            host == "kubernetes.default.svc" ||
+            host.EndsWith(".kubernetes.default.svc", StringComparison.OrdinalIgnoreCase) ||
+            host.StartsWith("kubernetes.default.svc.", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
+        }
+
+        // 2. In non-dev, validate IP addresses (against Loopback, LinkLocal, RFC 1918, IPv6 equivalents)
+        if (!isDev)
+        {
+            if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "169.254.169.254")
+            {
+                throw new SecurityException($"Outbound access to private/loopback/metadata address '{host}' is strictly forbidden.");
+            }
+
+            IPAddress[] addresses;
+            if (IPAddress.TryParse(host, out var directIp))
+            {
+                addresses = [directIp];
+            }
+            else
+            {
+                try
+                {
+                    addresses = await Dns.GetHostAddressesAsync(host, ct);
+                }
+                catch (SocketException ex)
+                {
+                    _logger.LogWarning(ex, "SSRF validation: Could not resolve host '{Host}' via DNS.", host);
+                    addresses = [];
+                }
+            }
+
+            foreach (var ip in addresses)
+            {
+                if (IsRestrictedIp(ip))
+                {
+                    throw new SecurityException($"Outbound access to private/loopback/restricted address '{ip}' is strictly forbidden.");
+                }
+            }
+        }
+    }
+
+    private static bool IsRestrictedIp(IPAddress ip)
+    {
+        if (ip.IsIPv4MappedToIPv6)
+        {
+            ip = ip.MapToIPv4();
+        }
+
+        if (IPAddress.IsLoopback(ip))
+        {
+            return true;
+        }
+
+        if (ip.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var bytes = ip.GetAddressBytes();
+            // RFC 1918: 10.0.0.0/8
+            if (bytes[0] == 10) return true;
+            // RFC 1918: 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
+            // RFC 1918: 192.168.0.0/16
+            if (bytes[0] == 192 && bytes[1] == 168) return true;
+            // LinkLocal: 169.254.0.0/16
+            if (bytes[0] == 169 && bytes[1] == 254) return true;
+            // Current network: 0.0.0.0/8
+            if (bytes[0] == 0) return true;
+            // Broadcast: 255.255.255.255
+            if (bytes[0] == 255 && bytes[1] == 255 && bytes[2] == 255 && bytes[3] == 255) return true;
+        }
+        else if (ip.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast)
+            {
+                return true;
+            }
+
+            var bytes = ip.GetAddressBytes();
+            // Unique Local Address (ULA) fc00::/7 (RFC 4193: fc00:: to fdff::)
+            if ((bytes[0] & 0xFE) == 0xFC)
+            {
+                return true;
+            }
+
+            // Unspecified address ::
+            if (ip.Equals(IPAddress.IPv6Any))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void ApplyHeadersAndAuth(
         HttpRequestMessage request,
         HttpEndpointDescriptor descriptor,
         DataSourceExecutionContext context)
     {
-        // 1. Forward configured headers from caller
-        if (context.HttpContext != null && descriptor.ForwardHeaders.Count > 0)
+        // 1. Forward configured headers from caller (enforcing security denylist)
+        if (context.RequestHeaders != null && descriptor.ForwardHeaders.Count > 0)
         {
             foreach (var (targetHeader, sourceHeader) in descriptor.ForwardHeaders)
             {
-                if (context.HttpContext.Request.Headers.TryGetValue(sourceHeader, out var vals) && vals.Count > 0)
+                if (DisallowedForwardHeaders.Contains(targetHeader) || DisallowedForwardHeaders.Contains(sourceHeader))
                 {
-                    request.Headers.TryAddWithoutValidation(targetHeader, vals.ToArray());
+                    _logger.LogWarning("Security: Blocked forwarding of sensitive header '{Header}' downstream.", targetHeader);
+                    continue;
+                }
+
+                if (context.RequestHeaders.TryGetValue(sourceHeader, out var vals) && vals.Length > 0)
+                {
+                    request.Headers.TryAddWithoutValidation(targetHeader, vals);
                 }
             }
         }
 
-        // 2. Tenant ID Header Pushdown
+        // 2. Tenant ID Header Pushdown - strip any forwarded value first
         if (!string.IsNullOrWhiteSpace(descriptor.TenantIdHeaderName))
         {
+            request.Headers.Remove(descriptor.TenantIdHeaderName);
             var tenantClaim = context.Principal.FindFirst("tenant_id")?.Value
                               ?? context.Principal.FindFirst("tid")?.Value
                               ?? context.Principal.FindFirst("tenant")?.Value;
@@ -280,7 +427,8 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             }
         }
 
-        // 3. User Identity Header Pushdown (X-User-Sid)
+        // 3. User Identity Header Pushdown (X-User-Sid) - strip any forwarded value first
+        request.Headers.Remove("X-User-Sid");
         var userSid = context.Principal.GetUserSid();
         if (userSid != null)
         {
@@ -288,21 +436,23 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         }
 
         // 4. Authentication Mode
+        request.Headers.Remove("Authorization");
         switch (descriptor.AuthMode)
         {
             case HttpAuthMode.ForwardBearerToken:
-                if (context.HttpContext != null &&
-                    context.HttpContext.Request.Headers.TryGetValue("Authorization", out var authHeader) &&
-                    !string.IsNullOrWhiteSpace(authHeader))
+                if (context.RequestHeaders != null &&
+                    context.RequestHeaders.TryGetValue("Authorization", out var authVals) &&
+                    authVals.Length > 0 &&
+                    !string.IsNullOrWhiteSpace(authVals[0]))
                 {
-                    var authStr = authHeader.ToString();
+                    var authStr = authVals[0];
                     if (authStr.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
                     {
-                        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", authStr["Bearer ".Length..].Trim());
+                        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", authStr["Bearer ".Length..].Trim());
                     }
                     else
                     {
-                        request.Headers.TryAddWithoutValidation("Authorization", authStr);
+                        _logger.LogWarning("Security: Rejected forwarding non-Bearer Authorization header to downstream HTTP data source.");
                     }
                 }
                 break;
@@ -311,14 +461,16 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
                 if (!string.IsNullOrWhiteSpace(descriptor.ApiKeyHeaderName) &&
                     !string.IsNullOrWhiteSpace(descriptor.ApiKeySecretName))
                 {
-                    request.Headers.TryAddWithoutValidation(descriptor.ApiKeyHeaderName, descriptor.ApiKeySecretName);
+                    var resolvedKey = ResolveSecretValue(descriptor.ApiKeySecretName);
+                    request.Headers.TryAddWithoutValidation(descriptor.ApiKeyHeaderName, resolvedKey);
                 }
                 break;
 
             case HttpAuthMode.ClientCredentials:
                 if (!string.IsNullOrWhiteSpace(descriptor.ApiKeySecretName))
                 {
-                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", descriptor.ApiKeySecretName);
+                    var resolvedToken = ResolveSecretValue(descriptor.ApiKeySecretName);
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", resolvedToken);
                 }
                 break;
 
@@ -326,6 +478,26 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             default:
                 break;
         }
+    }
+
+    private string ResolveSecretValue(string secretRefOrValue)
+    {
+        if (_secretProvider != null)
+        {
+            try
+            {
+                var secretBytes = _secretProvider.GetSecretBytes(secretRefOrValue);
+                if (secretBytes != null && secretBytes.Length > 0)
+                {
+                    return System.Text.Encoding.UTF8.GetString(secretBytes);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Secret reference '{SecretRef}' could not be resolved by provider. Using literal value as fallback.", secretRefOrValue);
+            }
+        }
+        return secretRefOrValue;
     }
 
     public static IReadOnlyList<IReadOnlyDictionary<string, object?>> ExtractRowsFromJson(

@@ -576,6 +576,76 @@ public class WalkingSkeletonIntegrationTests : IClassFixture<WebApplicationFacto
         fwdOptions.KnownIPNetworks.ShouldContain(net => net.BaseAddress.ToString() == "192.168.1.0" && net.PrefixLength == 24);
         fwdOptions.KnownProxies.ShouldContain(ip => ip.ToString() == "172.16.0.1");
     }
+
+    [Fact]
+    public async Task BasicAuth_LoginEndpoint_WithValidCredentials_Returns200AndUserInfo()
+    {
+        using var customFactory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Enabled", "true");
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Realm", "TestRealm");
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Users:0:Username", "testadmin");
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Users:0:Password", "Password123!");
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Users:0:Sid", "S-1-5-21-999-ADMIN");
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Users:0:Roles:0", "GovernanceAdmin");
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Users:0:GroupSids:0", "S-1-5-21-999-GROUP");
+        });
+
+        var client = customFactory.CreateClient();
+        var credentials = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("testadmin:Password123!"));
+        client.DefaultRequestHeaders.Add("Authorization", $"Basic {credentials}");
+
+        var response = await client.PostAsync("/api/auth/login", null);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        json.GetProperty("authenticated").GetBoolean().ShouldBeTrue();
+        json.GetProperty("user").GetString().ShouldBe("testadmin");
+        json.GetProperty("sid").GetString().ShouldBe("S-1-5-21-999-ADMIN");
+    }
+
+    [Fact]
+    public async Task BasicAuth_LoginEndpoint_WithInvalidCredentials_Returns401Unauthorized()
+    {
+        using var customFactory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Enabled", "true");
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Users:0:Username", "testadmin");
+            builder.UseSetting("Gateway:Authentication:BasicAuth:Users:0:Password", "Password123!");
+        });
+
+        var client = customFactory.CreateClient();
+        var credentials = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("testadmin:WrongPassword"));
+        client.DefaultRequestHeaders.Add("Authorization", $"Basic {credentials}");
+
+        var response = await client.GetAsync("/api/auth/login");
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task ForwardAuth_TraefikHeaders_AuthenticatesSuccessfully()
+    {
+        using var customFactory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Gateway:Authentication:ForwardAuth:Enabled", "true");
+            builder.UseSetting("Gateway:Authentication:ForwardAuth:RequireTrustedProxy", "true");
+            builder.UseSetting("Gateway:Authentication:ForwardAuth:TrustedProxies:0", "127.0.0.1");
+        });
+
+        var client = customFactory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Forwarded-User", "traefik_k8s_user");
+        client.DefaultRequestHeaders.Add("X-Forwarded-Roles", "FinanceReader");
+        client.DefaultRequestHeaders.Add("X-Forwarded-Groups", "S-1-5-21-TRAEFIK-GRP");
+
+        var response = await client.GetAsync("/api/auth/login");
+
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        json.GetProperty("authenticated").GetBoolean().ShouldBeTrue();
+        json.GetProperty("user").GetString().ShouldBe("traefik_k8s_user");
+        json.GetProperty("sid").GetString().ShouldBe("S-1-5-21-FORWARD-TRAEFIK_K8S_USER");
+    }
 }
 
 

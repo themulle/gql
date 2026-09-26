@@ -198,7 +198,7 @@ public class ChunkedQueryExecutorTests
         });
 
         var executor = new ChunkedQueryExecutor(defaultChunkSize: 100);
-        var executionService = new GqlGateway.GraphQL.Services.GatewayExecutionService(
+        var executionService = new GqlGateway.Application.Services.GatewayExecutionService(
             repository,
             resolutionService,
             cacheService,

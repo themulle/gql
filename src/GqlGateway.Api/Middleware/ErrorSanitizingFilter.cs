@@ -24,7 +24,8 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
         "QUERY_TOO_COMPLEX",
         "BAD_REQUEST",
         "ALREADY_PROCESSED",
-        "VALIDATION_ERROR"
+        "VALIDATION_ERROR",
+        "RESPONSE_TOO_LARGE"
     };
 
     private static readonly string[] SensitivePatterns =
@@ -43,6 +44,13 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
 
     public IError OnError(IError error)
     {
+        if (error.Exception is GqlGateway.Domain.Exceptions.GatewaySecurityException secEx)
+        {
+            error = error
+                .WithMessage(secEx.Message)
+                .WithCode(secEx.ErrorCode);
+        }
+
         if (_environment.IsDevelopment())
         {
             return error;

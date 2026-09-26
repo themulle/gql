@@ -3,15 +3,16 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Exceptions;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
-using GqlGateway.GraphQL.Types;
-using HotChocolate;
-using Microsoft.AspNetCore.Http;
+using GqlGateway.Domain.Options;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
-namespace GqlGateway.GraphQL.Services;
+namespace GqlGateway.Application.Services;
 
-public sealed partial class GatewayExecutionService
+public sealed partial class GatewayExecutionService : IGatewayExecutionService
 {
     [GeneratedRegex(@"(?:\[[a-zA-Z0-9_]+\]|[a-zA-Z_][a-zA-Z0-9_]*)\.(\[?[a-zA-Z_][a-zA-Z0-9_]*\]?)", RegexOptions.IgnoreCase, matchTimeoutMilliseconds: 1000)]
     private static partial Regex TablePrefixRegex();
@@ -32,12 +33,11 @@ public sealed partial class GatewayExecutionService
     private readonly GatewayOptions? _options;
     private readonly ITrafficDrainController? _drainController;
     private readonly IEnumerable<IDataSourceExecutor>? _dataSourceExecutors;
-    private readonly IHttpContextAccessor? _httpContextAccessor;
-    private readonly IDataSourceExecutor _defaultSqlExecutor = new GqlGateway.Application.Services.SqlDataSourceExecutor();
+    private readonly IDataSourceExecutor _defaultSqlExecutor = new SqlDataSourceExecutor();
 
     public int LastDispatchedChildQueryCount { get; private set; }
 
-    [Microsoft.Extensions.DependencyInjection.ActivatorUtilitiesConstructor]
+    [ActivatorUtilitiesConstructor]
     public GatewayExecutionService(
         ITableMetadataRepository metadataRepository,
         IConsentRepository consentRepository,
@@ -46,10 +46,9 @@ public sealed partial class GatewayExecutionService
         IConsentCacheService cacheService,
         IColumnMaskingProvider maskingProvider,
         IChunkedQueryExecutor? chunkedQueryExecutor = null,
-        Microsoft.Extensions.Options.IOptions<GatewayOptions>? options = null,
+        IOptions<GatewayOptions>? options = null,
         ITrafficDrainController? drainController = null,
-        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null,
-        IHttpContextAccessor? httpContextAccessor = null)
+        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null)
     {
         _metadataRepository = metadataRepository;
         _consentRepository = consentRepository;
@@ -57,11 +56,10 @@ public sealed partial class GatewayExecutionService
         _resolutionService = resolutionService;
         _cacheService = cacheService;
         _maskingProvider = maskingProvider;
-        _chunkedQueryExecutor = chunkedQueryExecutor ?? new GqlGateway.Application.Services.ChunkedQueryExecutor(500);
+        _chunkedQueryExecutor = chunkedQueryExecutor ?? new ChunkedQueryExecutor(500);
         _options = options?.Value;
         _drainController = drainController;
         _dataSourceExecutors = dataSourceExecutors;
-        _httpContextAccessor = httpContextAccessor;
     }
 
     public GatewayExecutionService(
@@ -70,65 +68,62 @@ public sealed partial class GatewayExecutionService
         IConsentCacheService cacheService,
         IColumnMaskingProvider maskingProvider,
         IChunkedQueryExecutor? chunkedQueryExecutor = null,
-        Microsoft.Extensions.Options.IOptions<GatewayOptions>? options = null,
+        IOptions<GatewayOptions>? options = null,
         ITrafficDrainController? drainController = null,
-        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null,
-        IHttpContextAccessor? httpContextAccessor = null)
-        : this(repository, repository, repository, resolutionService, cacheService, maskingProvider, chunkedQueryExecutor, options, drainController, dataSourceExecutors, httpContextAccessor)
+        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null)
+        : this(repository, repository, repository, resolutionService, cacheService, maskingProvider, chunkedQueryExecutor, options, drainController, dataSourceExecutors)
     {
     }
 
     public Task<(IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, TableAccessDecision Decision)> ExecuteTableQueryAsync(
         ClaimsPrincipal? principal,
         TableIdentifier table,
-        int first = 50,
-        int after = 0,
+        int? first = null,
+        int? after = null,
         CancellationToken ct = default)
-        => ExecuteTableQueryAsync(principal, table, first, after, null, ct);
+        => ExecuteTableQueryAsync(principal, table, first, after, null, null, null, ct);
+
+    public Task<(IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, TableAccessDecision Decision)> ExecuteTableQueryAsync(
+        ClaimsPrincipal? principal,
+        TableIdentifier table,
+        int? first,
+        int? after,
+        IReadOnlyDictionary<string, object?>? queryArguments,
+        IReadOnlyList<string>? requestedFields = null,
+        CancellationToken ct = default)
+        => ExecuteTableQueryAsync(principal, table, first, after, queryArguments, requestedFields, null, ct);
 
     public async Task<(IReadOnlyList<IReadOnlyDictionary<string, object?>> Rows, TableAccessDecision Decision)> ExecuteTableQueryAsync(
         ClaimsPrincipal? principal,
         TableIdentifier table,
-        int first,
-        int after,
+        int? first,
+        int? after,
         IReadOnlyDictionary<string, object?>? queryArguments,
+        IReadOnlyList<string>? requestedFields,
+        IReadOnlyDictionary<string, string[]>? requestHeaders,
         CancellationToken ct = default)
     {
         using var _ = _drainController?.TrackQuery();
         if (principal == null || principal.Identity?.IsAuthenticated != true)
         {
-            throw new GraphQLException(ErrorBuilder.New()
-                .SetCode("UNAUTHORIZED")
-                .SetMessage("Authentication is required to query tables.")
-                .Build());
+            throw new GatewayUnauthorizedException("Authentication is required to query tables.");
         }
 
         var userSidNullable = principal.GetUserSid();
         if (userSidNullable == null)
         {
-            throw new GraphQLException(ErrorBuilder.New()
-                .SetCode("UNAUTHORIZED")
-                .SetMessage("Keine gültige Benutzer-SID im Authentifizierungstoken vorhanden.")
-                .Build());
+            throw new GatewayUnauthorizedException("Keine gültige Benutzer-SID im Authentifizierungstoken vorhanden.");
         }
         var userSid = userSidNullable.Value;
 
-        var groupSids = principal.FindAll(ClaimTypes.GroupSid)
-            .Select(c => new Sid(c.Value))
-            .ToHashSet();
-
-        var roles = principal.FindAll(ClaimTypes.Role)
-            .Select(c => c.Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var groupSids = principal.GetGroupSids();
+        var roles = principal.GetUserRoles();
 
         // Verify table existence in metadata catalog
         var metadata = await _metadataRepository.GetTableMetadataAsync(table, ct);
         if (metadata == null)
         {
-            throw new GraphQLException(ErrorBuilder.New()
-                .SetCode("NOT_FOUND")
-                .SetMessage($"Tabelle '{table}' existiert nicht im Metadatenkatalog.")
-                .Build());
+            throw new TableNotFoundException(table);
         }
 
         // Check Consent Cache (L1/L2 with Epoch Validation & Group/Role Context Hash)
@@ -164,27 +159,20 @@ public sealed partial class GatewayExecutionService
         // Enforce Access
         if (!decision.IsAllowed)
         {
-            throw new GraphQLException(ErrorBuilder.New()
-                .SetCode("FORBIDDEN")
-                .SetMessage($"Zugriff auf Tabelle '{table}' verweigert: {string.Join("; ", decision.DeniedReasons)}")
-                .Build());
+            throw new GatewayForbiddenException($"Zugriff auf Tabelle '{table}' verweigert: {string.Join("; ", decision.DeniedReasons)}");
         }
 
         // Generate/Fetch query result via IDataSourceExecutor (SQL, Declarative HTTP, or Plugin)
         var maxRows = _options?.GraphQL?.MaxResponseRows > 0 ? _options.GraphQL.MaxResponseRows : 1000;
-        var rowLimit = Math.Clamp(first, 1, maxRows);
+        var rowLimit = Math.Clamp(first ?? 50, 1, maxRows);
 
-        var executor = _dataSourceExecutors?.FirstOrDefault(e => e.SupportedType == metadata.DataSourceType)
-                       ?? (metadata.DataSourceType == DataSourceType.Sql ? _defaultSqlExecutor : null);
-        if (executor == null)
-        {
-            throw new InvalidOperationException($"Kein Datenquellen-Executor für Typ '{metadata.DataSourceType}' auf Tabelle '{table}' registriert.");
-        }
+        var executor = _dataSourceExecutors?.FirstOrDefault(e => e.SupportedType == metadata.Table.DataSourceType)
+                       ?? _defaultSqlExecutor;
 
         var execArgs = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
             ["limit"] = rowLimit,
-            ["offset"] = after
+            ["offset"] = after ?? 0
         };
         if (queryArguments != null)
         {
@@ -194,23 +182,55 @@ public sealed partial class GatewayExecutionService
             }
         }
 
+        // Zero-Trust: Never request columns that are already denied by consent policy
+        var authorizedColumns = metadata.Columns
+            .Where(c => decision.GetColumnAccess(c.ColumnName) != ColumnAccessLevel.Deny)
+            .Select(c => c.ColumnName)
+            .ToList();
+
+        var effectiveRequestedFields = (requestedFields != null && requestedFields.Count > 0)
+            ? requestedFields.Where(f => authorizedColumns.Contains(f, StringComparer.OrdinalIgnoreCase)).ToList()
+            : authorizedColumns;
+
+        if (effectiveRequestedFields.Count == 0 && authorizedColumns.Count > 0)
+        {
+            effectiveRequestedFields = authorizedColumns;
+        }
+
         var execContext = new DataSourceExecutionContext(
             SourceName: metadata.Table.SourceName,
             Metadata: metadata,
             Principal: principal,
             AccessDecision: decision,
             Arguments: execArgs,
-            RequestedFields: metadata.Columns.Select(c => c.ColumnName).ToList(),
-            HttpContext: _httpContextAccessor?.HttpContext,
+            RequestedFields: effectiveRequestedFields,
+            RequestHeaders: requestHeaders,
             Limit: rowLimit,
-            Offset: after
+            Offset: after ?? 0
         );
 
         var rawRows = await executor.ExecuteAsync(execContext, ct);
 
         // Central Zero-Trust Pipeline: Step 1: In-Memory RLS Post-Filtering
+        // For SQL data sources where RLS pushdown has already been executed in the DB engine via WHERE clause,
+        // redundant in-memory DataTable filtering is skipped.
+        // For non-SQL data sources (REST, Plugins) or synthetic dev/test mock fallback without DB pushdown,
+        // in-memory evaluation is enforced.
         var filteredRows = rawRows.ToList();
-        if (!string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
+
+        bool isSyntheticMockData = rawRows.Count > 0 &&
+                                   rawRows[0].TryGetValue("name", out var n) &&
+                                   n is string nameStr &&
+                                   nameStr.StartsWith($"Sample {metadata.Identifier.TableName} Record #", StringComparison.Ordinal);
+
+        bool isRealConnectionConfigured = _options?.DataSources?.Connections != null &&
+                                          _options.DataSources.Connections.TryGetValue(metadata.Table.SourceName, out var conn) &&
+                                          !string.IsNullOrWhiteSpace(conn?.ConnectionString);
+
+        bool rlsPushdownAlreadyOccurred = (executor is SqlDataSourceExecutor && !isSyntheticMockData) ||
+                                          (executor is SqlDataSourceExecutor && isRealConnectionConfigured);
+
+        if (!rlsPushdownAlreadyOccurred && !string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
         {
             filteredRows = FilterRows(filteredRows, decision.CombinedRowFilterSql, metadata);
         }
@@ -225,7 +245,7 @@ public sealed partial class GatewayExecutionService
                 var access = decision.GetColumnAccess(col.ColumnName);
                 if (access == ColumnAccessLevel.Deny)
                 {
-                    continue; // Zero-Trust: strip denied column
+                    continue; // Strip denied columns completely
                 }
 
                 if (r.TryGetValue(col.ColumnName, out var rawVal))
@@ -245,23 +265,24 @@ public sealed partial class GatewayExecutionService
             processedRows.Add(dict);
         }
 
-        // Enforce configured MaxResponseBytes
+        // Central Zero-Trust Pipeline: Step 3: Hard Response Size Cap Enforcement
         var maxBytes = _options?.GraphQL?.MaxResponseBytes > 0 ? _options.GraphQL.MaxResponseBytes : 10 * 1024 * 1024;
         long estimatedBytes = 0;
+
         foreach (var row in processedRows)
         {
-            foreach (var kvp in row)
+            foreach (var (key, val) in row)
             {
-                estimatedBytes += kvp.Key.Length * 2;
-                if (kvp.Value is string s)
+                estimatedBytes += key.Length * 2;
+                if (val is string s)
                 {
                     estimatedBytes += s.Length * 2;
                 }
-                else if (kvp.Value is byte[] b)
+                else if (val is byte[] b)
                 {
                     estimatedBytes += b.Length;
                 }
-                else
+                else if (val != null)
                 {
                     estimatedBytes += 16;
                 }
@@ -270,10 +291,7 @@ public sealed partial class GatewayExecutionService
 
         if (estimatedBytes > maxBytes)
         {
-            throw new GraphQLException(ErrorBuilder.New()
-                .SetCode("RESPONSE_TOO_LARGE")
-                .SetMessage($"Antwortgröße ({estimatedBytes} Bytes) überschreitet das konfigurierte Limit von {maxBytes} Bytes.")
-                .Build());
+            throw new GatewaySecurityException($"Antwortgröße ({estimatedBytes} Bytes) überschreitet das konfigurierte Limit von {maxBytes} Bytes.", "RESPONSE_TOO_LARGE");
         }
 
         return (processedRows, decision);
@@ -428,42 +446,36 @@ public sealed partial class GatewayExecutionService
         for (int i = 0; i < tupleString.Length; i++)
         {
             char c = tupleString[i];
-            if (c == '\'')
+
+            if (c == '\'' && (i == 0 || tupleString[i - 1] != '\\'))
             {
-                currentVal.Append(c);
-                if (inQuote && i + 1 < tupleString.Length && tupleString[i + 1] == '\'')
-                {
-                    currentVal.Append('\'');
-                    i++;
-                }
-                else
-                {
-                    inQuote = !inQuote;
-                }
-            }
-            else if (inQuote)
-            {
+                inQuote = !inQuote;
                 currentVal.Append(c);
             }
-            else if (c == '(')
+            else if (!inQuote && c == '(')
             {
                 inTuple = true;
                 currentTuple = new List<string>();
                 currentVal.Clear();
             }
-            else if (c == ')')
+            else if (!inQuote && c == ')')
             {
                 if (inTuple)
                 {
-                    currentTuple.Add(currentVal.ToString().Trim());
-                    currentVal.Clear();
+                    var trimmed = currentVal.ToString().Trim();
+                    if (trimmed.Length > 0)
+                    {
+                        currentTuple.Add(trimmed);
+                    }
                     tuples.Add(currentTuple);
                     inTuple = false;
+                    currentVal.Clear();
                 }
             }
-            else if (c == ',' && inTuple)
+            else if (!inQuote && c == ',' && inTuple)
             {
-                currentTuple.Add(currentVal.ToString().Trim());
+                var trimmed = currentVal.ToString().Trim();
+                currentTuple.Add(trimmed);
                 currentVal.Clear();
             }
             else if (inTuple)
@@ -480,30 +492,26 @@ public sealed partial class GatewayExecutionService
         TableIdentifier table,
         CancellationToken ct = default)
     {
+        using var _ = _drainController?.TrackQuery();
         if (principal == null || principal.Identity?.IsAuthenticated != true)
         {
-            return TableAccessDecision.Denied(table, "Authentication required");
+            return TableAccessDecision.Denied(table, "Authentication required.");
         }
 
         var userSidNullable = principal.GetUserSid();
         if (userSidNullable == null)
         {
-            return TableAccessDecision.Denied(table, "Keine gültige Benutzer-SID im Authentifizierungstoken vorhanden.");
+            return TableAccessDecision.Denied(table, "Valid user SID required.");
         }
         var userSid = userSidNullable.Value;
 
-        var groupSids = principal.FindAll(ClaimTypes.GroupSid)
-            .Select(c => new Sid(c.Value))
-            .ToHashSet();
-
-        var roles = principal.FindAll(ClaimTypes.Role)
-            .Select(c => c.Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var groupSids = principal.GetGroupSids();
+        var roles = principal.GetUserRoles();
 
         var metadata = await _metadataRepository.GetTableMetadataAsync(table, ct);
         if (metadata == null)
         {
-            return TableAccessDecision.Denied(table, $"Table '{table}' not found in catalog");
+            return TableAccessDecision.Denied(table, $"Table '{table}' not found in metadata catalog.");
         }
 
         var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
@@ -512,6 +520,7 @@ public sealed partial class GatewayExecutionService
         {
             var allSubjects = groupSids.Append(userSid).ToList();
             var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
+
             decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
 
             var ttl = metadata.Table.IsHighlySensitive
@@ -532,28 +541,6 @@ public sealed partial class GatewayExecutionService
         }, ct);
 
         return decision;
-    }
-
-    public async Task<IReadOnlyList<InvoiceRecord>> GetInvoicesWithItemsAsync(
-        ClaimsPrincipal? principal,
-        int first = 10,
-        CancellationToken ct = default)
-    {
-        var parentTableId = new TableIdentifier("finance", "dbo", "finance_table_1");
-        var (rows, _) = await ExecuteTableQueryAsync(principal, parentTableId, first, 0, ct);
-
-        var invoices = new List<InvoiceRecord>();
-        foreach (var r in rows)
-        {
-            invoices.Add(new InvoiceRecord
-            {
-                Id = r.TryGetValue("id", out var id) && id != null ? id.ToString()! : Guid.NewGuid().ToString(),
-                Amount = r.TryGetValue("amount", out var amt) && amt is decimal d ? d : 1500.00m,
-                Vendor = r.TryGetValue("name", out var n) && n != null ? n.ToString()! : "Vendor Alpha",
-                Email = r.TryGetValue("email", out var em) ? em?.ToString() : null
-            });
-        }
-        return invoices;
     }
 
     public async Task<IReadOnlyDictionary<string, List<InvoiceItemRecord>>> LoadInvoiceItemsBatchAsync(

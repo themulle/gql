@@ -93,7 +93,7 @@ public sealed class PluginManagerTests
             AccessDecision: decision,
             Arguments: arguments,
             RequestedFields: ["invoice_id", "amount", "customer_id"],
-            HttpContext: null
+            RequestHeaders: null
         );
     }
 

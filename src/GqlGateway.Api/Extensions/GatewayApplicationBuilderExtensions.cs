@@ -1,7 +1,9 @@
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
@@ -12,6 +14,16 @@ public static class GatewayApplicationBuilderExtensions
 {
     public static WebApplication UseGatewayPipeline(this WebApplication app, GatewayOptions gatewayOptions)
     {
+        // Capture physical TCP remote IP before UseForwardedHeaders() overrides it with X-Forwarded-For
+        app.Use(async (context, next) =>
+        {
+            if (context.Connection.RemoteIpAddress != null)
+            {
+                context.Items["OriginalTcpRemoteIp"] = context.Connection.RemoteIpAddress;
+            }
+            await next();
+        });
+
         app.UseForwardedHeaders();
         app.UseCors();
 
@@ -137,12 +149,30 @@ public static class GatewayApplicationBuilderExtensions
     {
         app.MapGet("/health/live", () => Results.Ok(new { status = "Live", timestamp = DateTimeOffset.UtcNow }));
 
-        app.MapGet("/health/ready", (ITrafficDrainController controller) =>
+        app.MapGet("/health/ready", async (
+            ITrafficDrainController controller,
+            IGatewayHealthCheckService? healthCheckService,
+            CancellationToken ct) =>
         {
             if (controller.IsDraining)
             {
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
             }
+
+            if (healthCheckService != null)
+            {
+                var report = await healthCheckService.CheckHealthAsync(ct).ConfigureAwait(false);
+                if (!report.IsHealthy)
+                {
+                    return Results.Json(new
+                    {
+                        status = "Unhealthy",
+                        timestamp = DateTimeOffset.UtcNow,
+                        components = report.Components
+                    }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                }
+            }
+
             return Results.Ok(new { status = "Ready", timestamp = DateTimeOffset.UtcNow });
         });
 
@@ -157,6 +187,42 @@ public static class GatewayApplicationBuilderExtensions
         }
 
         app.MapGraphQL(endpoint).RequireAuthorization();
+
+        app.MapGet("/api/auth/login", (ClaimsPrincipal principal) =>
+        {
+            var sid = principal.GetUserSid()?.Value;
+            var name = principal.Identity?.Name ?? sid;
+            var roles = principal.GetUserRoles().ToList();
+            var groups = principal.GetGroupSids().Select(g => g.Value).ToList();
+
+            return Results.Ok(new
+            {
+                authenticated = true,
+                user = name,
+                sid = sid,
+                roles = roles,
+                groups = groups,
+                authenticationType = principal.Identity?.AuthenticationType ?? "Basic"
+            });
+        }).RequireAuthorization();
+
+        app.MapPost("/api/auth/login", (ClaimsPrincipal principal) =>
+        {
+            var sid = principal.GetUserSid()?.Value;
+            var name = principal.Identity?.Name ?? sid;
+            var roles = principal.GetUserRoles().ToList();
+            var groups = principal.GetGroupSids().Select(g => g.Value).ToList();
+
+            return Results.Ok(new
+            {
+                authenticated = true,
+                user = name,
+                sid = sid,
+                roles = roles,
+                groups = groups,
+                authenticationType = principal.Identity?.AuthenticationType ?? "Basic"
+            });
+        }).RequireAuthorization();
 
         app.MapPost("/api/webhooks/openmetadata", async (
             HttpContext context,

@@ -1,0 +1,178 @@
+using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Encodings.Web;
+using GqlGateway.Domain.Options;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace GqlGateway.Api.Security;
+
+public sealed class BasicAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+{
+    public const string SchemeName = "Basic";
+    private readonly GatewayOptions _gatewayOptions;
+
+    // Constant dummy values for timing attack mitigation when username is not found
+    private static readonly byte[] DummySalt = "GqlGatewayTimingDefenseSalt2026!"u8.ToArray();
+    private static readonly byte[] DummyTargetHash = new byte[32];
+
+    public BasicAuthenticationHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder,
+        IOptions<GatewayOptions> gatewayOptions)
+        : base(options, logger, encoder)
+    {
+        _gatewayOptions = gatewayOptions?.Value ?? new GatewayOptions();
+    }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        if (!_gatewayOptions.Authentication.BasicAuth.Enabled)
+        {
+            return Task.FromResult(AuthenticateResult.NoResult());
+        }
+
+        var authHeader = Request.Headers.Authorization.ToString();
+        if (string.IsNullOrWhiteSpace(authHeader) ||
+            !authHeader.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult(AuthenticateResult.NoResult());
+        }
+
+        var encoded = authHeader["Basic ".Length..].Trim();
+        byte[] decodedBytes;
+        try
+        {
+            decodedBytes = Convert.FromBase64String(encoded);
+        }
+        catch
+        {
+            return Task.FromResult(AuthenticateResult.Fail("Invalid Base64 encoding in Basic authorization header."));
+        }
+
+        var credentialString = Encoding.UTF8.GetString(decodedBytes);
+        var colonIndex = credentialString.IndexOf(':');
+        if (colonIndex <= 0)
+        {
+            return Task.FromResult(AuthenticateResult.Fail("Invalid Basic authorization format. Expected 'username:password'."));
+        }
+
+        var username = credentialString[..colonIndex];
+        var password = credentialString[(colonIndex + 1)..];
+
+        var configuredUser = _gatewayOptions.Authentication.BasicAuth.Users
+            .FirstOrDefault(u => string.Equals(u.Username, username, StringComparison.OrdinalIgnoreCase));
+
+        if (configuredUser == null)
+        {
+            // SEC-03: Mitigate user enumeration timing attacks by running equivalent cryptographic hash calculation
+            var dummyDerived = Rfc2898DeriveBytes.Pbkdf2(
+                password,
+                DummySalt,
+                iterations: 10_000,
+                HashAlgorithmName.SHA256,
+                outputLength: 32);
+            CryptographicOperations.FixedTimeEquals(dummyDerived, DummyTargetHash);
+
+            return Task.FromResult(AuthenticateResult.Fail("Invalid username or password."));
+        }
+
+        bool passwordMatches = VerifyPassword(password, configuredUser.Password);
+
+        if (!passwordMatches)
+        {
+            return Task.FromResult(AuthenticateResult.Fail("Invalid username or password."));
+        }
+
+        var sid = !string.IsNullOrWhiteSpace(configuredUser.Sid)
+            ? configuredUser.Sid
+            : $"S-1-5-21-BASIC-{username.ToUpperInvariant()}";
+
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.Name, username),
+            new(ClaimTypes.NameIdentifier, username),
+            new(ClaimTypes.PrimarySid, sid),
+            new("objectSid", sid)
+        };
+
+        foreach (var role in configuredUser.Roles)
+        {
+            claims.Add(new Claim(ClaimTypes.Role, role));
+        }
+
+        foreach (var group in configuredUser.GroupSids)
+        {
+            claims.Add(new Claim(ClaimTypes.GroupSid, group));
+        }
+
+        var identity = new ClaimsIdentity(claims, Scheme.Name);
+        var principal = new ClaimsPrincipal(identity);
+        var ticket = new AuthenticationTicket(principal, Scheme.Name);
+
+        return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+
+    private static bool VerifyPassword(string inputPassword, string storedPassword)
+    {
+        // 1. Support modern Salted PBKDF2: $pbkdf2$iterations$salt$hash
+        if (storedPassword.StartsWith("$pbkdf2$", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = storedPassword.Split('$');
+            // Format: empty, "pbkdf2", iterations, salt_b64, hash_b64
+            if (parts.Length == 5 && int.TryParse(parts[2], out var iterations))
+            {
+                try
+                {
+                    var salt = Convert.FromBase64String(parts[3]);
+                    var expectedHash = Convert.FromBase64String(parts[4]);
+
+                    var computedHash = Rfc2898DeriveBytes.Pbkdf2(
+                        inputPassword,
+                        salt,
+                        iterations,
+                        HashAlgorithmName.SHA256,
+                        expectedHash.Length);
+
+                    return CryptographicOperations.FixedTimeEquals(expectedHash, computedHash);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+
+        var userPasswordBytes = Encoding.UTF8.GetBytes(storedPassword);
+        var inputPasswordBytes = Encoding.UTF8.GetBytes(inputPassword);
+
+        // 2. Exact match (e.g. Development / test plaintext)
+        if (CryptographicOperations.FixedTimeEquals(userPasswordBytes, inputPasswordBytes))
+        {
+            return true;
+        }
+
+        // 3. SHA-256 Hex Hash match
+        var inputHash = Convert.ToHexString(SHA256.HashData(inputPasswordBytes));
+        var inputHashBytes = Encoding.UTF8.GetBytes(inputHash);
+        if (CryptographicOperations.FixedTimeEquals(userPasswordBytes, inputHashBytes))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    protected override Task HandleChallengeAsync(AuthenticationProperties properties)
+    {
+        var realm = string.IsNullOrWhiteSpace(_gatewayOptions.Authentication.BasicAuth.Realm)
+            ? "GqlGateway"
+            : _gatewayOptions.Authentication.BasicAuth.Realm;
+        Response.Headers.Append("WWW-Authenticate", $"Basic realm=\"{realm}\"");
+        Response.StatusCode = Microsoft.AspNetCore.Http.StatusCodes.Status401Unauthorized;
+        return Task.CompletedTask;
+    }
+}

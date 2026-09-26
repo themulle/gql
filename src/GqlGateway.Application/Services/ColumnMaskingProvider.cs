@@ -169,35 +169,97 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
 
     private static string MaskEmail(string email)
     {
-        var atIndex = email.IndexOf('@');
+        ReadOnlySpan<char> span = email.AsSpan();
+        int atIndex = span.IndexOf('@');
         if (atIndex <= 1)
         {
             return "***@***";
         }
 
-        var username = email[..atIndex];
-        var domain = email[(atIndex + 1)..];
+        char firstChar = span[0];
+        ReadOnlySpan<char> domain = span[(atIndex + 1)..];
+        int dotIndex = domain.LastIndexOf('.');
 
-        var maskedUser = $"{username[0]}***";
-        var dotIndex = domain.LastIndexOf('.');
-        var maskedDomain = dotIndex > 0
-            ? $"***.{domain[(dotIndex + 1)..]}"
-            : "***";
+        if (dotIndex > 0)
+        {
+            int tldStart = atIndex + 1 + dotIndex + 1;
+            int tldLength = span.Length - tldStart;
+            int totalLength = 9 + tldLength;
 
-        return $"{maskedUser}@{maskedDomain}";
+            return string.Create(totalLength, (email, firstChar, tldStart, tldLength), static (buffer, state) =>
+            {
+                buffer[0] = state.firstChar;
+                "***@***.".AsSpan().CopyTo(buffer[1..9]);
+                state.email.AsSpan(state.tldStart, state.tldLength).CopyTo(buffer[9..]);
+            });
+        }
+        else
+        {
+            return string.Create(8, firstChar, static (buffer, ch) =>
+            {
+                buffer[0] = ch;
+                "***@***".AsSpan().CopyTo(buffer[1..]);
+            });
+        }
     }
 
     private static string MaskIban(string iban)
     {
-        var clean = iban.Replace(" ", "");
-        if (clean.Length < 8)
+        Span<char> clean = stackalloc char[34];
+        char[]? rented = null;
+        int cleanLen = 0;
+        ReadOnlySpan<char> ibanSpan = iban.AsSpan();
+
+        for (int i = 0; i < ibanSpan.Length; i++)
         {
-            return "****";
+            char c = ibanSpan[i];
+            if (c != ' ')
+            {
+                if (cleanLen == clean.Length)
+                {
+                    int newSize = clean.Length * 2;
+                    var newRented = System.Buffers.ArrayPool<char>.Shared.Rent(newSize);
+                    clean.CopyTo(newRented);
+                    if (rented != null)
+                    {
+                        System.Buffers.ArrayPool<char>.Shared.Return(rented);
+                    }
+                    rented = newRented;
+                    clean = rented;
+                }
+                clean[cleanLen++] = c;
+            }
         }
 
-        var country = clean[..2];
-        var lastDigits = clean[^4..];
-        return $"{country}** **** **** {lastDigits}";
+        try
+        {
+            if (cleanLen < 8)
+            {
+                return "****";
+            }
+
+            var cleanSpan = clean[..cleanLen];
+            var country = cleanSpan[..2];
+            var lastDigits = cleanSpan[^4..];
+
+            return string.Create(19, (country[0], country[1], lastDigits[0], lastDigits[1], lastDigits[2], lastDigits[3]), static (buffer, state) =>
+            {
+                buffer[0] = state.Item1;
+                buffer[1] = state.Item2;
+                "** **** **** ".AsSpan().CopyTo(buffer[2..15]);
+                buffer[15] = state.Item3;
+                buffer[16] = state.Item4;
+                buffer[17] = state.Item5;
+                buffer[18] = state.Item6;
+            });
+        }
+        finally
+        {
+            if (rented != null)
+            {
+                System.Buffers.ArrayPool<char>.Shared.Return(rented);
+            }
+        }
     }
 
     private static string MaskPhone(string phone)

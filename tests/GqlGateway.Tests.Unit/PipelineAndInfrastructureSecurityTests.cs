@@ -3,9 +3,9 @@ using System.Text.Json;
 using GqlGateway.Application.Interfaces;
 using HotChocolate;
 using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Exceptions;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
-using GqlGateway.GraphQL.Services;
 using GqlGateway.Infrastructure.Messaging;
 using GqlGateway.Application.Services;
 using GqlGateway.GraphQL.Filtering;
@@ -200,8 +200,8 @@ public class PipelineAndInfrastructureSecurityTests
             new Claim("objectSid", "S-1-5-21-AUDIT-TEST")
         }, "TestAuth"));
 
-        // Act: Must throw GraphQLException because access is denied, but audit log is recorded before throw
-        await Should.ThrowAsync<GraphQLException>(async () =>
+        // Act: Must throw GatewaySecurityException because access is denied, but audit log is recorded before throw
+        await Should.ThrowAsync<GatewaySecurityException>(async () =>
         {
             await executionService.ExecuteTableQueryAsync(principal, tableId);
         });

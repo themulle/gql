@@ -2,7 +2,6 @@ using System.Security.Claims;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
-using Microsoft.AspNetCore.Http;
 
 namespace GqlGateway.Application.Interfaces;
 
@@ -22,7 +21,7 @@ public sealed record DataSourceExecutionContext(
     TableAccessDecision AccessDecision,
     IReadOnlyDictionary<string, object?> Arguments,
     IReadOnlyList<string> RequestedFields,
-    HttpContext? HttpContext,
+    IReadOnlyDictionary<string, string[]>? RequestHeaders = null,
     int Limit = 1000,
     int Offset = 0
 );

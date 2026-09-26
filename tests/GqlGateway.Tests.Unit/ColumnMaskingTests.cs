@@ -159,5 +159,35 @@ public class ColumnMaskingTests
         var secretBytes = secretProvider.GetSecretBytes("https://my-vault.vault.azure.net/secrets/hmac-key/v1");
         System.Text.Encoding.UTF8.GetString(secretBytes).ShouldBe("SuperSecretHmacKeyValue123!");
     }
+
+    [Theory]
+    [InlineData("john.doe@company.org", "j***@***.org")]
+    [InlineData("alice@corp.internal.com", "a***@***.com")]
+    [InlineData("bob@localhost", "b***@***")]
+    [InlineData("c@short.com", "***@***")]
+    [InlineData("@nodomain.com", "***@***")]
+    [InlineData("no_at_sign", "***@***")]
+    [InlineData("user@.com", "u***@***")]
+    public void MaskValue_MaskEmail_ProducesExpectedResults(string rawEmail, string expected)
+    {
+        var rule = new MaskingRule { RuleType = "MASK_EMAIL" };
+        var result = _provider.MaskValue("email", rawEmail, rule)?.ToString();
+        result.ShouldBe(expected);
+    }
+
+    [Theory]
+    [InlineData("DE89370400440532013000", "DE** **** **** 3000")]
+    [InlineData("DE89 3704 0044 0532 0130 00", "DE** **** **** 3000")]
+    [InlineData("GB29 XAAA 0101 2345 6789 01", "GB** **** **** 8901")]
+    [InlineData("SHORT", "****")]
+    [InlineData("1234567", "****")]
+    [InlineData("12345678", "12** **** **** 5678")]
+    public void MaskValue_MaskIban_ProducesExpectedResults(string rawIban, string expected)
+    {
+        var rule = new MaskingRule { RuleType = "MASK_IBAN" };
+        var result = _provider.MaskValue("iban", rawIban, rule)?.ToString();
+        result.ShouldBe(expected);
+    }
 }
+
 

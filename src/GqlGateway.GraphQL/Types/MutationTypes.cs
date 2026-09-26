@@ -30,9 +30,6 @@ public sealed class ConsentRequestPayload
 
 public sealed class Mutation
 {
-    private sealed record IdempotencyEntry(ConsentRequestPayload Payload, DateTimeOffset CreatedAt);
-    private static readonly ConcurrentDictionary<string, IdempotencyEntry> IdempotencyStore = new();
-
     private static Sid GetAuthenticatedUserSid(IHttpContextAccessor httpContextAccessor)
     {
         var httpContext = httpContextAccessor?.HttpContext;
@@ -56,73 +53,29 @@ public sealed class Mutation
         return userSid.Value;
     }
 
-    private static bool TryGetIdempotent(Sid userSid, string operation, string? idempotencyKey, out ConsentRequestPayload payload, IHttpContextAccessor? httpContextAccessor = null)
+    private static async Task<ConsentRequestPayload?> TryGetIdempotentAsync(
+        Sid userSid,
+        string operation,
+        string? idempotencyKey,
+        IIdempotencyStore? idempotencyStore,
+        CancellationToken ct = default)
     {
-        payload = default!;
-        if (string.IsNullOrEmpty(idempotencyKey)) return false;
+        if (string.IsNullOrEmpty(idempotencyKey) || idempotencyStore == null) return null;
         var compositeKey = $"idempotency:{userSid.Value}:{operation}:{idempotencyKey}";
-
-        if (httpContextAccessor?.HttpContext?.RequestServices?.GetService(typeof(Microsoft.Extensions.Caching.Memory.IMemoryCache)) is Microsoft.Extensions.Caching.Memory.IMemoryCache cache)
-        {
-            if (cache.TryGetValue(compositeKey, out var cachedObj) && cachedObj is ConsentRequestPayload cached)
-            {
-                payload = cached;
-                return true;
-            }
-        }
-
-        if (IdempotencyStore.TryGetValue(compositeKey, out var entry))
-        {
-            if (entry.CreatedAt > DateTimeOffset.UtcNow.AddHours(-24))
-            {
-                payload = entry.Payload;
-                return true;
-            }
-            IdempotencyStore.TryRemove(compositeKey, out _);
-        }
-        return false;
+        return await idempotencyStore.GetAsync<ConsentRequestPayload>(compositeKey, ct).ConfigureAwait(false);
     }
 
-    private static void StoreIdempotent(Sid userSid, string operation, string? idempotencyKey, ConsentRequestPayload payload, IHttpContextAccessor? httpContextAccessor = null)
+    private static async Task StoreIdempotentAsync(
+        Sid userSid,
+        string operation,
+        string? idempotencyKey,
+        ConsentRequestPayload payload,
+        IIdempotencyStore? idempotencyStore,
+        CancellationToken ct = default)
     {
-        if (string.IsNullOrEmpty(idempotencyKey)) return;
+        if (string.IsNullOrEmpty(idempotencyKey) || idempotencyStore == null) return;
         var compositeKey = $"idempotency:{userSid.Value}:{operation}:{idempotencyKey}";
-
-        if (httpContextAccessor?.HttpContext?.RequestServices?.GetService(typeof(Microsoft.Extensions.Caching.Memory.IMemoryCache)) is Microsoft.Extensions.Caching.Memory.IMemoryCache cache)
-        {
-            using var cacheEntry = cache.CreateEntry(compositeKey);
-            cacheEntry.Value = payload;
-            cacheEntry.Size = 1;
-            cacheEntry.AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(24);
-            return;
-        }
-
-        if (IdempotencyStore.Count > 5000)
-        {
-            var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
-            foreach (var kvp in IdempotencyStore)
-            {
-                if (kvp.Value.CreatedAt < cutoff)
-                {
-                    IdempotencyStore.TryRemove(kvp.Key, out _);
-                }
-            }
-
-            if (IdempotencyStore.Count > 5000)
-            {
-                var oldestKeys = IdempotencyStore
-                    .OrderBy(kvp => kvp.Value.CreatedAt)
-                    .Take(IdempotencyStore.Count - 4000)
-                    .Select(kvp => kvp.Key)
-                    .ToList();
-                foreach (var k in oldestKeys)
-                {
-                    IdempotencyStore.TryRemove(k, out _);
-                }
-            }
-        }
-
-        IdempotencyStore[compositeKey] = new IdempotencyEntry(payload, DateTimeOffset.UtcNow);
+        await idempotencyStore.SetIfNotExistsAsync(compositeKey, payload, TimeSpan.FromHours(24), ct).ConfigureAwait(false);
     }
 
     [GraphQLIgnore]
@@ -135,8 +88,9 @@ public sealed class Mutation
         string? idempotencyKey,
         [Service] IGovernanceRepository repository,
         [Service] IHttpContextAccessor httpContextAccessor,
+        [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
-        => RequestTableAccessAsync(domain, schema, tableName, justification, durationDays, idempotencyKey, repository, repository, httpContextAccessor, ct);
+        => RequestTableAccessAsync(domain, schema, tableName, justification, durationDays, idempotencyKey, repository, repository, httpContextAccessor, idempotencyStore, ct);
 
     public async Task<ConsentRequestPayload> RequestTableAccessAsync(
         string domain,
@@ -148,11 +102,13 @@ public sealed class Mutation
         [Service] ITableMetadataRepository metadataRepository = default!,
         [Service] IConsentApprovalRepository approvalRepository = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
+        [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
     {
         var userSid = GetAuthenticatedUserSid(httpContextAccessor);
 
-        if (TryGetIdempotent(userSid, "RequestTableAccess", idempotencyKey, out var existing, httpContextAccessor))
+        var existing = await TryGetIdempotentAsync(userSid, "RequestTableAccess", idempotencyKey, idempotencyStore, ct);
+        if (existing != null)
         {
             return existing;
         }
@@ -186,7 +142,7 @@ public sealed class Mutation
             Message = "Consent request submitted successfully."
         };
 
-        StoreIdempotent(userSid, "RequestTableAccess", idempotencyKey, payload, httpContextAccessor);
+        await StoreIdempotentAsync(userSid, "RequestTableAccess", idempotencyKey, payload, idempotencyStore, ct);
         return payload;
     }
 
@@ -196,8 +152,9 @@ public sealed class Mutation
         string? idempotencyKey,
         [Service] IGovernanceRepository repository,
         [Service] IHttpContextAccessor httpContextAccessor,
+        [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
-        => ApproveConsentRequestAsync(requestId, idempotencyKey, repository, repository, repository, httpContextAccessor, ct);
+        => ApproveConsentRequestAsync(requestId, idempotencyKey, repository, repository, repository, httpContextAccessor, idempotencyStore, ct);
 
     public async Task<ConsentRequestPayload> ApproveConsentRequestAsync(
         Guid requestId,
@@ -206,11 +163,13 @@ public sealed class Mutation
         [Service] IDataOwnershipRepository ownershipRepository = default!,
         [Service] IConsentRepository consentRepository = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
+        [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
     {
         var approverSid = GetAuthenticatedUserSid(httpContextAccessor);
 
-        if (TryGetIdempotent(approverSid, "ApproveConsentRequest", idempotencyKey, out var existing, httpContextAccessor))
+        var existing = await TryGetIdempotentAsync(approverSid, "ApproveConsentRequest", idempotencyKey, idempotencyStore, ct);
+        if (existing != null)
         {
             return existing;
         }
@@ -274,7 +233,7 @@ public sealed class Mutation
             Message = message
         };
 
-        StoreIdempotent(approverSid, "ApproveConsentRequest", idempotencyKey, payload, httpContextAccessor);
+        await StoreIdempotentAsync(approverSid, "ApproveConsentRequest", idempotencyKey, payload, idempotencyStore, ct);
         return payload;
     }
 
@@ -285,8 +244,9 @@ public sealed class Mutation
         string? idempotencyKey,
         [Service] IGovernanceRepository repository,
         [Service] IHttpContextAccessor httpContextAccessor,
+        [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
-        => RejectConsentRequestAsync(requestId, reason, idempotencyKey, repository, repository, httpContextAccessor, ct);
+        => RejectConsentRequestAsync(requestId, reason, idempotencyKey, repository, repository, httpContextAccessor, idempotencyStore, ct);
 
     public async Task<ConsentRequestPayload> RejectConsentRequestAsync(
         Guid requestId,
@@ -295,11 +255,13 @@ public sealed class Mutation
         [Service] IConsentApprovalRepository approvalRepository = default!,
         [Service] IDataOwnershipRepository ownershipRepository = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
+        [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
     {
         var approverSid = GetAuthenticatedUserSid(httpContextAccessor);
 
-        if (TryGetIdempotent(approverSid, "RejectConsentRequest", idempotencyKey, out var existing, httpContextAccessor))
+        var existing = await TryGetIdempotentAsync(approverSid, "RejectConsentRequest", idempotencyKey, idempotencyStore, ct);
+        if (existing != null)
         {
             return existing;
         }
@@ -338,7 +300,7 @@ public sealed class Mutation
             Message = $"Consent request rejected: {reason}"
         };
 
-        StoreIdempotent(approverSid, "RejectConsentRequest", idempotencyKey, payload, httpContextAccessor);
+        await StoreIdempotentAsync(approverSid, "RejectConsentRequest", idempotencyKey, payload, idempotencyStore, ct);
         return payload;
     }
 

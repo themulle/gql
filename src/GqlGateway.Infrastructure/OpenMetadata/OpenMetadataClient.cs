@@ -15,6 +15,7 @@ public sealed class OpenMetadataClient : IOpenMetadataClient
     private readonly HttpClient _httpClient;
     private readonly IOptions<GatewayOptions> _options;
     private readonly ILogger<OpenMetadataClient> _logger;
+    private const long MaxAllowedResponseBytes = 10 * 1024 * 1024; // 10 MB maximum payload cap
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -32,7 +33,8 @@ public sealed class OpenMetadataClient : IOpenMetadataClient
     public OpenMetadataClient(
         HttpClient httpClient,
         IOptions<GatewayOptions> options,
-        ILogger<OpenMetadataClient> logger)
+        ILogger<OpenMetadataClient> logger,
+        GqlGateway.Application.Interfaces.IKeyVaultSecretProvider? secretProvider = null)
     {
         _httpClient = httpClient;
         _options = options;
@@ -45,11 +47,28 @@ public sealed class OpenMetadataClient : IOpenMetadataClient
             _httpClient.BaseAddress = new Uri(serverUrl);
         }
 
-        if (!string.IsNullOrWhiteSpace(omOptions.AuthToken) &&
+        var authToken = omOptions.AuthToken;
+        if (secretProvider != null && !string.IsNullOrWhiteSpace(authToken))
+        {
+            try
+            {
+                var secretBytes = secretProvider.GetSecretBytes(authToken);
+                if (secretBytes.Length > 0)
+                {
+                    authToken = System.Text.Encoding.UTF8.GetString(secretBytes);
+                }
+            }
+            catch
+            {
+                // Fallback to configured token value
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(authToken) &&
             _httpClient.DefaultRequestHeaders.Authorization == null)
         {
             _httpClient.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", omOptions.AuthToken);
+                new AuthenticationHeaderValue("Bearer", authToken);
         }
     }
 
@@ -81,6 +100,11 @@ public sealed class OpenMetadataClient : IOpenMetadataClient
         }
 
         response.EnsureSuccessStatusCode();
+
+        if (response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength.Value > MaxAllowedResponseBytes)
+        {
+            throw new InvalidOperationException($"OpenMetadata response size ({response.Content.Headers.ContentLength.Value} bytes) exceeds maximum allowed limit of {MaxAllowedResponseBytes} bytes.");
+        }
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         return await JsonSerializer.DeserializeAsync<OpenMetadataTable>(stream, JsonOptions, ct);
@@ -129,6 +153,11 @@ public sealed class OpenMetadataClient : IOpenMetadataClient
 
                 using var response = await _httpClient.GetAsync(url, ct);
                 response.EnsureSuccessStatusCode();
+
+                if (response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength.Value > MaxAllowedResponseBytes)
+                {
+                    throw new InvalidOperationException($"OpenMetadata response size ({response.Content.Headers.ContentLength.Value} bytes) exceeds maximum allowed limit of {MaxAllowedResponseBytes} bytes.");
+                }
 
                 await using var stream = await response.Content.ReadAsStreamAsync(ct);
                 var paged = await JsonSerializer.DeserializeAsync<PagedResponse<T>>(stream, JsonOptions, ct);

@@ -1,7 +1,6 @@
 using System.Security.Claims;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
-using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -30,5 +29,5 @@ public sealed record PluginExecutionContext(
     ClaimsPrincipal Principal,
     IReadOnlyDictionary<string, object?> Arguments,
     IHttpClientFactory HttpClientFactory,
-    HttpContext? HttpContext
+    IReadOnlyDictionary<string, string[]>? RequestHeaders = null
 );

@@ -53,17 +53,65 @@ Steuert das Verkehrs-Draining bei Rolling Deployments und Pod-Terminierungen.
 
 ---
 
-### 2.2 `Authentication` (Windows Kerberos & Identity)
+### 2.2 `Authentication` (Multi-Protocol Identity, ForwardAuth & Kerberos)
 
-Konfiguriert die Authentifizierung gegen Active Directory.
+Das Gateway unterstützt ein flexibles, mehrgleisiges Authentifizierungskonzept mit automatischer Protokollauswahl (**Smart Dynamic Scheme Selector**). Es vereint Kubernetes Ingress ForwardAuth, Microsoft Entra ID (Azure AD), AD FS, HTTP Basic Authentication und Windows Kerberos.
 
+#### 2.2.1 Basiseinstellungen & Kerberos / Negotiate
 | Eigenschaft | Typ | Wertebereich | Standard | Beschreibung |
 | :--- | :--- | :--- | :--- | :--- |
 | `Domain` | `string` | Gültiger FQDN | `"CORP.LOCAL"` | Active Directory Domäne. |
 | `ServicePrincipalName` | `string` | SPN-Format | `"HTTP/gql-gateway.corp.local"` | Kerberos Service Principal Name für SPNEGO/Negotiate. |
-| `RequireKerberosOnly` | `bool` | `true \| false` | `true` | Erzwingt Kerberos und lehnt NTLM-Downgrades ab. |
+| `RequireKerberosOnly` | `bool` | `true \| false` | `true` | Erzwingt Kerberos und lehnt unsichere NTLM-Downgrades ab. |
 | `GroupCacheTtlMinutes` | `int` | `1 .. 60` | `5` | TTL für den lokalen Cache aufgelöster Windows-Gruppen-SIDs. |
 | `EnableTestAuthHandler` | `bool` | `true \| false` | `false` | Ermöglicht `X-Test-User-Sid`-Header zur Simulation von Identitäten (**nur in Development erlaubt!**). |
+
+#### 2.2.2 `Authentication.ForwardAuth` (Kubernetes / Traefik Ingress)
+Wird das Gateway in Kubernetes betrieben, kann die Authentifizierung an den vorgelagerten Ingress-Controller (z. B. **Traefik Ingress**) via ForwardAuth (z. B. Authelia, Keycloak Gatekeeper, Authentik, OAuth2-Proxy) delegiert werden. Traefik terminiert SSL, prüft das Benutzer-Session-Cookie oder JWT und leitet die verifizierten Identitätsmerkmale per HTTP-Header weiter:
+
+| Eigenschaft | Typ | Wertebereich | Standard | Beschreibung |
+| :--- | :--- | :--- | :--- | :--- |
+| `Enabled` | `bool` | `true \| false` | `false` | Aktiviert das ForwardAuth Authentication Scheme. |
+| `UserHeader` | `string` | Header-Name | `"X-Forwarded-User"` | Header mit Benutzeridentifikator (Benutzername oder User-SID). |
+| `EmailHeader` | `string` | Header-Name | `"X-Forwarded-Email"` | Header mit der E-Mail-Adresse des Benutzers. |
+| `GroupsHeader` | `string` | Header-Name | `"X-Forwarded-Groups"` | Kommagetrennte Liste von Gruppen-SIDs oder Gruppennamen. |
+| `RolesHeader` | `string` | Header-Name | `"X-Forwarded-Roles"` | Kommagetrennte Liste von Rollen (z. B. `GovernanceAdmin,DataOwner`). |
+| `SharedSecretHeader` | `string` | Header-Name | `"X-Forwarded-Secret"` | Header für das Pre-Shared Secret zwischen Ingress und Gateway. |
+| `SharedSecret` | `string` | Geheimes Token | `""` | Optionales direktes Shared Secret für Test- oder Staging-Umgebungen. |
+| `SharedSecretKeyVaultRef` | `string` | Secret-Name | `""` | Name des Secrets in Azure Key Vault / HashiCorp Vault. |
+| `RequireTrustedProxy` | `bool` | `true \| false` | `true` | **Zero-Trust**: Erzwingt, dass Anfragen zwingend von einer IP aus `TrustedNetworks` oder `TrustedProxies` stammen müssen. |
+| `TrustedProxies` | `List<string>` | IP-Adressen | `[]` | Feste IP-Adressen der vertrauenswürdigen Traefik-Pods / Proxies. |
+| `TrustedNetworks` | `List<string>` | CIDR-Blöcke | `["127.0.0.1/32", "::1/128"]` | Erlaubte Subnetze (z. B. Kubernetes Pod-CIDR `"10.244.0.0/16"`). |
+
+#### 2.2.3 `Authentication.BasicAuth` (HTTP Basic Authentication & Login-API)
+Ermöglicht direkte Authentifizierung via `Authorization: Basic <base64>` für GraphQL-Queries sowie einen dedizierten Endpunkt `/api/auth/login`:
+
+| Eigenschaft | Typ | Wertebereich | Standard | Beschreibung |
+| :--- | :--- | :--- | :--- | :--- |
+| `Enabled` | `bool` | `true \| false` | `false` | Aktiviert HTTP Basic Auth und den Login-Endpunkt `/api/auth/login`. |
+| `Users` | `List<BasicAuthUserConfig>` | Array | `[]` | Liste konfigurierter Benutzerkonten. |
+| `Users[].Username` | `string` | Text | `""` | Benutzername für Basic Auth. |
+| `Users[].Password` | `string` | Klartext | `""` | Optionales Klartext-Kennwort (wird timing-sicher verglichen). |
+| `Users[].PasswordHashSha256` | `string` | 64-Hex SHA256 | `""` | Empfohlen: SHA-256 Hash des Kennworts. |
+| `Users[].Roles` | `List<string>` | Rollen-Array | `[]` | Zugewiesene Rollen (`DataConsumer`, `DataOwner`, `GovernanceAdmin`). |
+| `Users[].UserSid` | `string` | SID-Format | `""` | Zugeordnete Windows-User-SID (z. B. `S-1-5-21-CONSUMER-1`). |
+| `Users[].GroupSids` | `List<string>` | SID-Array | `[]` | Zugeordnete Windows-Gruppen-SIDs. |
+
+#### 2.2.4 `Authentication.EntraId` & `Authentication.Adfs` (JWT Bearer)
+Unterstützt moderne OIDC/OAuth2-Bearer-Token aus Microsoft Entra ID (Azure AD) und Active Directory Federation Services (AD FS):
+
+- **EntraId**:
+  - `Enabled` (`bool`): Aktiviert Bearer-Validierung gegen Microsoft Entra ID.
+  - `Instance` (`string`, Standard: `"https://login.microsoftonline.com/"`): Entra ID Login-Instanz.
+  - `TenantId` (`string`): Entra ID Mandanten-ID (GUID).
+  - `ClientId` (`string`): Anwendungs-Client-ID.
+  - `Audience` (`string`): Erwartete Token-Audience (z. B. `"api://gql-gateway"`).
+- **Adfs**:
+  - `Enabled` (`bool`): Aktiviert Bearer-Validierung gegen AD FS.
+  - `MetadataAddress` (`string`): Federation-Metadata-URL von AD FS.
+  - `Audience` (`string`): Relying Party Identifier.
+- **EnterpriseClaimsTransformation**:
+  - Normalisiert Entra ID (`oid`, `preferred_username`, `groups` GUIDs/SIDs) und AD FS Claims (`onprem_sid`, `primarysid`, `primarygroupsid`, `roles`) automatisch in kanonische `ClaimTypes.PrimarySid`, `ClaimTypes.GroupSid` und `ClaimTypes.Role`.
 
 ```json
 "Authentication": {
@@ -71,7 +119,39 @@ Konfiguriert die Authentifizierung gegen Active Directory.
   "ServicePrincipalName": "HTTP/gql-gateway.corp.local",
   "RequireKerberosOnly": true,
   "GroupCacheTtlMinutes": 5,
-  "EnableTestAuthHandler": false
+  "EnableTestAuthHandler": false,
+  "ForwardAuth": {
+    "Enabled": true,
+    "UserHeader": "X-Forwarded-User",
+    "GroupsHeader": "X-Forwarded-Groups",
+    "RolesHeader": "X-Forwarded-Roles",
+    "SharedSecretHeader": "X-Forwarded-Secret",
+    "SharedSecretKeyVaultRef": "GQL-FORWARD-AUTH-SECRET",
+    "RequireTrustedProxy": true,
+    "TrustedNetworks": [
+      "127.0.0.1/32",
+      "::1/128",
+      "10.244.0.0/16"
+    ]
+  },
+  "BasicAuth": {
+    "Enabled": true,
+    "Users": [
+      {
+        "Username": "service-analyst",
+        "PasswordHashSha256": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
+        "Roles": ["DataConsumer"],
+        "UserSid": "S-1-5-21-CONSUMER-1",
+        "GroupSids": ["S-1-5-21-FINANCE-ANALYSTS"]
+      }
+    ]
+  },
+  "EntraId": {
+    "Enabled": true,
+    "TenantId": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+    "ClientId": "a820c78a-f326-4d1d-91b4-2195f1342618",
+    "Audience": "api://gql-gateway"
+  }
 }
 ```
 
@@ -101,7 +181,33 @@ Speicherort für Metadaten, Freigaben, Delegationen, Vier-Augen-Genehmigungen un
 
 ---
 
-### 2.4 `Caching` (Zweistufiges Caching & Epochen-Validierung)
+### 2.4 `DataSources` (Backend-Fachdatenbanken & RLS-Pushdown)
+
+Konfiguriert echte relationale Datenbank-Backends für die abgefragten Fachdaten. Das Gateway unterstützt über `ISqlConnectionFactory` die Provider `"SqlServer"`, `"PostgreSql"`, `"Sqlite"`, `"Oracle"` und `"Databricks"`. 
+
+Im Gegensatz zu synthetischen Stubs führt der `SqlDataSourceExecutor` echte SQL-Queries aus und **pushed Row-Level Security (RLS) Filter direkt als WHERE-Klausel in die Datenbank**:
+
+| Eigenschaft | Typ | Wertebereich | Standard | Beschreibung |
+| :--- | :--- | :--- | :--- | :--- |
+| `DataSources:{sourceName}:Provider` | `string` | `"SqlServer"`, `"PostgreSql"`, `"Sqlite"` | `"SqlServer"` | Datenbank-Treiber für die Ziel-Datenquelle. |
+| `DataSources:{sourceName}:ConnectionString` | `string` | ADO.NET ConnStr | `""` | Verbindungszeichenfolge zur Zieldatenbank. |
+
+```json
+"DataSources": {
+  "finance": {
+    "Provider": "SqlServer",
+    "ConnectionString": "Server=sql-finance.corp.local;Database=FinanceDb;Integrated Security=SSPI;TrustServerCertificate=true;"
+  },
+  "hr": {
+    "Provider": "PostgreSql",
+    "ConnectionString": "Host=pg-hr.corp.local;Port=5432;Database=HrDb;Username=gql_app;Password=SuperSecretPass!;SSL Mode=Require;"
+  }
+}
+```
+
+---
+
+### 2.5 `Caching` (Zweistufiges Caching & Multi-Instance Redis Clustering)
 
 Steuert den L1 In-Memory Cache, L2 Redis und die Konsistenzprüfung.
 
@@ -459,6 +565,67 @@ spec:
                 name: gql-gateway-secrets
 ```
 
+### 3.3 Traefik Ingress & ForwardAuth Integration (Kubernetes)
+
+Wird GqlGateway in Kubernetes hinter **Traefik** betrieben, übernimmt Traefik die Authentifizierung (z. B. via Authelia, Keycloak oder Authentik) und leitet die verifizierten Identitätsmerkmale an GqlGateway weiter.
+
+#### 3.3.1 Traefik ForwardAuth Middleware
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: forward-auth
+  namespace: data-governance
+spec:
+  forwardAuth:
+    address: https://auth.corp.local/api/verify
+    trustForwardHeader: true
+    authResponseHeaders:
+      - X-Forwarded-User
+      - X-Forwarded-Email
+      - X-Forwarded-Groups
+      - X-Forwarded-Roles
+```
+
+#### 3.3.2 Traefik Shared-Secret Middleware (Anti-Spoofing)
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: gateway-shared-secret
+  namespace: data-governance
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Secret: "OM-SHARED-SECRET-TRAEFIK-TO-GATEWAY"
+```
+
+#### 3.3.3 Traefik IngressRoute
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gql-gateway-ingress
+  namespace: data-governance
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`graphql.corp.local`) && PathPrefix(`/graphql`)
+      kind: Rule
+      middlewares:
+        - name: forward-auth
+        - name: gateway-shared-secret
+      services:
+        - name: gql-gateway
+          port: 5000
+  tls:
+    secretName: corp-wildcard-tls
+```
+
 ---
 
 ## 4. Konfigurationsprofile im Vergleich
@@ -468,6 +635,8 @@ spec:
 | `Logging:LogLevel:Default` | `Debug` | `Information` / `Warning` |
 | `Authentication:EnableTestAuthHandler` | `true` (erlaubt Test-Header) | `false` (**Zwingend vorgeschrieben**) |
 | `Authentication:RequireKerberosOnly` | `false` | `true` |
+| `Authentication:ForwardAuth:Enabled` | `false` / `true` für Tests | `true` (hinter K8s Traefik Ingress) |
+| `Authentication:ForwardAuth:RequireTrustedProxy` | `false` | `true` (Validiert Traefik Pod CIDRs) |
 | `GovernanceDb:Provider` | `Sqlite` (In-Memory `:memory:`) | `SqlServer` oder `PostgreSql` |
 | `Caching:EpochValidation:FailClosed` | `false` | `true` (Zero-Trust Fail-Closed) |
 | `GraphQL:EnableIntrospection` | `true` | `false` |
@@ -483,9 +652,11 @@ spec:
 Vor Freigabe einer neuen Produktivumgebung sind folgende Punkte zu verifizieren:
 
 - [ ] **Auth-Sicherheit**: `Gateway:Authentication:EnableTestAuthHandler` steht auf `false`.
+- [ ] **ForwardAuth / Traefik Trust**: Bei Kubernetes-Betrieb ist `RequireTrustedProxy = true` gesetzt, `TrustedNetworks` enthält nur die Traefik Ingress Pod-CIDR und `SharedSecretKeyVaultRef` ist konfiguriert.
 - [ ] **Kryptografie**: `Gateway:DataMasking:HmacSecretKeyVaultRef` verweist auf ein valides Key Vault Secret und nicht auf Dev-Defaults.
 - [ ] **Introspektion**: `Gateway:GraphQL:EnableIntrospection` und `EnableBananaCakePop` sind auf `false` gesetzt.
 - [ ] **Zero-Trust Fail-Closed**: `Gateway:Caching:EpochValidation:FailClosedOnSensitiveTables` ist auf `true`.
 - [ ] **Anti-CSRF & CORS**: `Gateway:GraphQL:TrustedOrigins` enthält nur verifizierte Domänen (kein Wildcard `*` in Produktion!).
 - [ ] **High Availability**: K8s `terminationGracePeriodSeconds` ist größer als `DrainDelaySeconds + ShutdownTimeoutSeconds + 10s`.
 - [ ] **Proxy-Sicherheit**: `Gateway:ReverseProxy:KnownNetworks` schränkt vertrauenswürdige IPs auf tatsächliche Ingress-Controller ein.
+- [ ] **Echte Datenquellen**: `Gateway:DataSources` enthält valide ConnectionStrings für produktive Fachdatenbanken.

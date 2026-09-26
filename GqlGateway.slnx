@@ -6,6 +6,9 @@
     <Project Path="src/GqlGateway.GraphQL/GqlGateway.GraphQL.csproj" />
     <Project Path="src/GqlGateway.Infrastructure/GqlGateway.Infrastructure.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/GqlGateway.Benchmarks/GqlGateway.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/GqlGateway.Tests.Architecture/GqlGateway.Tests.Architecture.csproj" />
     <Project Path="tests/GqlGateway.Tests.Integration/GqlGateway.Tests.Integration.csproj" />

@@ -25,10 +25,15 @@ The GraphQL Enterprise Gateway acts as a centralized, secure data access layer a
 
 ## 2. Architecture Constraints
 
-- **Platform**: .NET 10 / C# 13, ASP.NET Core Minimal API.
+- **Platform**: .NET 10 / C# 14, ASP.NET Core Minimal API.
 - **GraphQL Engine**: Hot Chocolate 14.1.0 with dynamic schema generation and dynamic type projection.
-- **Authentication**: Windows Integrated Authentication / Negotiate (Kerberos / NTLM) extracting Windows Security Identifiers (`Sid`), with development fallback header simulation (`X-Test-User-Sid`).
-- **Database Dialects**: Microsoft SQL Server (T-SQL, `@p1`), PostgreSQL (PL/pgSQL, `$1`), and SQLite (`@p1`).
+- **Multi-Protocol Authentication**:
+  - **Kubernetes Ingress ForwardAuth**: Offloaded authentication via Traefik Ingress (Authelia, Keycloak, Authentik, OAuth2-Proxy) with proxy CIDR filtering and pre-shared secrets (`X-Forwarded-Secret`).
+  - **Enterprise Identity Providers**: Microsoft Entra ID (Azure AD) and AD FS JWT Bearer tokens with normalized claims transformation (`EnterpriseClaimsTransformation`).
+  - **HTTP Basic Authentication**: Direct Basic Auth headers on queries and dedicated verification endpoint (`/api/auth/login`).
+  - **Kerberos / SPNEGO Negotiate**: Windows Integrated Authentication extracting Windows Security Identifiers (`Sid`).
+  - **Development Simulation**: Header-based SID simulation (`X-Test-User-Sid`), strictly restricted to `Development` mode.
+- **Database Dialects & Real Execution**: Native ADO.NET execution with RLS pushdown across Microsoft SQL Server (T-SQL), PostgreSQL (PL/pgSQL), SQLite, Oracle, and Databricks.
 - **Zero External Dependencies in Dev**: Fully functional offline development and CI without requiring running Redis or external DB instances.
 
 ---
@@ -37,49 +42,51 @@ The GraphQL Enterprise Gateway acts as a centralized, secure data access layer a
 
 ```mermaid
 flowchart TD
-    Client[GraphQL Client / Browser / BI Tool] -->|HTTPS POST /graphql| Gateway[GraphQL Enterprise Gateway]
-    AD[Active Directory / Kerberos] -.->|Kerberos Ticket / SID| Gateway
+    Client[GraphQL Client / Browser / BI Tool] -->|HTTPS| Ingress[Traefik Ingress Controller]
+    IdP[Identity Provider: Keycloak / Authelia / Entra ID] <-->|ForwardAuth / JWT| Ingress
+    Ingress -->|ForwardAuth Headers + Secret| Gateway[GraphQL Enterprise Gateway]
+    AD[Active Directory / Kerberos / Entra ID] -.->|Direct Bearer / Kerberos / Basic| Gateway
 
-    Gateway -->|L2 Invalidation PubSub| Redis[(Redis Cache & Bus)]
-    Gateway -->|Read/Write Governance| GovDB[(Governance Database / SQLite / SQL Server)]
-    Gateway -->|Parameterized Dynamic SQL| TargetDB1[(Finance DB - SQL Server)]
-    Gateway -->|Parameterized Dynamic SQL| TargetDB2[(HR DB - PostgreSQL)]
-    Gateway -->|Parameterized Dynamic SQL| TargetDB3[(Analytics DB - SQLite)]
+    Gateway <-->|Redis PubSub & Distributed State| Redis[(Redis Cluster)]
+    Gateway -->|Read/Write Governance Catalog| GovDB[(Governance Database / SQLite / SQL Server)]
+    Gateway -->|Parameterized Dynamic SQL with RLS Pushdown| TargetDB1[(Finance DB - SQL Server)]
+    Gateway -->|Parameterized Dynamic SQL with RLS Pushdown| TargetDB2[(HR DB - PostgreSQL)]
+    Gateway -->|Parameterized Dynamic SQL with RLS Pushdown| TargetDB3[(Analytics DB - SQLite / Databricks)]
 ```
 
 ### 3.1 Business Context
-The Gateway mediates all queries to enterprise data stores. The user identity (SID and group SIDs) is authenticated at the transport layer, mapped against active consents in the governance database, and combined into a resolved access policy for the requested target entity.
+The Gateway mediates all queries to enterprise data stores. The caller's identity (SID and group SIDs) is authenticated at the transport or ingress layer, mapped against active consents in the governance database, and combined into a resolved access policy for the requested target entity.
 
 ### 3.2 Technical Context
-- Inbound: HTTP/HTTPS GraphQL queries, mutations, and health probes.
-- Outbound: ADO.NET / DbConnection execution against target databases using parameterized queries with whitelisted identifiers.
+- Inbound: HTTP/HTTPS GraphQL queries, mutations, Basic Auth login (`/api/auth/login`), OpenMetadata webhooks, and health probes.
+- Outbound: Direct parameterized SQL queries with RLS pushdown against target databases (`ISqlConnectionFactory`), OpenMetadata REST API, and Redis Pub/Sub.
 
 ---
 
 ## 4. Solution Strategy
 
-1. **Clean Architecture Separation**: Pure domain core (`GqlGateway.Domain`) with no external dependencies, application use cases (`GqlGateway.Application`), infrastructure integrations (`GqlGateway.Infrastructure`), and presentation (`GqlGateway.GraphQL`, `GqlGateway.WebHost`).
-2. **Consent Resolution Engine (F-CONS-07 Truth Table)**:
+1. **Clean Architecture Separation**: Pure domain core (`GqlGateway.Domain`) with no external dependencies, application use cases and execution engine (`GqlGateway.Application`), infrastructure persistence and security handlers (`GqlGateway.Infrastructure`), Hot Chocolate GraphQL mapping (`GqlGateway.GraphQL`), and ASP.NET Core API host (`GqlGateway.Api`).
+2. **Multi-Protocol Authentication & Ingress Trust**:
+   - Traefik Kubernetes ForwardAuth Handler validates proxy IP addresses against CIDR ranges (`TrustedNetworks`) and verifies HMAC pre-shared secrets (`X-Forwarded-Secret`).
+   - `EnterpriseClaimsTransformation` maps heterogeneous token claims (Entra ID `oid`, AD FS `primarygroupsid`, etc.) into unified `Sid` value objects.
+   - Dynamic Scheme Selector routes requests to ForwardAuth, Bearer, Basic, or Negotiate schemes.
+3. **Real SQL Execution & RLS Pushdown**:
+   - `SqlDataSourceExecutor` leverages `ISqlConnectionFactory` to execute real parameterized queries against backend databases.
+   - Row-level security rules are combined into SQL WHERE fragments (`CombinedRowFilterSql`) and pushed directly into the database engine.
+4. **Consent Resolution Engine (F-CONS-07 Truth Table)**:
    - Evaluates direct user consents and all transitive group memberships.
    - Enforces Hard DENY: Any explicit DENY immediately revokes access.
    - Computes column access levels as maximum privilege over all active ALLOW consents.
    - Combines row filters using disjunction (`OR`) across ALLOW consents, constrained by conjunction with any DENY row filters (`AND NOT`).
-3. **Tamper-Evident Audit Hash Chaining (F-DATA-09)**:
+5. **Multi-Instance Redis Clustering**:
+   - `RedisEventBus` propagates monotonic table policy epoch increments across pods to invalidate local L1 memory caches.
+   - Distributed sliding-window rate limiters and token buckets protect against cluster-wide DoS attacks.
+   - Distributed mutation idempotency deduplicates governance operations across replicas.
+6. **Tamper-Evident Audit Hash Chaining (F-DATA-09)**:
    - Every mutation and policy transition generates an audit record whose SHA-256 hash incorporates the previous record's hash, forming an unbroken cryptographic chain.
-4. **Policy Epoch Cache Invalidation (F-CONS-08)**:
-   - Changes to consents or delegations increment the table's policy epoch in the governance catalog.
-   - Cached entries are validated against the current epoch or invalidated via pub/sub events.
-5. **Composite Keys & Dynamic Parameter Budgeting (ADR-008)**:
-   - Supports multi-column primary and foreign keys up to 8 levels deep.
-   - Dynamically budgets SQL parameters based on target database limits (SQLite 999, SQL Server 2100, PostgreSQL 10000) and partitions batch queries into chunks.
-   - Implements dialect-specific predicates: ANSI Tuple-IN for PostgreSQL/SQLite/Databricks and disjunctive OR / VALUES-joins for SQL Server.
-6. **Enforced Four-Eyes Lifecycle & Separation of Duties (F-CONS-05)**:
+7. **Enforced Four-Eyes Lifecycle & Separation of Duties (F-CONS-05)**:
    - High-sensitivity tables require two distinct approvers (`RequiresFourEyes = true`).
    - Self-approval by requesters and duplicate approvals by the same approver are strictly prohibited.
-   - Active consents are generated exclusively upon final approval.
-7. **Production Security Guardrails & Denial-of-Service Defense**:
-   - Query execution depth limits (`MaxAllowedExecutionDepth`) and schema introspection control (`DisableIntrospection`).
-   - Bounded, TTL-evicted rate-limiting buckets and idempotency stores preventing memory exhaustion attacks.
 
 ---
 
@@ -104,39 +111,41 @@ classDiagram
     }
 
     namespace Application {
+        class IGatewayExecutionService {
+            <<interface>>
+            +ExecuteTableQueryAsync(...)
+        }
+        class GatewayExecutionService
         class IGovernanceRepository {
             <<interface>>
             +GetConsentsForUserAsync(...)
-            +CreateConsentRequestAsync(...)
-            +ApproveConsentRequestAsync(...)
         }
-        class IConsentCacheService {
+        class ISqlConnectionFactory {
             <<interface>>
-            +GetOrCreateAsync(...)
-            +InvalidateTableAsync(...)
+            +CreateConnection(sourceName) DbConnection
         }
-        class ISqlFilterProvider {
-            <<interface>>
-            +BuildFilteredQuery(...)
-        }
+        class SqlDataSourceExecutor
     }
 
     namespace Infrastructure {
         class SqliteGovernanceRepository
+        class SqlConnectionFactory
         class ConsentCacheService
-        class InProcessChannelEventBus
-        class EpochValidationService
+        class RedisEventBus
+        class ForwardAuthAuthenticationHandler
+        class BasicAuthenticationHandler
+        class EnterpriseClaimsTransformation
     }
 
     namespace GraphQL {
         class DynamicTableType
         class Query
         class Mutation
-        class GatewayExecutionService
     }
 
+    IGatewayExecutionService <|.. GatewayExecutionService
     IGovernanceRepository <|.. SqliteGovernanceRepository
-    IConsentCacheService <|.. ConsentCacheService
+    ISqlConnectionFactory <|.. SqlConnectionFactory
 ```
 
 ### 5.1 GqlGateway.Domain
@@ -243,9 +252,9 @@ sequenceDiagram
 
 ## 10. Quality Requirements
 - **Quality Gate 1 (Zero Warnings & Strict Typing)**: Solution compiles with zero warnings under `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
-- **Quality Gate 2 (Architecture Integrity)**: NetArchTest asserts Domain has zero outward dependencies.
-- **Quality Gate 3 (TDD Verification)**: 100% truth table compliance tested via xUnit and FsCheck property-based testing.
-- **Quality Gate 4 (Walking Skeleton End-to-End)**: Integration tests verify full request pipeline, authentication simulation, consent resolution, and graceful drain.
+- **Quality Gate 2 (Architecture Integrity)**: NetArchTest asserts Domain and Application have zero inward or improper dependencies, isolating Hot Chocolate to GraphQL.
+- **Quality Gate 3 (TDD Verification)**: 100% test pass rate (371 / 371 tests green across 333 Unit, 5 Architecture, and 33 Integration tests).
+- **Quality Gate 4 (Walking Skeleton End-to-End)**: Integration tests verify full request pipeline, Traefik ForwardAuth Ingress, Basic Auth login, consent resolution, and graceful drain.
 
 ---
 

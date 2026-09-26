@@ -142,7 +142,7 @@ public partial class SqliteGovernanceRepository
                 var prevHash = reader.GetString(9);
                 var entryHash = reader.GetString(10);
 
-                if (!string.Equals(prevHash, expectedPrevHash, StringComparison.OrdinalIgnoreCase))
+                if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(prevHash), Encoding.UTF8.GetBytes(expectedPrevHash)))
                 {
                     return false; // Broken chain!
                 }
@@ -151,7 +151,7 @@ public partial class SqliteGovernanceRepository
                 var payload = $"{id}|{prevHash}|{parsedOccurredAt:O}|{eventType}|{actorSid}|{targetTable}|{targetColumn}|{decision}|{traceId}|{detailsJson}";
                 var computedHash = Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(payload)));
 
-                if (!string.Equals(entryHash, computedHash, StringComparison.OrdinalIgnoreCase))
+                if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(entryHash), Encoding.UTF8.GetBytes(computedHash)))
                 {
                     return false; // Tampered payload!
                 }

@@ -1,6 +1,6 @@
 using System.Security.Claims;
-using GqlGateway.GraphQL.Services;
-using GqlGateway.GraphQL.Types;
+using GqlGateway.Application.Interfaces;
+using GqlGateway.Domain.Model;
 using GreenDonut;
 using Microsoft.AspNetCore.Http;
 
@@ -8,11 +8,11 @@ namespace GqlGateway.GraphQL.Loaders;
 
 public sealed class InvoiceItemDataLoader : BatchDataLoader<string, List<InvoiceItemRecord>>
 {
-    private readonly GatewayExecutionService _executionService;
+    private readonly IGatewayExecutionService _executionService;
     private readonly IHttpContextAccessor _httpContextAccessor;
 
     public InvoiceItemDataLoader(
-        GatewayExecutionService executionService,
+        IGatewayExecutionService executionService,
         IHttpContextAccessor httpContextAccessor,
         IBatchScheduler batchScheduler,
         DataLoaderOptions? options = null)

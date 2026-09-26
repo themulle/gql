@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Security;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
@@ -79,7 +80,7 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
         TableMetadata metadata,
         ClaimsPrincipal? principal = null,
         IReadOnlyDictionary<string, object?>? arguments = null,
-        HttpContext? httpContext = null)
+        IReadOnlyDictionary<string, string[]>? requestHeaders = null)
     {
         var userSid = new Sid("S-1-5-21-1");
         principal ??= new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.PrimarySid, userSid.Value)], "Test"));
@@ -98,7 +99,7 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
             AccessDecision: decision,
             Arguments: arguments,
             RequestedFields: ["id", "name"],
-            HttpContext: httpContext
+            RequestHeaders: requestHeaders
         );
     }
 
@@ -237,10 +238,12 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
         };
         var metadata = CreateTestMetadata(descriptor);
 
-        var httpContext = new DefaultHttpContext();
-        httpContext.Request.Headers["Authorization"] = "Bearer token-abc-123";
+        var headers = new Dictionary<string, string[]>
+        {
+            ["Authorization"] = ["Bearer token-abc-123"]
+        };
 
-        var context = CreateContext(metadata, httpContext: httpContext);
+        var context = CreateContext(metadata, requestHeaders: headers);
 
         await executor.ExecuteAsync(context);
 
@@ -421,5 +424,67 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
         requests.Count.ShouldBe(3);
         rows.Count.ShouldBe(3);
         rows.Select(r => r["id"]?.ToString()).ShouldBe(["1", "2", "3"], ignoreOrder: true);
+    }
+
+    [Theory]
+    [InlineData("https://127.0.0.1/api/data")]
+    [InlineData("https://localhost/api/data")]
+    [InlineData("https://[::1]/api/data")]
+    [InlineData("https://10.0.1.5/api/data")]
+    [InlineData("https://172.16.0.1/api/data")]
+    [InlineData("https://172.31.255.255/api/data")]
+    [InlineData("https://192.168.1.100/api/data")]
+    [InlineData("https://169.254.169.254/latest/meta-data")]
+    [InlineData("https://[fe80::1]/api/data")]
+    [InlineData("https://[fc00::1]/api/data")]
+    [InlineData("https://[fd12:3456:789a::1]/api/data")]
+    public async Task ExecuteAsync_ThrowsSecurityException_WhenUrlTargetsPrivateOrLoopbackIp(string destinationUrl)
+    {
+        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var descriptor = new HttpEndpointDescriptor
+        {
+            BaseUrl = destinationUrl,
+            PathTemplate = "/"
+        };
+        var metadata = CreateTestMetadata(descriptor);
+        var context = CreateContext(metadata);
+
+        var ex = await Should.ThrowAsync<SecurityException>(() => executor.ExecuteAsync(context));
+        ex.Message.ShouldContain("strictly forbidden");
+    }
+
+    [Theory]
+    [InlineData("https://metadata.google.internal/computeMetadata/v1/")]
+    [InlineData("https://kubernetes.default.svc/api/v1/")]
+    [InlineData("https://kubernetes.default.svc.cluster.local/api/v1/")]
+    public async Task ExecuteAsync_ThrowsSecurityException_WhenUrlTargetsCloudMetadataOrKubernetes(string destinationUrl)
+    {
+        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var descriptor = new HttpEndpointDescriptor
+        {
+            BaseUrl = destinationUrl,
+            PathTemplate = "/"
+        };
+        var metadata = CreateTestMetadata(descriptor);
+        var context = CreateContext(metadata);
+
+        var ex = await Should.ThrowAsync<SecurityException>(() => executor.ExecuteAsync(context));
+        ex.Message.ShouldContain("strictly forbidden");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ThrowsSecurityException_WhenInsecureHttpSchemeInNonDev()
+    {
+        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var descriptor = new HttpEndpointDescriptor
+        {
+            BaseUrl = "http://api.external.com",
+            PathTemplate = "/v1/data"
+        };
+        var metadata = CreateTestMetadata(descriptor);
+        var context = CreateContext(metadata);
+
+        var ex = await Should.ThrowAsync<SecurityException>(() => executor.ExecuteAsync(context));
+        ex.Message.ShouldContain("Insecure HTTP scheme");
     }
 }

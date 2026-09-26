@@ -1,0 +1,100 @@
+using GqlGateway.Application.Interfaces;
+using GqlGateway.Domain.Options;
+using GqlGateway.Infrastructure.Persistence;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using StackExchange.Redis;
+
+namespace GqlGateway.Infrastructure.Health;
+
+public sealed class GatewayHealthCheckService : IGatewayHealthCheckService
+{
+    private readonly IGovernanceRepository? _governanceRepository;
+    private readonly IConnectionMultiplexer? _redisMultiplexer;
+    private readonly IOptions<GatewayOptions> _options;
+    private readonly ILogger<GatewayHealthCheckService> _logger;
+
+    public GatewayHealthCheckService(
+        IOptions<GatewayOptions> options,
+        ILogger<GatewayHealthCheckService> logger,
+        IGovernanceRepository? governanceRepository = null,
+        IConnectionMultiplexer? redisMultiplexer = null)
+    {
+        _options = options;
+        _logger = logger;
+        _governanceRepository = governanceRepository;
+        _redisMultiplexer = redisMultiplexer;
+    }
+
+    public async Task<GatewayHealthReport> CheckHealthAsync(CancellationToken ct = default)
+    {
+        var components = new List<HealthCheckComponentResult>();
+        bool overallHealthy = true;
+
+        // 1. Governance Database Check
+        bool dbHealthy = false;
+        string? dbDesc = null;
+        try
+        {
+            if (_governanceRepository is SqliteGovernanceRepository sqliteRepo)
+            {
+                using var cmd = sqliteRepo.Connection.CreateCommand();
+                cmd.CommandText = "SELECT 1;";
+                var res = await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false);
+                dbHealthy = res != null;
+                dbDesc = dbHealthy ? "SQLite Governance DB connection active." : "SQLite query returned null.";
+            }
+            else if (_governanceRepository != null)
+            {
+                // Fallback check: verify catalog is queryable
+                _ = await _governanceRepository.GetAllTablesAsync(ct).ConfigureAwait(false);
+                dbHealthy = true;
+                dbDesc = "Governance DB query succeeded.";
+            }
+            else
+            {
+                dbHealthy = true;
+                dbDesc = "No governance repository registered.";
+            }
+        }
+        catch (Exception ex)
+        {
+            dbHealthy = false;
+            dbDesc = $"Governance DB query failed: {ex.Message}";
+            _logger.LogError(ex, "Governance DB health check failed.");
+        }
+        components.Add(new HealthCheckComponentResult("GovernanceDb", dbHealthy, dbDesc));
+        if (!dbHealthy) overallHealthy = false;
+
+        // 2. Redis Check (if enabled)
+        if (_options.Value.Caching.Redis.Enabled)
+        {
+            bool redisHealthy = false;
+            string? redisDesc = null;
+            try
+            {
+                if (_redisMultiplexer != null && _redisMultiplexer.IsConnected)
+                {
+                    var ping = await _redisMultiplexer.GetDatabase().PingAsync().ConfigureAwait(false);
+                    redisHealthy = true;
+                    redisDesc = $"Redis ping successful ({ping.TotalMilliseconds:F1}ms).";
+                }
+                else
+                {
+                    redisHealthy = false;
+                    redisDesc = "Redis multiplexer is not connected.";
+                }
+            }
+            catch (Exception ex)
+            {
+                redisHealthy = false;
+                redisDesc = $"Redis ping failed: {ex.Message}";
+                _logger.LogError(ex, "Redis health check failed.");
+            }
+            components.Add(new HealthCheckComponentResult("Redis", redisHealthy, redisDesc));
+            if (!redisHealthy) overallHealthy = false;
+        }
+
+        return new GatewayHealthReport(overallHealthy, components);
+    }
+}

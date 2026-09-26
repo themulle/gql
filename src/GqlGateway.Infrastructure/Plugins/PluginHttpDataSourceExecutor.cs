@@ -60,7 +60,7 @@ public sealed class PluginHttpDataSourceExecutor : IDataSourceExecutor
             Principal: context.Principal,
             Arguments: context.Arguments,
             HttpClientFactory: _httpClientFactory,
-            HttpContext: context.HttpContext
+            RequestHeaders: context.RequestHeaders
         );
 
         return await plugin.ExecuteAsync(pluginContext, ct);

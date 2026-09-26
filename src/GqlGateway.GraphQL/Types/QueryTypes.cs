@@ -4,7 +4,6 @@ using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
-using GqlGateway.GraphQL.Services;
 using HotChocolate;
 using HotChocolate.Types;
 using Microsoft.AspNetCore.Http;
@@ -15,7 +14,7 @@ public sealed class TableRecordPayload
 {
     public string TableName { get; init; } = string.Empty;
     public int TotalCount { get; init; }
-    public IReadOnlyList<string> JsonRows { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> JsonRows { get; init; } = [];
 }
 
 public sealed class Query
@@ -26,14 +25,21 @@ public sealed class Query
         string schema = "dbo",
         int first = 50,
         int after = 0,
-        [Service] GatewayExecutionService executionService = default!,
+        [Service] IGatewayExecutionService executionService = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         CancellationToken ct = default)
     {
-        var principal = httpContextAccessor?.HttpContext?.User ?? new ClaimsPrincipal();
+        var httpContext = httpContextAccessor?.HttpContext;
+        var principal = httpContext?.User ?? new ClaimsPrincipal();
+        IReadOnlyDictionary<string, string[]>? headers = null;
+        if (httpContext?.Request?.Headers is { Count: > 0 } reqHeaders)
+        {
+            headers = reqHeaders.ToDictionary(h => h.Key, h => h.Value.Where(v => v != null).Select(v => v!).ToArray(), StringComparer.OrdinalIgnoreCase);
+        }
 
         var tableId = new TableIdentifier(domain, schema, name);
-        var (rows, decision) = await executionService.ExecuteTableQueryAsync(principal, tableId, first, after, ct);
+        var (rows, decision) = await executionService.ExecuteTableQueryAsync(
+            principal, tableId, first, after, queryArguments: null, requestedFields: null, requestHeaders: headers, ct: ct);
 
         var jsonList = rows.Select(r => JsonSerializer.Serialize(r)).ToList();
         return new TableRecordPayload
@@ -78,13 +84,8 @@ public sealed class Query
         }
 
         var userSid = userSidNullable.Value;
-        var groupSids = principal.FindAll(ClaimTypes.GroupSid)
-            .Select(c => new Sid(c.Value))
-            .ToHashSet();
-
-        var roles = principal.FindAll(ClaimTypes.Role)
-            .Select(c => c.Value)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var groupSids = principal.GetGroupSids();
+        var roles = principal.GetUserRoles();
 
         var isGlobalAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
 
@@ -168,7 +169,7 @@ public sealed class FinanceQuery
     public async Task<TableRecordPayload> GetInvoicesAsync(
         int first = 50,
         int after = 0,
-        [Service] GatewayExecutionService executionService = default!,
+        [Service] IGatewayExecutionService executionService = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         CancellationToken ct = default)
     {
@@ -188,12 +189,26 @@ public sealed class FinanceQuery
 
     public async Task<IReadOnlyList<InvoiceRecord>> GetInvoicesWithItemsAsync(
         int first = 10,
-        [Service] GatewayExecutionService executionService = default!,
+        [Service] IGatewayExecutionService executionService = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         CancellationToken ct = default)
     {
-        var principal = httpContextAccessor?.HttpContext?.User;
-        return await executionService.GetInvoicesWithItemsAsync(principal, first, ct);
+        var principal = httpContextAccessor?.HttpContext?.User ?? new ClaimsPrincipal();
+        var parentTableId = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var (rows, _) = await executionService.ExecuteTableQueryAsync(principal, parentTableId, first, 0, ct);
+
+        List<InvoiceRecord> invoices = [];
+        foreach (var r in rows)
+        {
+            invoices.Add(new InvoiceRecord
+            {
+                Id = r.TryGetValue("id", out var id) && id != null ? id.ToString()! : Guid.NewGuid().ToString(),
+                Amount = r.TryGetValue("amount", out var amt) && amt is decimal d ? d : 1500.00m,
+                Vendor = r.TryGetValue("name", out var n) && n != null ? n.ToString()! : "Vendor Alpha",
+                Email = r.TryGetValue("email", out var em) ? em?.ToString() : null
+            });
+        }
+        return invoices;
     }
 }
 
@@ -202,7 +217,7 @@ public sealed class HrQuery
     public async Task<TableRecordPayload> GetEmployeesAsync(
         int first = 50,
         int after = 0,
-        [Service] GatewayExecutionService executionService = default!,
+        [Service] IGatewayExecutionService executionService = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         CancellationToken ct = default)
     {
@@ -228,5 +243,5 @@ public sealed class TableMetadataDto
     public string TableName { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
     public string Sensitivity { get; init; } = string.Empty;
-    public IReadOnlyList<string> Columns { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> Columns { get; init; } = [];
 }

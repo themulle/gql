@@ -6,8 +6,8 @@ using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
+using GqlGateway.Domain.Exceptions;
 using GqlGateway.GraphQL.DynamicTypes;
-using GqlGateway.GraphQL.Services;
 using GqlGateway.GraphQL.Types;
 using GqlGateway.Infrastructure.Cache;
 using GqlGateway.Infrastructure.Persistence;
@@ -282,12 +282,12 @@ public class DataPathSecurityTests : IDisposable
         var identity = new ClaimsIdentity(claims, "TestAuth");
         var principal = new ClaimsPrincipal(identity);
 
-        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        var ex = await Should.ThrowAsync<GatewaySecurityException>(async () =>
         {
             await _executionService.ExecuteTableQueryAsync(principal, table);
         });
 
-        ex.Errors.ShouldContain(e => e.Code == "UNAUTHORIZED");
+        ex.ErrorCode.ShouldBe("UNAUTHORIZED");
     }
 
     [Fact]
@@ -299,10 +299,11 @@ public class DataPathSecurityTests : IDisposable
         // User has NO consent -> will be DENIED with reasons containing special chars
         var accessor = CreateAccessor(userSid);
 
-        await Should.ThrowAsync<GraphQLException>(async () =>
+        var ex = await Should.ThrowAsync<GatewaySecurityException>(async () =>
         {
             await _executionService.ExecuteTableQueryAsync(accessor.HttpContext?.User, table);
         });
+        ex.ErrorCode.ShouldBe("FORBIDDEN");
 
         var auditEntries = await _repository.GetAuditLogEntriesAsync(10);
         var entry = auditEntries.FirstOrDefault(e => e.ActorSid == userSid && e.TargetTable == table.ToString());

@@ -8,17 +8,22 @@ using GqlGateway.Application.Services;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Options;
 using GqlGateway.GraphQL.Filtering;
-using GqlGateway.GraphQL.Services;
 using GqlGateway.GraphQL.Types;
 using GqlGateway.Infrastructure.Cache;
+using GqlGateway.Infrastructure.Health;
+using GqlGateway.Infrastructure.Idempotency;
 using GqlGateway.Infrastructure.Messaging;
 using GqlGateway.Infrastructure.OpenMetadata;
 using GqlGateway.Infrastructure.Persistence;
+using GqlGateway.Infrastructure.RateLimiting;
 using GqlGateway.Infrastructure.Security;
+using GqlGateway.Api.Security;
 using GqlGateway.Application.Plugins;
 using GqlGateway.Infrastructure.Plugins;
+using StackExchange.Redis;
 using HotChocolate.Execution.Configuration;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authentication.Negotiate;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -46,6 +51,13 @@ public static class GatewayServiceCollectionExtensions
                 opts.HighAvailability.TerminationGracePeriodSeconds >= opts.HighAvailability.DrainDelaySeconds + opts.HighAvailability.ShutdownTimeoutSeconds + 10,
                 "NF-HA-01 Verletzung: TerminationGracePeriodSeconds muss größer als DrainDelay + ShutdownTimeout + 10s sein.")
             .Validate(opts =>
+                !(opts.Authentication.RequireKerberosOnly && opts.Authentication.BasicAuth.Enabled),
+                "Sicherheitskonflikt: BasicAuth darf nicht aktiviert sein, wenn RequireKerberosOnly auf true gesetzt ist.")
+            .Validate(opts =>
+                environment.IsDevelopment() || !opts.Authentication.ForwardAuth.Enabled ||
+                (!string.IsNullOrWhiteSpace(opts.Authentication.ForwardAuth.SharedSecret) || !string.IsNullOrWhiteSpace(opts.Authentication.ForwardAuth.SharedSecretKeyVaultRef)),
+                "Sicherheitsverletzung: Außerhalb von Development erfordert ForwardAuth zwingend ein konfiguriertes SharedSecret oder SharedSecretKeyVaultRef.")
+            .Validate(opts =>
                 environment.IsDevelopment() || !opts.Authentication.EnableTestAuthHandler,
                 "Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!")
             .Validate(opts =>
@@ -55,6 +67,13 @@ public static class GatewayServiceCollectionExtensions
                     opts.DataMasking.HmacSecretKeyVaultRef != "dev-only-hmac-salt-secure-fallback"
                 ),
                 "NF-SEC-03 Verletzung: HmacSecretKeyVaultRef muss außerhalb von Development eine gültige Key Vault Secret-Referenz sein!")
+            .Validate(opts =>
+                string.Equals(opts.GovernanceDb.Provider, "Sqlite", StringComparison.OrdinalIgnoreCase),
+                "GovernanceDb Provider wird aktuell nur als 'Sqlite' unterstützt.")
+            .Validate(opts =>
+                environment.IsDevelopment() || !opts.OpenMetadata.Enabled ||
+                (Uri.TryCreate(opts.OpenMetadata.ServerUrl, UriKind.Absolute, out var uri) && string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase)),
+                "Sicherheitsverletzung: OpenMetadata.ServerUrl muss außerhalb von Development zwingend HTTPS verwenden.")
             .ValidateOnStart();
 
         var gatewayOptions = configuration.GetSection(GatewayOptions.SectionName).Get<GatewayOptions>() ?? new GatewayOptions();
@@ -62,7 +81,8 @@ public static class GatewayServiceCollectionExtensions
 
         services.Configure<HostOptions>(o =>
         {
-            o.ShutdownTimeout = TimeSpan.FromSeconds(gatewayOptions.HighAvailability.ShutdownTimeoutSeconds);
+            var drainBuffer = gatewayOptions.HighAvailability.DrainDelaySeconds + gatewayOptions.HighAvailability.ShutdownTimeoutSeconds + 5;
+            o.ShutdownTimeout = TimeSpan.FromSeconds(Math.Min(drainBuffer, gatewayOptions.HighAvailability.TerminationGracePeriodSeconds));
         });
 
         services.Configure<ForwardedHeadersOptions>(options =>
@@ -105,7 +125,24 @@ public static class GatewayServiceCollectionExtensions
             options.SizeLimit = (long)gatewayOptions.Caching.L1MemoryCache.SizeLimitMb * 1024 * 1024;
         });
 
-        services.AddSingleton<IEventBus, InProcessChannelEventBus>();
+        if (gatewayOptions.Caching.Redis.Enabled)
+        {
+            var redisConfig = ConfigurationOptions.Parse(gatewayOptions.Caching.Redis.Configuration);
+            redisConfig.ConnectTimeout = gatewayOptions.Caching.Redis.ConnectTimeoutMs;
+            redisConfig.SyncTimeout = gatewayOptions.Caching.Redis.SyncTimeoutMs;
+            redisConfig.AbortOnConnectFail = false;
+            services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConfig));
+            services.AddSingleton<IEventBus, RedisEventBus>();
+            services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
+            services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
+        }
+        else
+        {
+            services.AddSingleton<IEventBus, InProcessChannelEventBus>();
+            services.AddSingleton<IRateLimiterService, InMemoryRateLimiterService>();
+            services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
+        }
+
         services.AddSingleton<IEpochValidationService, EpochValidationService>();
         services.AddSingleton<IConsentCacheService, ConsentCacheService>();
         services.AddSingleton<IParameterBudgetProvider, DatabaseParameterBudgetProvider>();
@@ -128,6 +165,10 @@ public static class GatewayServiceCollectionExtensions
             sp.GetRequiredService<IParameterBudgetProvider>()));
         services.AddSingleton<ISqlFilterProvider>(new SqlFilterProvider(gatewayOptions.GraphQL.MaxInClauseBatchSize));
 
+        // SQL Connection Factory & Health Checks
+        services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
+        services.AddSingleton<IGatewayHealthCheckService, GatewayHealthCheckService>();
+
         // HTTP & Plugin Data Sources
         services.AddHttpClient();
         services.AddSingleton<IPluginManager, PluginManager>();
@@ -135,7 +176,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IDataSourceExecutor, DeclarativeHttpDataSourceExecutor>();
         services.AddSingleton<IDataSourceExecutor, PluginHttpDataSourceExecutor>();
 
-        services.AddScoped(sp => new GatewayExecutionService(
+        services.AddScoped<GatewayExecutionService>(sp => new GatewayExecutionService(
             sp.GetRequiredService<ITableMetadataRepository>(),
             sp.GetRequiredService<IConsentRepository>(),
             sp.GetRequiredService<IAuditLogRepository>(),
@@ -145,8 +186,8 @@ public static class GatewayServiceCollectionExtensions
             sp.GetRequiredService<IChunkedQueryExecutor>(),
             sp.GetService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
             sp.GetService<ITrafficDrainController>(),
-            sp.GetServices<IDataSourceExecutor>(),
-            sp.GetService<Microsoft.AspNetCore.Http.IHttpContextAccessor>()));
+            sp.GetServices<IDataSourceExecutor>()));
+        services.AddScoped<IGatewayExecutionService>(sp => sp.GetRequiredService<GatewayExecutionService>());
 
         // HA & Traffic Drain
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();
@@ -154,7 +195,7 @@ public static class GatewayServiceCollectionExtensions
 
         // OpenMetadata Integration
         services.AddHttpClient<IOpenMetadataClient, OpenMetadataClient>();
-        services.AddSingleton<IOpenMetadataSyncService, OpenMetadataSyncService>();
+        services.AddScoped<IOpenMetadataSyncService, OpenMetadataSyncService>();
         services.AddHostedService<OpenMetadataSyncBackgroundService>();
 
         // Explicit CORS policy configuration
@@ -194,16 +235,171 @@ public static class GatewayServiceCollectionExtensions
         GatewayOptions gatewayOptions,
         IHostEnvironment environment)
     {
+        services.AddSingleton<ITrustedProxyValidator, TrustedProxyValidator>();
+        services.AddTransient<IClaimsTransformation, EnterpriseClaimsTransformation>();
+
+        var authBuilder = services.AddAuthentication(options =>
+        {
+            options.DefaultScheme = GatewayAuthSchemes.DefaultScheme;
+            options.DefaultChallengeScheme = GatewayAuthSchemes.DefaultScheme;
+        });
+
+        // 1. Basic Authentication
+        authBuilder.AddScheme<AuthenticationSchemeOptions, BasicAuthenticationHandler>(
+            GatewayAuthSchemes.Basic, _ => { });
+
+        // 2. Traefik / Kubernetes Ingress ForwardAuth
+        authBuilder.AddScheme<AuthenticationSchemeOptions, ForwardAuthAuthenticationHandler>(
+            GatewayAuthSchemes.ForwardAuth, _ => { });
+
+        // 3. Windows Negotiate (Kerberos / NTLM) or TestAuthHandler
         if (environment.IsDevelopment() && gatewayOptions.Authentication.EnableTestAuthHandler)
         {
-            services.AddAuthentication(TestAuthHandler.SchemeName)
-                .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
+            authBuilder.AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
+                TestAuthHandler.SchemeName, _ => { });
         }
         else
         {
-            services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-                .AddNegotiate();
+            authBuilder.AddNegotiate(NegotiateDefaults.AuthenticationScheme, _ => { });
         }
+
+        // 4. Microsoft Entra ID (Azure AD) and/or AD FS JWT Bearer
+        var entraConfig = gatewayOptions.Authentication.EntraId;
+        var adfsConfig = gatewayOptions.Authentication.Adfs;
+
+        authBuilder.AddJwtBearer(GatewayAuthSchemes.JwtBearer, options =>
+        {
+            options.RequireHttpsMetadata = (entraConfig.Enabled && entraConfig.RequireHttpsMetadata) ||
+                                           (adfsConfig.Enabled && adfsConfig.RequireHttpsMetadata);
+
+            if (entraConfig.Enabled && !string.IsNullOrWhiteSpace(entraConfig.TenantId))
+            {
+                var instance = string.IsNullOrWhiteSpace(entraConfig.Instance)
+                    ? "https://login.microsoftonline.com/"
+                    : entraConfig.Instance.TrimEnd('/') + "/";
+                options.Authority = $"{instance}{entraConfig.TenantId}/v2.0";
+            }
+            else if (adfsConfig.Enabled && !string.IsNullOrWhiteSpace(adfsConfig.Authority))
+            {
+                options.Authority = adfsConfig.Authority.TrimEnd('/');
+                if (!string.IsNullOrWhiteSpace(adfsConfig.MetadataAddress))
+                {
+                    options.MetadataAddress = adfsConfig.MetadataAddress;
+                }
+            }
+
+            var validIssuers = new List<string>();
+            var validAudiences = new List<string>();
+
+            if (entraConfig.Enabled)
+            {
+                if (!string.IsNullOrWhiteSpace(entraConfig.TenantId))
+                {
+                    var instance = string.IsNullOrWhiteSpace(entraConfig.Instance)
+                        ? "https://login.microsoftonline.com/"
+                        : entraConfig.Instance.TrimEnd('/') + "/";
+                    validIssuers.Add($"{instance}{entraConfig.TenantId}/v2.0");
+                    validIssuers.Add($"https://sts.windows.net/{entraConfig.TenantId}/");
+                }
+                if (!string.IsNullOrWhiteSpace(entraConfig.Audience)) validAudiences.Add(entraConfig.Audience);
+                if (!string.IsNullOrWhiteSpace(entraConfig.ClientId)) validAudiences.Add(entraConfig.ClientId);
+            }
+
+            if (adfsConfig.Enabled)
+            {
+                if (!string.IsNullOrWhiteSpace(adfsConfig.Authority))
+                {
+                    validIssuers.Add(adfsConfig.Authority.TrimEnd('/'));
+                    validIssuers.Add($"{adfsConfig.Authority.TrimEnd('/')}/services/trust");
+                }
+                if (!string.IsNullOrWhiteSpace(adfsConfig.Audience)) validAudiences.Add(adfsConfig.Audience);
+            }
+
+            options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidIssuers = validIssuers.Count > 0 ? validIssuers : null,
+                ValidateAudience = true,
+                ValidAudiences = validAudiences.Count > 0 ? validAudiences : null,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                ClockSkew = TimeSpan.FromMinutes(2)
+            };
+        });
+
+        // 5. Smart Dynamic Policy Scheme: Route requests based on Authorization header or ForwardAuth
+        authBuilder.AddPolicyScheme(GatewayAuthSchemes.DefaultScheme, "Gateway Smart Authentication", options =>
+        {
+            options.ForwardDefaultSelector = context =>
+            {
+                var authHeader = context.Request.Headers.Authorization.ToString();
+
+                // 1. Explicit Authorization headers have top priority (prevents ForwardAuth Header-Preemption DoS)
+                if (authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                {
+                    return GatewayAuthSchemes.JwtBearer;
+                }
+
+                if (authHeader.StartsWith("Basic ", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (gatewayOptions.Authentication.RequireKerberosOnly)
+                    {
+                        return NegotiateDefaults.AuthenticationScheme;
+                    }
+                    if (gatewayOptions.Authentication.BasicAuth.Enabled)
+                    {
+                        return GatewayAuthSchemes.Basic;
+                    }
+                    return NegotiateDefaults.AuthenticationScheme;
+                }
+
+                if (authHeader.StartsWith("Negotiate ", StringComparison.OrdinalIgnoreCase))
+                {
+                    return NegotiateDefaults.AuthenticationScheme;
+                }
+
+                if (authHeader.StartsWith("NTLM ", StringComparison.OrdinalIgnoreCase))
+                {
+                    return NegotiateDefaults.AuthenticationScheme;
+                }
+
+                // 2. ForwardAuth (Traefik / Kubernetes Ingress) when enabled and proxy headers are present
+                if (gatewayOptions.Authentication.ForwardAuth.Enabled)
+                {
+                    var fwdUserHeader = string.IsNullOrWhiteSpace(gatewayOptions.Authentication.ForwardAuth.UserHeader)
+                        ? "X-Forwarded-User"
+                        : gatewayOptions.Authentication.ForwardAuth.UserHeader;
+
+                    if (context.Request.Headers.ContainsKey(fwdUserHeader) ||
+                        context.Request.Headers.ContainsKey("X-Forwarded-User") ||
+                        context.Request.Headers.ContainsKey("X-Auth-Request-User") ||
+                        context.Request.Headers.ContainsKey("X-Forwarded-Preferred-Username"))
+                    {
+                        return GatewayAuthSchemes.ForwardAuth;
+                    }
+                }
+
+                // 3. Development Test Auth Simulation
+                if (environment.IsDevelopment() && gatewayOptions.Authentication.EnableTestAuthHandler)
+                {
+                    if (context.Request.Headers.ContainsKey("X-Test-User-Sid") ||
+                        string.IsNullOrWhiteSpace(authHeader))
+                    {
+                        return TestAuthHandler.SchemeName;
+                    }
+                }
+
+                // 4. Fallback challenge when unauthenticated
+                if (gatewayOptions.Authentication.BasicAuth.Enabled &&
+                    !gatewayOptions.Authentication.RequireKerberosOnly &&
+                    string.IsNullOrWhiteSpace(authHeader))
+                {
+                    return GatewayAuthSchemes.Basic;
+                }
+
+                return NegotiateDefaults.AuthenticationScheme;
+            };
+        });
 
         services.AddAuthorization();
         services.AddHttpContextAccessor();
@@ -219,6 +415,7 @@ public static class GatewayServiceCollectionExtensions
             .AddGraphQLServer()
             .AddQueryType<Query>()
             .AddMutationType<Mutation>()
+            .AddTypeExtension<InvoiceRecordExtensions>()
             .AddErrorFilter<ErrorSanitizingFilter>()
             .AddMaxExecutionDepthRule(gatewayOptions.GraphQL.MaxAllowedExecutionDepth)
             .ModifyCostOptions(opt =>
@@ -259,6 +456,21 @@ public static class GatewayServiceCollectionExtensions
             throw new ValidationException("NF-HA-01 Verletzung: TerminationGracePeriodSeconds muss größer als DrainDelay + ShutdownTimeout + 10s sein.");
         }
 
+        if (options.Authentication.RequireKerberosOnly && options.Authentication.BasicAuth.Enabled)
+        {
+            throw new ValidationException("Sicherheitskonflikt: BasicAuth darf nicht aktiviert sein, wenn RequireKerberosOnly auf true gesetzt ist.");
+        }
+
+        if (!environment.IsDevelopment() && options.Authentication.ForwardAuth.Enabled)
+        {
+            var hasSecret = !string.IsNullOrWhiteSpace(options.Authentication.ForwardAuth.SharedSecret) ||
+                            !string.IsNullOrWhiteSpace(options.Authentication.ForwardAuth.SharedSecretKeyVaultRef);
+            if (!hasSecret)
+            {
+                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development erfordert ForwardAuth zwingend ein konfiguriertes SharedSecret oder SharedSecretKeyVaultRef.");
+            }
+        }
+
         if (!environment.IsDevelopment() && options.Authentication.EnableTestAuthHandler)
         {
             throw new ValidationException("Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
@@ -272,6 +484,18 @@ public static class GatewayServiceCollectionExtensions
             {
                 throw new ValidationException("NF-SEC-03 Verletzung: HmacSecretKeyVaultRef muss außerhalb von Development eine gültige Key Vault Secret-Referenz sein!");
             }
+
+            if (options.OpenMetadata.Enabled &&
+                Uri.TryCreate(options.OpenMetadata.ServerUrl, UriKind.Absolute, out var omUri) &&
+                !string.Equals(omUri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ValidationException("Sicherheitsverletzung: OpenMetadata.ServerUrl muss außerhalb von Development zwingend HTTPS verwenden.");
+            }
+        }
+
+        if (!string.Equals(options.GovernanceDb.Provider, "Sqlite", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ValidationException($"GovernanceDb Provider '{options.GovernanceDb.Provider}' wird aktuell nicht unterstützt. Die aktive Implementierung unterstützt derzeit 'Sqlite'.");
         }
     }
 
@@ -282,7 +506,8 @@ public static class GatewayServiceCollectionExtensions
 
         foreach (var prop in instance.GetType().GetProperties())
         {
-            if (prop.PropertyType.IsClass && prop.PropertyType != typeof(string) && !prop.PropertyType.IsArray)
+            if (prop.GetIndexParameters().Length > 0) continue;
+            if (prop.PropertyType.IsClass && prop.PropertyType != typeof(string) && !prop.PropertyType.IsArray && !typeof(System.Collections.IEnumerable).IsAssignableFrom(prop.PropertyType))
             {
                 var val = prop.GetValue(instance);
                 if (val != null)

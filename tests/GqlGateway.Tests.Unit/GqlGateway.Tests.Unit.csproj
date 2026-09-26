@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\GqlGateway.Application\GqlGateway.Application.csproj" />
     <ProjectReference Include="..\..\src\GqlGateway.Infrastructure\GqlGateway.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\GqlGateway.GraphQL\GqlGateway.GraphQL.csproj" />
+    <ProjectReference Include="..\..\src\GqlGateway.Api\GqlGateway.Api.csproj" />
   </ItemGroup>
 
 </Project>
