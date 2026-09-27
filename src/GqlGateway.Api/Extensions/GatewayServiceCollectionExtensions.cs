@@ -13,7 +13,9 @@ using GqlGateway.Infrastructure.Cache;
 using GqlGateway.Infrastructure.Health;
 using GqlGateway.Infrastructure.Idempotency;
 using GqlGateway.Infrastructure.Messaging;
-using GqlGateway.Infrastructure.OpenMetadata;
+using GqlGateway.Extensions;
+using GqlGateway.Extensions.OpenMetadata;
+using GqlGateway.Extensions.Itsm;
 using GqlGateway.Infrastructure.Persistence;
 using GqlGateway.Infrastructure.RateLimiting;
 using GqlGateway.Infrastructure.Security;
@@ -198,25 +200,7 @@ public static class GatewayServiceCollectionExtensions
         // Casbin ABAC Engine
         services.AddSingleton<IPolicyEnforcementService, CasbinEnforcementService>();
 
-        // ITSM Connectors & Webhooks
-        services.AddHttpClient<ServiceNowClient>((sp, client) =>
-        {
-            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.Itsm;
-            if (!string.IsNullOrWhiteSpace(opts.ServiceNowBaseUrl))
-            {
-                client.BaseAddress = new Uri(opts.ServiceNowBaseUrl);
-            }
-        });
-        services.AddHttpClient<JiraClient>((sp, client) =>
-        {
-            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.Itsm;
-            if (!string.IsNullOrWhiteSpace(opts.JiraBaseUrl))
-            {
-                client.BaseAddress = new Uri(opts.JiraBaseUrl);
-            }
-        });
-        services.AddScoped<IItsmWorkflowClient>(sp => sp.GetRequiredService<ServiceNowClient>());
-        services.AddScoped<IItsmWorkflowClient>(sp => sp.GetRequiredService<JiraClient>());
+        // ITSM Dispatcher & Inbound Webhooks (Outbound clients in GqlGateway.Extensions)
         services.AddScoped<ItsmWorkflowDispatcher>();
         services.AddScoped<IItsmWebhookHandler, ItsmWebhookHandler>();
 
@@ -251,10 +235,8 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();
         services.AddHostedService<TrafficDrainHostedService>();
 
-        // OpenMetadata Integration
-        services.AddHttpClient<IOpenMetadataClient, OpenMetadataClient>();
-        services.AddScoped<IOpenMetadataSyncService, OpenMetadataSyncService>();
-        services.AddHostedService<OpenMetadataSyncBackgroundService>();
+        // Foreign System Extensions (ServiceNow, Jira, OpenMetadata)
+        services.AddGatewayExtensions(gatewayOptions);
 
         // Explicit CORS policy configuration
         services.AddCors(options =>

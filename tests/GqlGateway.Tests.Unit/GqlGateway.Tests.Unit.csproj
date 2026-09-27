@@ -27,6 +27,7 @@
     <ProjectReference Include="..\..\src\GqlGateway.Infrastructure\GqlGateway.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\GqlGateway.GraphQL\GqlGateway.GraphQL.csproj" />
     <ProjectReference Include="..\..\src\GqlGateway.Api\GqlGateway.Api.csproj" />
+    <ProjectReference Include="..\..\..\gql_extensions\src\GqlGateway.Extensions\GqlGateway.Extensions.csproj" />
   </ItemGroup>
 
 </Project>

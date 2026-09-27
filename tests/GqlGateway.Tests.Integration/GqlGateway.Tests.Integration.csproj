@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\GqlGateway.Api\GqlGateway.Api.csproj" />
+    <ProjectReference Include="..\..\..\gql_extensions\src\GqlGateway.Extensions\GqlGateway.Extensions.csproj" />
   </ItemGroup>
 
 </Project>

@@ -603,8 +603,8 @@ public class GovernanceSecurityTests : IDisposable
     {
         var prodEnv = new DummyHostEnvironment("Production");
         using var httpClient = new System.Net.Http.HttpClient(); // BaseAddress is null
-        var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<GqlGateway.Infrastructure.Itsm.ServiceNowClient>.Instance;
-        var client = new GqlGateway.Infrastructure.Itsm.ServiceNowClient(httpClient, logger, prodEnv);
+        var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<GqlGateway.Extensions.Itsm.ServiceNowClient>.Instance;
+        var client = new GqlGateway.Extensions.Itsm.ServiceNowClient(httpClient, logger, prodEnv);
 
         var result = await client.CreateAccessTicketAsync(new ItsmTicketRequest(
             new TenantId("tenant-a"),

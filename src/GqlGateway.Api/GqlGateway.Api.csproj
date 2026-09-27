@@ -5,6 +5,7 @@
     <ProjectReference Include="..\GqlGateway.Infrastructure\GqlGateway.Infrastructure.csproj" />
     <ProjectReference Include="..\GqlGateway.Application\GqlGateway.Application.csproj" />
     <ProjectReference Include="..\GqlGateway.Domain\GqlGateway.Domain.csproj" />
+    <ProjectReference Include="..\..\..\gql_extensions\src\GqlGateway.Extensions\GqlGateway.Extensions.csproj" />
   </ItemGroup>
 
   <ItemGroup>
