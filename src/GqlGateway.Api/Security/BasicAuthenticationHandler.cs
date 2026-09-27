@@ -115,12 +115,19 @@ public sealed class BasicAuthenticationHandler : AuthenticationHandler<Authentic
             ? configuredUser.Sid
             : $"S-1-5-21-BASIC-{username.ToUpperInvariant()}";
 
+        var tenant = !string.IsNullOrWhiteSpace(configuredUser.TenantId)
+            ? configuredUser.TenantId
+            : "default";
+
         var claims = new List<Claim>
         {
             new(ClaimTypes.Name, username),
             new(ClaimTypes.NameIdentifier, username),
             new(ClaimTypes.PrimarySid, sid),
-            new("objectSid", sid)
+            new("objectSid", sid),
+            new("tenant_id", tenant),
+            new("tenant", tenant),
+            new("tid", tenant)
         };
 
         foreach (var role in configuredUser.Roles)

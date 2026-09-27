@@ -74,8 +74,11 @@ public static class GatewayServiceCollectionExtensions
                 (!string.IsNullOrWhiteSpace(opts.Authentication.ForwardAuth.SharedSecret) || !string.IsNullOrWhiteSpace(opts.Authentication.ForwardAuth.SharedSecretKeyVaultRef)),
                 "Sicherheitsverletzung: Außerhalb von Development erfordert ForwardAuth zwingend ein konfiguriertes SharedSecret oder SharedSecretKeyVaultRef.")
             .Validate(opts =>
-                environment.IsDevelopment() || !opts.Authentication.EnableTestAuthHandler || opts.IsAnonymousAccessAllowed,
+                environment.IsDevelopment() || !opts.Authentication.EnableTestAuthHandler,
                 "Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!")
+            .Validate(opts =>
+                environment.IsDevelopment() || !opts.IsAnonymousAccessAllowed,
+                "Sicherheitsverletzung: danger_allow_anonymous_access darf AUSSCHLIESSLICH in der Development-Umgebung true sein!")
             .Validate(opts =>
                 environment.IsDevelopment() || (
                     !string.IsNullOrWhiteSpace(opts.DataMasking.HmacSecretKeyVaultRef) &&
@@ -337,7 +340,10 @@ public static class GatewayServiceCollectionExtensions
             GatewayAuthSchemes.ForwardAuth, _ => { });
 
         // 3. Windows Negotiate (Kerberos / NTLM) or TestAuthHandler
-        if (environment.IsDevelopment() && gatewayOptions.Authentication.EnableTestAuthHandler)
+        bool isTestAuthAllowed = environment.IsDevelopment() &&
+            (gatewayOptions.Authentication.EnableTestAuthHandler || gatewayOptions.IsAnonymousAccessAllowed);
+
+        if (isTestAuthAllowed)
         {
             authBuilder.AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(
                 TestAuthHandler.SchemeName, _ => { });
@@ -464,8 +470,7 @@ public static class GatewayServiceCollectionExtensions
                 }
 
                 // 3. Development Test Auth Simulation or Insecure Anonymous Access
-                if ((environment.IsDevelopment() && gatewayOptions.Authentication.EnableTestAuthHandler) ||
-                    gatewayOptions.IsAnonymousAccessAllowed)
+                if (isTestAuthAllowed)
                 {
                     if (context.Request.Headers.ContainsKey("X-Test-User-Sid") ||
                         context.Request.Headers.ContainsKey("X-Test-AppId") ||
@@ -537,7 +542,7 @@ public static class GatewayServiceCollectionExtensions
         return services;
     }
 
-    private static void ValidateGatewayOptions(GatewayOptions options, IHostEnvironment environment)
+    internal static void ValidateGatewayOptions(GatewayOptions options, IHostEnvironment environment)
     {
         ValidateObjectRecursively(options);
 
@@ -577,14 +582,24 @@ public static class GatewayServiceCollectionExtensions
             }
         }
 
-        if (!environment.IsDevelopment() && options.Authentication.EnableTestAuthHandler && !options.IsAnonymousAccessAllowed)
+        if (!environment.IsDevelopment() && options.Authentication.EnableTestAuthHandler)
         {
             throw new ValidationException("Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
+        }
+
+        if (!environment.IsDevelopment() && options.IsAnonymousAccessAllowed)
+        {
+            throw new ValidationException("Sicherheitsverletzung: danger_allow_anonymous_access darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
         }
 
         if (!environment.IsDevelopment() && options.IsMcpAuthBypassed)
         {
             throw new ValidationException("Sicherheitsverletzung: danger_bypass_mcp_auth darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
+        }
+
+        if (!environment.IsDevelopment() && options.IsLakehouseAuthBypassed)
+        {
+            throw new ValidationException("Sicherheitsverletzung: danger_bypass_lakehouse_auth darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
         }
 
         if (!environment.IsDevelopment())

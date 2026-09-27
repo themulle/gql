@@ -5,6 +5,7 @@ using System.Text;
 using GqlGateway.Application.Interfaces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace GqlGateway.Infrastructure.Security;
 
@@ -12,11 +13,16 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
 {
     private readonly IConfiguration _configuration;
     private readonly IHostEnvironment _environment;
+    private readonly Microsoft.Extensions.Logging.ILogger<DefaultEnvironmentSecretProvider>? _logger;
 
-    public DefaultEnvironmentSecretProvider(IConfiguration configuration, IHostEnvironment environment)
+    public DefaultEnvironmentSecretProvider(
+        IConfiguration configuration,
+        IHostEnvironment environment,
+        Microsoft.Extensions.Logging.ILogger<DefaultEnvironmentSecretProvider>? logger = null)
     {
         _configuration = configuration;
         _environment = environment;
+        _logger = logger;
     }
 
     public byte[] GetSecretBytes(string secretRef)
@@ -48,14 +54,19 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
         candidates.Add(secretRef.Replace("-", "_"));
         candidates.Add(secretRef.Replace("-", ":"));
 
-        // Dedicated namespaced candidate for itsm
-        if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) || secretRef.Contains("itsm", StringComparison.OrdinalIgnoreCase))
+        // 3. Strictly bounded well-known aliases (exact or prefix match only, preventing accidental cross-secret collisions)
+        if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(secretRef, "itsm-webhook-secret", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(secretRef, "ITSM_WEBHOOK_SECRET", StringComparison.OrdinalIgnoreCase))
         {
             candidates.Add("ITSM__WEBHOOK_SECRET");
             candidates.Add("ITSM_WEBHOOK_SECRET");
             candidates.Add("Gateway:Itsm:WebhookSecret");
         }
-        else if (secretRef.Contains("hmac", StringComparison.OrdinalIgnoreCase))
+        else if (secretRef.StartsWith("hmac:", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(secretRef, "hmac-masking-secret", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(secretRef, "HMAC_SECRET", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(secretRef, "HMAC_SECRET_KEY", StringComparison.OrdinalIgnoreCase))
         {
             candidates.Add("HMAC_SECRET");
             candidates.Add("HMAC_SECRET_KEY");
@@ -68,18 +79,21 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
             var secretVal = _configuration[key];
             if (!string.IsNullOrWhiteSpace(secretVal))
             {
+                _logger?.LogDebug("Resolved secret reference '{SecretRef}' using configuration key '{CandidateKey}'.", secretRef, key);
                 return Encoding.UTF8.GetBytes(secretVal);
             }
 
             var envVal = Environment.GetEnvironmentVariable(key.Replace(":", "__").Replace("-", "_"));
             if (!string.IsNullOrWhiteSpace(envVal))
             {
+                _logger?.LogDebug("Resolved secret reference '{SecretRef}' using environment variable '{CandidateKey}'.", secretRef, key);
                 return Encoding.UTF8.GetBytes(envVal);
             }
 
             envVal = Environment.GetEnvironmentVariable(key);
             if (!string.IsNullOrWhiteSpace(envVal))
             {
+                _logger?.LogDebug("Resolved secret reference '{SecretRef}' using direct environment variable '{CandidateKey}'.", secretRef, key);
                 return Encoding.UTF8.GetBytes(envVal);
             }
         }

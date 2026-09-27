@@ -35,6 +35,14 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
             }
             else if (_gatewayOptions?.Value.IsAnonymousAccessAllowed == true)
             {
+                var anonTenant = headers.TryGetValue("X-Test-Tenant", out var aTenantVal) && !string.IsNullOrWhiteSpace(aTenantVal)
+                    ? aTenantVal.ToString().Trim()
+                    : (headers.TryGetValue("X-Tenant-ID", out var aTidVal) && !string.IsNullOrWhiteSpace(aTidVal)
+                        ? aTidVal.ToString().Trim()
+                        : (headers.TryGetValue("X-Tenant-Id", out var aTidAltVal) && !string.IsNullOrWhiteSpace(aTidAltVal)
+                            ? aTidAltVal.ToString().Trim()
+                            : "default"));
+
                 // Insecure Getting-Started: Allow anonymous access with DeveloperAdmin identity
                 List<Claim> anonClaims =
                 [
@@ -44,7 +52,10 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
                     new("objectSid", "S-1-5-21-DEV-ANONYMOUS"),
                     new(ClaimTypes.Role, "DeveloperAdmin"),
                     new(ClaimTypes.Role, "GovernanceAdmin"),
-                    new(ClaimTypes.Role, "ClusterAdmin")
+                    new(ClaimTypes.Role, "ClusterAdmin"),
+                    new("tenant_id", anonTenant),
+                    new("tenant", anonTenant),
+                    new("tid", anonTenant)
                 ];
                 var anonIdentity = new ClaimsIdentity(anonClaims, SchemeName, ClaimTypes.Name, ClaimTypes.Role);
                 var anonPrincipal = new ClaimsPrincipal(anonIdentity);
@@ -99,10 +110,17 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
             }
         }
 
-        if (headers.TryGetValue("X-Test-Tenant", out var tenantVal) && !string.IsNullOrWhiteSpace(tenantVal))
-        {
-            claims.Add(new Claim("tenant", tenantVal.ToString().Trim()));
-        }
+        var testTenant = headers.TryGetValue("X-Test-Tenant", out var tenantVal) && !string.IsNullOrWhiteSpace(tenantVal)
+            ? tenantVal.ToString().Trim()
+            : (headers.TryGetValue("X-Tenant-ID", out var tidVal) && !string.IsNullOrWhiteSpace(tidVal)
+                ? tidVal.ToString().Trim()
+                : (headers.TryGetValue("X-Tenant-Id", out var tidAltVal) && !string.IsNullOrWhiteSpace(tidAltVal)
+                    ? tidAltVal.ToString().Trim()
+                    : "default"));
+
+        claims.Add(new Claim("tenant_id", testTenant));
+        claims.Add(new Claim("tenant", testTenant));
+        claims.Add(new Claim("tid", testTenant));
 
         var identity = new ClaimsIdentity(claims, SchemeName, ClaimTypes.Name, ClaimTypes.Role);
         var principal = new ClaimsPrincipal(identity);

@@ -25,4 +25,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="GqlGateway.Tests.Unit" />
+    <InternalsVisibleTo Include="GqlGateway.Tests.Integration" />
+  </ItemGroup>
+
 </Project>

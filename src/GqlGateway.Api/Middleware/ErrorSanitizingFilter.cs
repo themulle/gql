@@ -63,6 +63,10 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
 
         if (_environment.IsDevelopment())
         {
+            if (error.Exception != null)
+            {
+                return error.WithMessage($"{error.Exception.GetType().Name}: {error.Exception.Message}");
+            }
             return error;
         }
 

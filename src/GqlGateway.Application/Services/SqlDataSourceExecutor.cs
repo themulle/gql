@@ -213,26 +213,27 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
                 await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
-            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess | CommandBehavior.SingleResult, ct).ConfigureAwait(false);
-
-            int fieldCount = reader.FieldCount;
-            var columnNames = new string[fieldCount];
-            for (int i = 0; i < fieldCount; i++)
-            {
-                columnNames[i] = reader.GetName(i);
-            }
-
             var results = new List<IReadOnlyDictionary<string, object?>>(Math.Min(Math.Max(context.Limit, 16), 1024));
 
-            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            await using (var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess | CommandBehavior.SingleResult, ct).ConfigureAwait(false))
             {
-                var row = new Dictionary<string, object?>(fieldCount, StringComparer.OrdinalIgnoreCase);
+                int fieldCount = reader.FieldCount;
+                var columnNames = new string[fieldCount];
                 for (int i = 0; i < fieldCount; i++)
                 {
-                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                    row[columnNames[i]] = value;
+                    columnNames[i] = reader.GetName(i);
                 }
-                results.Add(row);
+
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    var row = new Dictionary<string, object?>(fieldCount, StringComparer.OrdinalIgnoreCase);
+                    for (int i = 0; i < fieldCount; i++)
+                    {
+                        var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                        row[columnNames[i]] = value;
+                    }
+                    results.Add(row);
+                }
             }
 
             if (tx != null)

@@ -237,6 +237,39 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
             }
         }
 
+        // Extract Tenant
+        string? tenant = null;
+        if (!string.IsNullOrWhiteSpace(forwardAuthOptions.TenantHeader) &&
+            headers.TryGetValue(forwardAuthOptions.TenantHeader, out var customTenantVal) &&
+            !string.IsNullOrWhiteSpace(customTenantVal))
+        {
+            tenant = customTenantVal.ToString().Trim();
+        }
+        else if (headers.TryGetValue("X-Forwarded-Tenant", out var fwdTenantVal) && !string.IsNullOrWhiteSpace(fwdTenantVal))
+        {
+            tenant = fwdTenantVal.ToString().Trim();
+        }
+        else if (headers.TryGetValue("X-Auth-Request-Tenant", out var authTenantVal) && !string.IsNullOrWhiteSpace(authTenantVal))
+        {
+            tenant = authTenantVal.ToString().Trim();
+        }
+        else if (headers.TryGetValue("X-Forwarded-Tenant-Id", out var fwdTenantIdVal) && !string.IsNullOrWhiteSpace(fwdTenantIdVal))
+        {
+            tenant = fwdTenantIdVal.ToString().Trim();
+        }
+        else if (!string.IsNullOrWhiteSpace(forwardAuthOptions.DefaultTenantId))
+        {
+            tenant = forwardAuthOptions.DefaultTenantId;
+        }
+        else
+        {
+            tenant = "default";
+        }
+
+        claims.Add(new Claim("tenant_id", tenant));
+        claims.Add(new Claim("tenant", tenant));
+        claims.Add(new Claim("tid", tenant));
+
         // Map default enterprise user role if none assigned
         if (!claims.Any(c => c.Type == ClaimTypes.Role))
         {

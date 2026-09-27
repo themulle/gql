@@ -61,8 +61,23 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         });
     }
 
+    private static readonly string[] DangerousSubRuleTokens =
+    [
+        "System.", "System;", "Process", "File.", "Directory.", "Assembly", "GetType", "Activator",
+        "Environment.", "AppDomain", "MethodInfo", "Invoke", "Type.", "TypeName", "Reflection"
+    ];
+
     public void AddPolicy(TenantId tenant, string sub, string obj, string act, string subRule = "true", string eft = "allow")
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subRule);
+        foreach (var token in DangerousSubRuleTokens)
+        {
+            if (subRule.Contains(token, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Sicherheitsfehler: Casbin sub_rule enthält nicht erlaubten Ausdruck '{token}'.", nameof(subRule));
+            }
+        }
+
         _decisionCache.Clear();
         var enforcer = GetOrCreateEnforcer(tenant);
         enforcer.AddPolicy(sub, tenant.Value, obj, act, subRule, eft);

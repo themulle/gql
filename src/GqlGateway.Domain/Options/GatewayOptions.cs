@@ -23,6 +23,7 @@ public sealed class GatewayOptions
     [Required] public ItsmOptions Itsm { get; init; } = new();
     [Required] public DataCatalogOptions Catalog { get; init; } = new();
     [Required] public McpOptions Mcp { get; init; } = new();
+    [Required] public LakehouseOptions Lakehouse { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -42,6 +43,8 @@ public sealed class GatewayOptions
     public bool AreExternalSystemsMockedIfUnreachable => Insecure.warn_mock_external_systems_if_unreachable || Itsm.warn_mock_external_systems_if_unreachable;
     public bool IsMcpAuthBypassed => Insecure.danger_bypass_mcp_auth || Mcp.danger_bypass_mcp_auth;
     public bool IsMcpUnmaskedAllowed => Insecure.warn_allow_unmasked_ai_access || Mcp.warn_allow_unmasked_ai_access;
+    public bool IsLakehouseAuthBypassed => Insecure.danger_bypass_lakehouse_auth || Lakehouse.danger_bypass_lakehouse_auth;
+    public bool AreUnsignedS3RequestsAllowed => Insecure.warn_allow_unsigned_s3_requests || Lakehouse.warn_allow_unsigned_s3_requests;
 
     public bool HasAnySecurityBypassActive =>
         IsAnonymousAccessAllowed ||
@@ -59,7 +62,9 @@ public sealed class GatewayOptions
         IsWebhookTenantFallbackAllowed ||
         AreExternalSystemsMockedIfUnreachable ||
         IsMcpAuthBypassed ||
-        IsMcpUnmaskedAllowed;
+        IsMcpUnmaskedAllowed ||
+        IsLakehouseAuthBypassed ||
+        AreUnsignedS3RequestsAllowed;
 
     public IReadOnlyList<string> GetAllActiveBypasses()
     {
@@ -71,6 +76,7 @@ public sealed class GatewayOptions
         if (IsWebhookSignatureBypassed) list.Add("DANGER:danger_bypass_webhook_signature_validation");
         if (AreUntrustedCertificatesAllowed) list.Add("DANGER:danger_allow_untrusted_certificates");
         if (IsMcpAuthBypassed) list.Add("DANGER:danger_bypass_mcp_auth");
+        if (IsLakehouseAuthBypassed) list.Add("DANGER:danger_bypass_lakehouse_auth");
         if (IsAllCorsAllowed) list.Add("WARN:warn_allow_all_cors_origins");
         if (IsRateLimitingDisabled) list.Add("WARN:warn_disable_rate_limiting");
         if (AreQueryLimitsRelaxed) list.Add("WARN:warn_relaxed_query_limits");
@@ -80,6 +86,7 @@ public sealed class GatewayOptions
         if (IsWebhookTenantFallbackAllowed) list.Add("WARN:warn_fallback_default_tenant_for_webhooks");
         if (AreExternalSystemsMockedIfUnreachable) list.Add("WARN:warn_mock_external_systems_if_unreachable");
         if (IsMcpUnmaskedAllowed) list.Add("WARN:warn_allow_unmasked_ai_access");
+        if (AreUnsignedS3RequestsAllowed) list.Add("WARN:warn_allow_unsigned_s3_requests");
         return list;
     }
 }
@@ -139,6 +146,11 @@ public sealed class InsecureGettingStartedOptions
     /// </summary>
     public bool danger_bypass_mcp_auth { get; init; } = false;
 
+    /// <summary>
+    /// [DANGER] Umgeht Authentifizierung und Rollenprüfungen für Apache Iceberg / Lakehouse Tabellenabfragen.
+    /// </summary>
+    public bool danger_bypass_lakehouse_auth { get; init; } = false;
+
 
     // --- WARN: Mittlerer / Operativer Security-Impact (Lockert Limits und Schutzschilder) ---
 
@@ -188,6 +200,11 @@ public sealed class InsecureGettingStartedOptions
     /// Rohdaten werden unmaskiert an das Kontextfenster von KI-Agenten und LLMs gestreamt.
     /// </summary>
     public bool warn_allow_unmasked_ai_access { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Erlaubt unsignierte, anonyme S3/Object-Store-Anfragen an lokale MinIO- oder Test-Instanzen.
+    /// </summary>
+    public bool warn_allow_unsigned_s3_requests { get; init; } = false;
 }
 
 public sealed class PluginsOptions
@@ -234,6 +251,8 @@ public sealed class ForwardAuthOptions
     public string EmailHeader { get; init; } = "X-Forwarded-Email";
     public string GroupsHeader { get; init; } = "X-Forwarded-Groups";
     public string RolesHeader { get; init; } = "X-Forwarded-Roles";
+    public string TenantHeader { get; init; } = "X-Forwarded-Tenant";
+    public string? DefaultTenantId { get; init; } = "default";
     public string? SharedSecretKeyVaultRef { get; init; }
     public string? SharedSecret { get; init; }
     public string SharedSecretHeader { get; init; } = "X-Forwarded-Secret";
@@ -254,6 +273,7 @@ public sealed class BasicAuthUserConfig
     public string Username { get; init; } = string.Empty;
     public string Password { get; init; } = string.Empty;
     public string? Sid { get; init; }
+    public string? TenantId { get; init; } = "default";
     public List<string> Roles { get; init; } = [];
     public List<string> GroupSids { get; init; } = [];
 }
@@ -512,6 +532,41 @@ public sealed class McpOptions
     // Insecure flags
     public bool warn_allow_unmasked_ai_access { get; init; } = false;
     public bool danger_bypass_mcp_auth { get; init; } = false;
+}
+
+public sealed class LakehouseStorageOptions
+{
+    public string Provider { get; init; } = "Local"; // "Local" | "S3" | "AzureBlob"
+    public string LocalBasePath { get; init; } = string.Empty;
+    public string S3Endpoint { get; init; } = string.Empty;
+    public string S3Bucket { get; init; } = string.Empty;
+    public string S3AccessKey { get; init; } = string.Empty;
+    public string S3SecretKey { get; init; } = string.Empty;
+    public string AzureAccountName { get; init; } = string.Empty;
+    public string AzureContainer { get; init; } = string.Empty;
+    public string AzureAccountKey { get; init; } = string.Empty;
+}
+
+public sealed class LakehouseTableOptions
+{
+    public string Format { get; init; } = "Iceberg";
+    public string Location { get; init; } = string.Empty;
+    public List<string> PartitionColumns { get; init; } = [];
+    public string Sensitivity { get; init; } = "LOW";
+}
+
+public sealed class LakehouseOptions
+{
+    public bool Enabled { get; init; } = false;
+    [Range(1, 1440)] public int MetadataCacheTtlMinutes { get; init; } = 15;
+    [Range(1, 64)] public int MaxConcurrentFileScans { get; init; } = 16;
+    [Range(1, 500000)] public int MaxScanRowsLimit { get; init; } = 50000;
+    public LakehouseStorageOptions Storage { get; init; } = new();
+    public Dictionary<string, LakehouseTableOptions> Tables { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    // Insecure flags
+    public bool warn_allow_unsigned_s3_requests { get; init; } = false;
+    public bool danger_bypass_lakehouse_auth { get; init; } = false;
 }
 
 
