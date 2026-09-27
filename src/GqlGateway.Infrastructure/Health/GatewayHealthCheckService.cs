@@ -95,6 +95,18 @@ public sealed class GatewayHealthCheckService : IGatewayHealthCheckService
             if (!redisHealthy) overallHealthy = false;
         }
 
+        // 3. Security Invariants Check (H-5)
+        var activeBypasses = _options.Value.GetAllActiveBypasses();
+        bool securityHealthy = activeBypasses.Count == 0;
+        string securityDesc = securityHealthy
+            ? "No security bypasses active (Zero-Trust enforced)."
+            : $"WARNING: Active security bypasses: {string.Join(", ", activeBypasses)}";
+        components.Add(new HealthCheckComponentResult("SecurityConfiguration", securityHealthy, securityDesc));
+        if (!securityHealthy)
+        {
+            _logger.LogWarning("Health check detected active security bypasses: {Bypasses}", string.Join(", ", activeBypasses));
+        }
+
         return new GatewayHealthReport(overallHealthy, components);
     }
 }

@@ -8,15 +8,19 @@ public sealed class EnterpriseClaimsTransformation : IClaimsTransformation
 {
     public Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
     {
-        if (principal.Identity is not ClaimsIdentity identity || !identity.IsAuthenticated)
+        if (principal.Identity is not ClaimsIdentity originalIdentity || !originalIdentity.IsAuthenticated)
         {
             return Task.FromResult(principal);
         }
 
-        if (identity.HasClaim(c => c.Type == "__EnterpriseTransformed"))
+        if (originalIdentity.HasClaim(c => c.Type == "__EnterpriseTransformed"))
         {
             return Task.FromResult(principal);
         }
+
+        // Clone the principal and identity to avoid mutating shared/cached ClaimsPrincipal (M-1)
+        var clonedPrincipal = principal.Clone();
+        var identity = (ClaimsIdentity)clonedPrincipal.Identity!;
 
         // 1. Ensure ClaimTypes.PrimarySid is populated
         var existingPrimarySid = identity.FindFirst(ClaimTypes.PrimarySid);
@@ -58,6 +62,6 @@ public sealed class EnterpriseClaimsTransformation : IClaimsTransformation
         }
 
         identity.AddClaim(new Claim("__EnterpriseTransformed", "1"));
-        return Task.FromResult(principal);
+        return Task.FromResult(clonedPrincipal);
     }
 }

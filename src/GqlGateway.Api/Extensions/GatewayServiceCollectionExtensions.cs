@@ -87,6 +87,9 @@ public static class GatewayServiceCollectionExtensions
                 (!string.IsNullOrWhiteSpace(opts.Authentication.ForwardAuth.SharedSecret) || !string.IsNullOrWhiteSpace(opts.Authentication.ForwardAuth.SharedSecretKeyVaultRef)),
                 "Sicherheitsverletzung: Außerhalb von Development erfordert ForwardAuth zwingend ein konfiguriertes SharedSecret oder SharedSecretKeyVaultRef.")
             .Validate(opts =>
+                environment.IsDevelopment() || !opts.Authentication.ForwardAuth.Enabled || opts.Authentication.ForwardAuth.RequireTrustedProxy,
+                "Sicherheitsverletzung: RequireTrustedProxy darf bei aktivem ForwardAuth außerhalb von Development nicht auf false gesetzt sein!")
+            .Validate(opts =>
                 environment.IsDevelopment() || !opts.Authentication.EnableTestAuthHandler,
                 "Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!")
             .Validate(opts =>
@@ -363,6 +366,17 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ICdcEventChannel, InMemoryCdcEventChannel>();
         services.AddSingleton<ICdcEventIngestionService, CdcEventIngestionService>();
         services.AddScoped<IStreamRlsPolicyEnforcer, StreamRlsPolicyEnforcer>();
+
+        // Modern Lakehouse Apache Iceberg Connector (P4 / ADR-015)
+        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.LocalStorageProvider>();
+        services.AddHttpClient<GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider>();
+        services.AddHttpClient<GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider>();
+        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.CompositeLakehouseStorageProvider>();
+        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.ILakehouseStorageProvider>(sp => sp.GetRequiredService<GqlGateway.Extensions.Lakehouse.Services.CompositeLakehouseStorageProvider>());
+        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.IIcebergMetadataReader, GqlGateway.Extensions.Lakehouse.Services.IcebergMetadataReader>();
+        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.IIcebergPartitionPruner, GqlGateway.Extensions.Lakehouse.Services.IcebergPartitionPruner>();
+        services.AddScoped<GqlGateway.Extensions.Lakehouse.Interfaces.ILakehouseDataSourceExecutor, GqlGateway.Extensions.Lakehouse.Services.LakehouseDataSourceExecutor>();
+        services.AddScoped<IDataSourceExecutor, GqlGateway.Extensions.Lakehouse.Services.LakehouseDataSourceExecutor>();
 
         // Explicit CORS policy configuration
         services.AddCors(options =>
@@ -686,6 +700,11 @@ public static class GatewayServiceCollectionExtensions
             if (!hasSecret)
             {
                 throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development erfordert ForwardAuth zwingend ein konfiguriertes SharedSecret oder SharedSecretKeyVaultRef.");
+            }
+
+            if (!options.Authentication.ForwardAuth.RequireTrustedProxy)
+            {
+                throw new ValidationException("Sicherheitsverletzung: RequireTrustedProxy darf bei aktivem ForwardAuth außerhalb von Development nicht auf false gesetzt sein!");
             }
         }
 

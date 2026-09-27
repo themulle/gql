@@ -20,6 +20,9 @@ public sealed class McpSessionStore : IMcpSessionStore
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+    private const int MaxAllowedSessions = 10000;
+    private static readonly TimeSpan DefaultSessionTtl = TimeSpan.FromHours(1);
+
     public McpSessionContext CreateSession(string servicePrincipalId, string tenantId)
         => CreateSession(servicePrincipalId, tenantId, null, null, null);
 
@@ -36,8 +39,27 @@ public sealed class McpSessionStore : IMcpSessionStore
         // Strict TenantId domain validation prevents injection into downstream logs/JSON (N-9)
         var validatedTenant = new GqlGateway.Domain.Common.TenantId(tenantId);
 
-        var sessionId = Guid.NewGuid().ToString("N");
         var now = DateTimeOffset.UtcNow;
+
+        // Cleanup expired sessions if store is getting large (L-2)
+        if (_sessions.Count >= MaxAllowedSessions)
+        {
+            foreach (var kvp in _sessions)
+            {
+                if (now - kvp.Value.LastActiveAt > DefaultSessionTtl)
+                {
+                    RemoveSession(kvp.Key);
+                }
+            }
+
+            if (_sessions.Count >= MaxAllowedSessions)
+            {
+                _logger.LogWarning("Maximum active MCP sessions limit ({Max}) reached. Rejecting session creation.", MaxAllowedSessions);
+                throw new InvalidOperationException($"Maximum active MCP sessions limit ({MaxAllowedSessions}) reached. Please retry later.");
+            }
+        }
+
+        var sessionId = Guid.NewGuid().ToString("N");
         var session = new McpSessionContext(
             sessionId,
             servicePrincipalId,
@@ -54,8 +76,6 @@ public sealed class McpSessionStore : IMcpSessionStore
 
         return session;
     }
-
-    private static readonly TimeSpan DefaultSessionTtl = TimeSpan.FromHours(1);
 
     public McpSessionContext? GetSession(string sessionId)
     {

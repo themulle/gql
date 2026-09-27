@@ -113,9 +113,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
                 [
                     new Claim(ClaimTypes.PrimarySid, anonSid.Value),
                     new Claim(ClaimTypes.Name, "DEV_ANONYMOUS"),
-                    new Claim(ClaimTypes.Role, "DeveloperAdmin"),
-                    new Claim(ClaimTypes.Role, "GovernanceAdmin"),
-                    new Claim(ClaimTypes.Role, "ClusterAdmin")
+                    new Claim(ClaimTypes.Role, "AnonymousUser")
                 ], "InsecureAnonymousAuth"));
             }
             else
@@ -170,7 +168,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             {
                 // Cache Miss -> Load from Governance DB
                 var allSubjects = groupSids.Append(userSid).ToList();
-                var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
+                var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, tenantId, ct);
 
                 // Multi-Tenancy Isolation: Filter active consents strictly for current tenant
                 activeConsents = activeConsents
@@ -576,7 +574,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         if (decision == null)
         {
             var allSubjects = groupSids.Append(userSid).ToList();
-            var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
+            var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, tenantId, ct);
 
             activeConsents = activeConsents
                 .Where(c => c.TenantId == tenantId || c.TenantId == TenantId.LegacySingleTenant)

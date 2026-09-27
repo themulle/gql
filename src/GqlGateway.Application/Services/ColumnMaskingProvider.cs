@@ -130,6 +130,17 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
             return text;
         }
 
+        if (string.Equals(rule.PatternOrFormat, "MASK_EMAIL", StringComparison.OrdinalIgnoreCase))
+        {
+            return MaskEmail(text);
+        }
+
+        if (string.Equals(rule.PatternOrFormat, "MASK_LAST_FOUR", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(rule.PatternOrFormat, "MASK_IBAN", StringComparison.OrdinalIgnoreCase))
+        {
+            return MaskIban(text);
+        }
+
         if (!string.IsNullOrEmpty(rule.PatternOrFormat) && !string.IsNullOrEmpty(rule.Replacement))
         {
             try

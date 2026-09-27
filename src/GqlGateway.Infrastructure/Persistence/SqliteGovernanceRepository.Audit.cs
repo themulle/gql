@@ -44,7 +44,7 @@ public partial class SqliteGovernanceRepository
 
         // Compute cryptographic HMAC-SHA256 hash chain
         entry.PrevHash = _lastAuditHash;
-        var payload = $"{entry.Id}|{entry.PrevHash}|{entry.OccurredAt:O}|{entry.EventType}|{entry.ActorSid.Value}|{entry.TargetTable}|{entry.TargetColumn ?? ""}|{entry.Decision}|{entry.TraceId}|{entry.DetailsJson}";
+        var payload = $"{entry.Id}|{entry.PrevHash}|{entry.OccurredAt:O}|{EscapeField(entry.EventType)}|{EscapeField(entry.ActorSid.Value)}|{EscapeField(entry.TargetTable)}|{EscapeField(entry.TargetColumn)}|{EscapeField(entry.Decision)}|{EscapeField(entry.TraceId)}|{EscapeField(entry.DetailsJson)}";
         Span<byte> hashBytes = stackalloc byte[32];
         HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload), hashBytes);
         entry.EntryHash = Convert.ToHexString(hashBytes);
@@ -211,7 +211,7 @@ public partial class SqliteGovernanceRepository
                 }
 
                 var parsedOccurredAt = DateTimeOffset.Parse(occurredAt);
-                var payload = $"{id}|{prevHash}|{parsedOccurredAt:O}|{eventType}|{actorSid}|{targetTable}|{targetColumn}|{decision}|{traceId}|{detailsJson}";
+                var payload = $"{id}|{prevHash}|{parsedOccurredAt:O}|{EscapeField(eventType)}|{EscapeField(actorSid)}|{EscapeField(targetTable)}|{EscapeField(targetColumn)}|{EscapeField(decision)}|{EscapeField(traceId)}|{EscapeField(detailsJson)}";
                 var computedBytes = HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload));
                 var computedHash = Convert.ToHexString(computedBytes);
 
@@ -223,6 +223,13 @@ public partial class SqliteGovernanceRepository
                 expectedPrevHash = entryHash;
             }
 
+            // Tail truncation detection (H-2): Ensure final entry hash matches expected last audit hash
+            if (_lastAuditHash != "GENESIS_0000000000000000000000000000000000000000000000000000000000000000" &&
+                !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(expectedPrevHash), Encoding.UTF8.GetBytes(_lastAuditHash)))
+            {
+                return false; // Tail truncation detected!
+            }
+
             return true;
         }
         finally
@@ -231,4 +238,9 @@ public partial class SqliteGovernanceRepository
         }
     }
 
+    private static string EscapeField(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Replace("\\", "\\\\").Replace("|", "\\|");
+    }
 }

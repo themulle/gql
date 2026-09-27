@@ -13,10 +13,18 @@ namespace GqlGateway.Infrastructure.Persistence;
 
 public partial class SqliteGovernanceRepository
 {
+    public Task<IReadOnlyList<Consent>> GetActiveConsentsForSubjectsAsync(
+        IEnumerable<Sid> subjects,
+        TableIdentifier table,
+        DateTimeOffset atTime,
+        CancellationToken ct = default) =>
+        GetActiveConsentsForSubjectsAsync(subjects, table, atTime, null, ct);
+
     public async Task<IReadOnlyList<Consent>> GetActiveConsentsForSubjectsAsync(
         IEnumerable<Sid> subjects,
         TableIdentifier table,
         DateTimeOffset atTime,
+        TenantId? tenantId,
         CancellationToken ct = default)
     {
         var subjectSet = subjects.Select(s => s.Value).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -28,6 +36,7 @@ public partial class SqliteGovernanceRepository
             var consents = new List<Consent>();
             using (var cmd = _connection.CreateCommand())
             {
+                var tenantFilter = tenantId != null ? " AND (c.tenant_id = @tenantId OR c.tenant_id = 'default' OR c.tenant_id = 'legacy-single-tenant')" : "";
                 cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
                                            c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
                                            c.is_revoked, c.revoked_by_sid, c.revoked_at, c.revoke_reason,
@@ -35,10 +44,14 @@ public partial class SqliteGovernanceRepository
                                     FROM CONSENTS c
                                     JOIN TABLES t ON c.table_id = t.id
                                     WHERE t.source_name = @domain COLLATE NOCASE AND t.schema_name = @schema COLLATE NOCASE AND t.table_name = @table COLLATE NOCASE
-                                      AND c.is_revoked = 0";
+                                      AND c.is_revoked = 0" + tenantFilter;
                 cmd.Parameters.AddWithValue("@domain", table.Domain);
                 cmd.Parameters.AddWithValue("@schema", table.Schema);
                 cmd.Parameters.AddWithValue("@table", table.TableName);
+                if (tenantId != null)
+                {
+                    cmd.Parameters.AddWithValue("@tenantId", tenantId.Value.Value);
+                }
 
                 using var reader = await cmd.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))
@@ -88,10 +101,18 @@ public partial class SqliteGovernanceRepository
         }
     }
 
-    public async Task<IReadOnlyList<Consent>> GetAllActiveConsentsForSubjectsAsync(
+    public Task<IReadOnlyList<Consent>> GetAllActiveConsentsForSubjectsAsync(
         IEnumerable<Sid> subjects,
         IEnumerable<string>? roles = null,
         DateTimeOffset? atTime = null,
+        CancellationToken ct = default) =>
+        GetAllActiveConsentsForSubjectsAsync(subjects, roles, atTime, null, ct);
+
+    public async Task<IReadOnlyList<Consent>> GetAllActiveConsentsForSubjectsAsync(
+        IEnumerable<Sid> subjects,
+        IEnumerable<string>? roles,
+        DateTimeOffset? atTime,
+        TenantId? tenantId,
         CancellationToken ct = default)
     {
         var effectiveAt = atTime ?? DateTimeOffset.UtcNow;
@@ -106,13 +127,18 @@ public partial class SqliteGovernanceRepository
             var consents = new List<Consent>();
             using (var cmd = _connection.CreateCommand())
             {
+                var tenantFilter = tenantId != null ? " AND (c.tenant_id = @tenantId OR c.tenant_id = 'default' OR c.tenant_id = 'legacy-single-tenant')" : "";
                 cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
                                            c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
                                            c.is_revoked, t.source_name, t.schema_name, t.table_name,
                                            c.tenant_id
                                     FROM CONSENTS c
                                     JOIN TABLES t ON c.table_id = t.id
-                                    WHERE c.is_revoked = 0";
+                                    WHERE c.is_revoked = 0" + tenantFilter;
+                if (tenantId != null)
+                {
+                    cmd.Parameters.AddWithValue("@tenantId", tenantId.Value.Value);
+                }
 
                 using var reader = await cmd.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))
@@ -527,7 +553,8 @@ public partial class SqliteGovernanceRepository
             {
                 cmd.CommandText = @"SELECT r.id, r.table_id, r.requester_sid, r.requested_grantee_type, r.requested_grantee_ref,
                                            r.business_justification, r.status, r.requested_at, r.requested_valid_to,
-                                           COALESCE(t.source_name, p.domain, 'default'), t.schema_name, t.table_name
+                                           COALESCE(t.source_name, p.domain, 'default'), t.schema_name, t.table_name,
+                                           r.tenant_id
                                     FROM CONSENT_REQUESTS r
                                     JOIN TABLES t ON r.table_id = t.id
                                     LEFT JOIN POLICY_EPOCHS p ON t.id = p.table_id
@@ -548,7 +575,8 @@ public partial class SqliteGovernanceRepository
                         Status = reader.GetString(6),
                         RequestedAt = DateTimeOffset.Parse(reader.GetString(7)),
                         RequestedValidTo = DateTimeOffset.Parse(reader.GetString(8)),
-                        TableIdentifier = new TableIdentifier(reader.GetString(9), reader.GetString(10), reader.GetString(11))
+                        TableIdentifier = new TableIdentifier(reader.GetString(9), reader.GetString(10), reader.GetString(11)),
+                        TenantId = reader.IsDBNull(12) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(12))
                     };
                 }
             }

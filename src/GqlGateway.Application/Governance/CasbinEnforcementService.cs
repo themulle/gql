@@ -64,7 +64,9 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
     private static readonly string[] DangerousSubRuleTokens =
     [
         "System.", "System;", "Process", "File.", "Directory.", "Assembly", "GetType", "Activator",
-        "Environment.", "AppDomain", "MethodInfo", "Invoke", "Type.", "TypeName", "Reflection"
+        "Environment.", "AppDomain", "MethodInfo", "Invoke", "Type.", "TypeName", "Reflection",
+        "DllImport", "Marshal", "Socket", "WebClient", "HttpClient", "Net.", "Unsafe", "Pointer",
+        "Diagnostics.", "Compiler", "IO.", "Security.", "Microsoft.", "Configuration", "Registry"
     ];
 
     public void AddPolicy(TenantId tenant, string sub, string obj, string act, string subRule = "true", string eft = "allow")

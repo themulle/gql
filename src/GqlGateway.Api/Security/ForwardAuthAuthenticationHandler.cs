@@ -108,12 +108,16 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
             if (!_proxyValidator.IsProxyTrusted(remoteIp))
             {
                 Logger.LogWarning(
-                    "ForwardAuth rejected: Header spoofing attempt detected. Request with '{UserHeader}' came from untrusted IP '{RemoteIp}'.",
-                    forwardAuthOptions.UserHeader,
+                    "ForwardAuth rejected: Header spoofing attempt detected. Request came from untrusted IP '{RemoteIp}'.",
                     remoteIp);
 
-                return Task.FromResult(AuthenticateResult.Fail($"Untrusted proxy IP '{remoteIp}' for ForwardAuth."));
+                return Task.FromResult(AuthenticateResult.Fail("Untrusted proxy IP for ForwardAuth."));
             }
+        }
+        else if (!_isDevelopment)
+        {
+            Logger.LogWarning("ForwardAuth rejected: Disabling RequireTrustedProxy is strictly prohibited outside the Development environment.");
+            return Task.FromResult(AuthenticateResult.Fail("Outside of Development, RequireTrustedProxy must be enabled."));
         }
 
         // 3. Shared Secret Validation (defense-in-depth between Traefik and Gateway)

@@ -33,6 +33,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "casbin-policy-lint", "tools
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GqlGateway.Extensions", "..\gql_extensions\src\GqlGateway.Extensions\GqlGateway.Extensions.csproj", "{36226264-8888-4B69-926A-FCCAC22EEE52}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GqlGateway.Extensions.Tests", "..\gql_extensions\tests\GqlGateway.Extensions.Tests\GqlGateway.Extensions.Tests.csproj", "{CE880BCB-F79C-4233-AAD1-7288BC4AB267}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -175,6 +177,18 @@ Global
 		{36226264-8888-4B69-926A-FCCAC22EEE52}.Release|x64.Build.0 = Release|Any CPU
 		{36226264-8888-4B69-926A-FCCAC22EEE52}.Release|x86.ActiveCfg = Release|Any CPU
 		{36226264-8888-4B69-926A-FCCAC22EEE52}.Release|x86.Build.0 = Release|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Debug|x64.Build.0 = Debug|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Debug|x86.Build.0 = Debug|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Release|x64.ActiveCfg = Release|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Release|x64.Build.0 = Release|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Release|x86.ActiveCfg = Release|Any CPU
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -190,5 +204,6 @@ Global
 		{2F48168C-0D01-4286-BAB3-78A7AAFFE0D2} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{04E22E7C-2979-4367-A09D-AF7FC9885413} = {66320409-64EC-F7C5-3DEF-65E7510DAAD1}
 		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
+		{CE880BCB-F79C-4233-AAD1-7288BC4AB267} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

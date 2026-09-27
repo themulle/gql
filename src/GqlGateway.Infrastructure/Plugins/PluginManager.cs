@@ -40,21 +40,34 @@ public sealed class PluginManager : IPluginManager, IDisposable
 
     public int LoadPluginsFromDirectory(string directoryPath)
     {
-        if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
+        if (string.IsNullOrWhiteSpace(directoryPath))
         {
-            _logger.LogInformation("Plugin directory '{Directory}' does not exist or is empty. Skipping plugin discovery.", directoryPath);
+            return 0;
+        }
+
+        var fullDirectoryPath = Path.GetFullPath(directoryPath);
+        if (!Directory.Exists(fullDirectoryPath))
+        {
+            _logger.LogInformation("Plugin directory '{Directory}' does not exist or is empty. Skipping plugin discovery.", fullDirectoryPath);
             return 0;
         }
 
         int loadedCount = 0;
-        var dllFiles = Directory.GetFiles(directoryPath, "*.dll", SearchOption.AllDirectories);
+        var dllFiles = Directory.GetFiles(fullDirectoryPath, "*.dll", SearchOption.AllDirectories);
 
         foreach (var dllFile in dllFiles)
         {
+            var fullDllPath = Path.GetFullPath(dllFile);
+            if (!fullDllPath.StartsWith(fullDirectoryPath, StringComparison.Ordinal))
+            {
+                _logger.LogWarning("Skipping plugin DLL outside configured directory: '{DllPath}'", dllFile);
+                continue;
+            }
+
             try
             {
-                var alc = new PluginAssemblyLoadContext(dllFile);
-                var assembly = alc.LoadFromAssemblyPath(Path.GetFullPath(dllFile));
+                var alc = new PluginAssemblyLoadContext(fullDllPath);
+                var assembly = alc.LoadFromAssemblyPath(fullDllPath);
 
                 var pluginTypes = assembly.GetTypes()
                     .Where(t => typeof(IHttpDataSourcePlugin).IsAssignableFrom(t) && !t.IsAbstract && !t.IsInterface);

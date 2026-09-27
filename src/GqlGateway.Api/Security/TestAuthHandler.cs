@@ -12,19 +12,27 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
     public const string SchemeName = "TestAuth";
 
     private readonly IOptions<GatewayOptions>? _gatewayOptions;
+    private readonly Microsoft.Extensions.Hosting.IHostEnvironment? _environment;
 
     public TestAuthHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
         UrlEncoder encoder,
-        IOptions<GatewayOptions>? gatewayOptions = null)
+        IOptions<GatewayOptions>? gatewayOptions = null,
+        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null)
         : base(options, logger, encoder)
     {
         _gatewayOptions = gatewayOptions;
+        _environment = environment;
     }
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
+        if (_environment != null && !_environment.IsDevelopment())
+        {
+            return Task.FromResult(AuthenticateResult.Fail("TestAuthHandler is strictly prohibited outside the Development environment."));
+        }
+
         var headers = Request.Headers;
 
         if (!headers.TryGetValue("X-Test-User-Sid", out var userSidVal) || string.IsNullOrWhiteSpace(userSidVal))
@@ -43,16 +51,14 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
                             ? aTidAltVal.ToString().Trim()
                             : "default"));
 
-                // Insecure Getting-Started: Allow anonymous access with DeveloperAdmin identity
+                // Insecure Getting-Started: Allow anonymous access with guest identity (no admin privilege escalation)
                 List<Claim> anonClaims =
                 [
                     new(ClaimTypes.PrimarySid, "S-1-5-21-DEV-ANONYMOUS"),
                     new(ClaimTypes.Name, "DEV_ANONYMOUS"),
                     new(ClaimTypes.NameIdentifier, "S-1-5-21-DEV-ANONYMOUS"),
                     new("objectSid", "S-1-5-21-DEV-ANONYMOUS"),
-                    new(ClaimTypes.Role, "DeveloperAdmin"),
-                    new(ClaimTypes.Role, "GovernanceAdmin"),
-                    new(ClaimTypes.Role, "ClusterAdmin"),
+                    new(ClaimTypes.Role, "AnonymousUser"),
                     new("tenant_id", anonTenant),
                     new("tenant", anonTenant),
                     new("tid", anonTenant)

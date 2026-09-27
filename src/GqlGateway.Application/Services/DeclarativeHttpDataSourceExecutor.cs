@@ -570,9 +570,19 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Secret reference could not be resolved by provider. Using literal value as fallback.");
+                _logger.LogWarning(ex, "Secret reference '{SecretRef}' could not be resolved by provider.", secretRefOrValue);
+                if (_environment != null && !_environment.IsDevelopment())
+                {
+                    throw new System.Security.SecurityException($"Secret reference '{secretRefOrValue}' could not be resolved in non-development environment.");
+                }
             }
         }
+
+        if (_environment != null && !_environment.IsDevelopment())
+        {
+            throw new System.Security.SecurityException($"Literal fallback for secret reference '{secretRefOrValue}' is prohibited outside of Development environment.");
+        }
+
         return secretRefOrValue;
     }
 

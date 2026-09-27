@@ -254,11 +254,9 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
     private static string EscapeJson(string? text)
     {
         if (string.IsNullOrEmpty(text)) return string.Empty;
-        return text
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\r", "\\r")
-            .Replace("\n", "\\n")
-            .Replace("\t", "\\t");
+        var serialized = JsonSerializer.Serialize(text);
+        return serialized.Length >= 2 && serialized[0] == '"' && serialized[^1] == '"'
+            ? serialized[1..^1]
+            : serialized;
     }
 }
