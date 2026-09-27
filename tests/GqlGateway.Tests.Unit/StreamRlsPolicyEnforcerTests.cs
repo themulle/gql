@@ -1,0 +1,210 @@
+#pragma warning disable CA2012
+
+namespace GqlGateway.Tests.Unit;
+
+using System;
+using System.Collections.Generic;
+using System.Security.Claims;
+using System.Threading;
+using System.Threading.Tasks;
+using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.Streaming.Services;
+using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Interfaces;
+using GqlGateway.Domain.Model;
+using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
+using Shouldly;
+using Xunit;
+
+public sealed class StreamRlsPolicyEnforcerTests
+{
+    private readonly IPolicyEnforcementService _policyEnforcement = Substitute.For<IPolicyEnforcementService>();
+    private readonly ITableMetadataRepository _metadataRepo = Substitute.For<ITableMetadataRepository>();
+    private readonly IColumnMaskingProvider _maskingProvider = Substitute.For<IColumnMaskingProvider>();
+    private readonly IEpochValidationService _epochService = Substitute.For<IEpochValidationService>();
+    private readonly StreamRlsPolicyEnforcer _sut;
+
+    public StreamRlsPolicyEnforcerTests()
+    {
+        _sut = new StreamRlsPolicyEnforcer(
+            _policyEnforcement,
+            _metadataRepo,
+            _maskingProvider,
+            _epochService,
+            NullLogger<StreamRlsPolicyEnforcer>.Instance);
+    }
+
+    [Fact]
+    public async Task EvaluateAndMaskAsync_TenantMismatch_ReturnsDenied()
+    {
+        var table = new TableIdentifier("sales", "crm", "customers");
+        var cdcEvent = new CdcEvent(
+            EventId: "evt-1",
+            Table: table,
+            Operation: CdcOperation.Insert,
+            TenantId: "tenant-a",
+            Before: null,
+            After: new Dictionary<string, object?> { ["id"] = 1, ["name"] = "Alice" },
+            Timestamp: DateTimeOffset.UtcNow
+        );
+
+        var subscriber = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", "tenant-b"),
+            new Claim(ClaimTypes.PrimarySid, "S-1-5-ALICE")
+        }));
+
+        var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
+
+        result.IsAllowed.ShouldBeFalse();
+        result.FilterReason.ShouldBe("Tenant mismatch");
+        result.MaskedPayload.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task EvaluateAndMaskAsync_AbacPolicyDenied_ReturnsDenied()
+    {
+        var table = new TableIdentifier("sales", "crm", "customers");
+        var cdcEvent = new CdcEvent(
+            EventId: "evt-2",
+            Table: table,
+            Operation: CdcOperation.Update,
+            TenantId: "tenant-a",
+            Before: null,
+            After: new Dictionary<string, object?> { ["id"] = 1, ["name"] = "Alice" },
+            Timestamp: DateTimeOffset.UtcNow
+        );
+
+        var subscriber = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", "tenant-a"),
+            new Claim(ClaimTypes.PrimarySid, "S-1-5-BOB")
+        }));
+
+        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
+                Table: table,
+                IsAllowed: false,
+                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+                CombinedRowFilterSql: null,
+                DeniedReasons: new[] { "Casbin deny" }
+            )));
+
+        var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
+
+        result.IsAllowed.ShouldBeFalse();
+        result.FilterReason.ShouldBe("Access denied by ABAC policy");
+    }
+
+    [Fact]
+    public async Task EvaluateAndMaskAsync_AllowedWithMaskingAndDeny_MasksAndStripsColumns()
+    {
+        var table = new TableIdentifier("sales", "crm", "customers");
+        var cdcEvent = new CdcEvent(
+            EventId: "evt-3",
+            Table: table,
+            Operation: CdcOperation.Insert,
+            TenantId: "tenant-a",
+            Before: null,
+            After: new Dictionary<string, object?>
+            {
+                ["id"] = 100,
+                ["name"] = "Charlie",
+                ["email"] = "charlie@enterprise.com",
+                ["ssn"] = "123-45-6789"
+            },
+            Timestamp: DateTimeOffset.UtcNow
+        );
+
+        var subscriber = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", "tenant-a"),
+            new Claim(ClaimTypes.PrimarySid, "S-1-5-CHARLIE")
+        }));
+
+        // Column permissions: id (Clear), name (Clear), email (Mask), ssn (Deny)
+        var columnAccess = new Dictionary<string, ColumnAccessLevel>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["id"] = ColumnAccessLevel.Clear,
+            ["name"] = ColumnAccessLevel.Clear,
+            ["email"] = ColumnAccessLevel.Mask,
+            ["ssn"] = ColumnAccessLevel.Deny
+        };
+
+        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
+                Table: table,
+                IsAllowed: true,
+                ColumnAccess: columnAccess,
+                CombinedRowFilterSql: null,
+                DeniedReasons: Array.Empty<string>()
+            )));
+
+        _metadataRepo.GetTableMetadataAsync(table, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<TableMetadata?>(new TableMetadata
+            {
+                Identifier = table,
+                Table = new Table
+                {
+                    SourceName = "sales",
+                    SchemaName = "crm",
+                    TableName = "customers"
+                },
+                ColumnMaskingRules = new Dictionary<string, MaskingRule>
+                {
+                    ["email"] = new MaskingRule { RuleType = "MASK_EMAIL" }
+                }
+            }));
+
+        _maskingProvider.MaskValue("email", "charlie@enterprise.com", Arg.Any<MaskingRule>())
+            .Returns("c***@enterprise.com");
+
+        var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
+
+        result.IsAllowed.ShouldBeTrue();
+        result.MaskedPayload.ShouldNotBeNull();
+        result.MaskedPayload["id"].ShouldBe(100);
+        result.MaskedPayload["name"].ShouldBe("Charlie");
+        result.MaskedPayload["email"].ShouldBe("c***@enterprise.com");
+        result.MaskedPayload.ContainsKey("ssn").ShouldBeFalse(); // Denied column stripped
+    }
+
+    [Fact]
+    public async Task EvaluateAndMaskAsync_DeleteOperation_UsesBeforePayload()
+    {
+        var table = new TableIdentifier("finance", "accounting", "invoices");
+        var cdcEvent = new CdcEvent(
+            EventId: "evt-4",
+            Table: table,
+            Operation: CdcOperation.Delete,
+            TenantId: "tenant-a",
+            Before: new Dictionary<string, object?> { ["invoice_id"] = 999, ["amount"] = 5000.0 },
+            After: null,
+            Timestamp: DateTimeOffset.UtcNow
+        );
+
+        var subscriber = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", "tenant-a"),
+            new Claim(ClaimTypes.PrimarySid, "S-1-5-AUDITOR")
+        }));
+
+        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
+                Table: table,
+                IsAllowed: true,
+                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+                CombinedRowFilterSql: null,
+                DeniedReasons: Array.Empty<string>(),
+                HasUnconstrainedColumnAllow: true
+            )));
+
+        var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
+
+        result.IsAllowed.ShouldBeTrue();
+        result.MaskedPayload.ShouldNotBeNull();
+        result.MaskedPayload["invoice_id"].ShouldBe(999);
+        result.MaskedPayload["amount"].ShouldBe(5000.0);
+    }
+}

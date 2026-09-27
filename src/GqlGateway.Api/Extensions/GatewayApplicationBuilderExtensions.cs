@@ -4,6 +4,8 @@ using GqlGateway.Application.OpenMetadata.Interfaces;
 using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Application.Mcp.Interfaces;
+using GqlGateway.Application.Streaming.Interfaces;
+using GqlGateway.Infrastructure.Streaming;
 using GqlGateway.Extensions.OData;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
@@ -267,6 +269,7 @@ public static class GatewayApplicationBuilderExtensions
             pluginManager.LoadPluginsFromDirectory(gatewayOptions.Plugins.Directory);
         }
 
+        app.UseWebSockets();
         app.MapGraphQL(endpoint).RequireAuthorization();
 
         app.MapGet("/api/auth/login", (ClaimsPrincipal principal) =>
@@ -547,6 +550,30 @@ public static class GatewayApplicationBuilderExtensions
 
             return Results.Ok(result);
         }).AllowAnonymous();
+
+        // CDC & Realtime Streaming Ingestion Endpoint (P5)
+        app.MapPost("/api/v1/cdc/events", async (
+            HttpRequest request,
+            ICdcEventIngestionService ingestionService) =>
+        {
+            using var reader = new StreamReader(request.Body);
+            var body = await reader.ReadToEndAsync(request.HttpContext.RequestAborted);
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                return Results.BadRequest(new { error = "Empty CDC payload" });
+            }
+
+            try
+            {
+                var cdcEvent = DebeziumCdcParser.Parse(body);
+                await ingestionService.PublishEventAsync(cdcEvent, request.HttpContext.RequestAborted);
+                return Results.Accepted(value: new { status = "Ingested", eventId = cdcEvent.EventId });
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new { error = "Invalid CDC event format", details = ex.Message });
+            }
+        });
 
         // dbt Ingestion & Exposure Endpoints (F-DATA-11)
         app.MapPost("/api/extensions/dbt/sync", async (

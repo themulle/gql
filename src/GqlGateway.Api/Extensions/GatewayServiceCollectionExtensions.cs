@@ -39,6 +39,10 @@ using GqlGateway.Infrastructure.Plugins;
 using GqlGateway.Infrastructure.Diagnostics;
 using GqlGateway.Application.Caching.Interfaces;
 using GqlGateway.Application.Caching.Services;
+using GqlGateway.Application.Streaming.Interfaces;
+using GqlGateway.Application.Streaming.Services;
+using GqlGateway.Infrastructure.Streaming;
+using GqlGateway.GraphQL.Subscriptions;
 using GqlGateway.Infrastructure.Cdn;
 using GqlGateway.Infrastructure.OpenJev;
 using System.Net.Http;
@@ -355,6 +359,11 @@ public static class GatewayServiceCollectionExtensions
         // Foreign System Extensions (ServiceNow, Jira, OpenMetadata)
         services.AddGatewayExtensions(gatewayOptions);
 
+        // Realtime Event Subscriptions & In-Stream RLS (P5)
+        services.AddSingleton<ICdcEventChannel, InMemoryCdcEventChannel>();
+        services.AddSingleton<ICdcEventIngestionService, CdcEventIngestionService>();
+        services.AddScoped<IStreamRlsPolicyEnforcer, StreamRlsPolicyEnforcer>();
+
         // Explicit CORS policy configuration
         services.AddCors(options =>
         {
@@ -604,6 +613,9 @@ public static class GatewayServiceCollectionExtensions
             .UseDefaultPipeline()
             .AddQueryType<Query>()
             .AddMutationType<Mutation>()
+            .AddSubscriptionType<Subscription>()
+            .AddInMemorySubscriptions()
+            .AddSocketSessionInterceptor<WebSocketAuthInterceptor>()
             .AddTypeExtension<InvoiceRecordExtensions>()
             .AddDirectiveType<GqlGateway.GraphQL.Directives.McpToolDirectiveType>()
             .AddErrorFilter<ErrorSanitizingFilter>()

@@ -38,7 +38,7 @@ Bestandsaufnahme aller Gateway-Module zur Dokumentation der Marktreife (General 
 | **ITSM Closed Loop (ServiceNow / Jira)** | Outbox Pattern ([`ItsmOutboxDispatcherHostedService`](file:///root/gql/src/GqlGateway.Infrastructure/Itsm/ItsmOutboxDispatcherHostedService.cs)), Webhook Ingestion ([`ItsmWebhookHandler`](file:///root/gql/src/GqlGateway.Infrastructure/Itsm/ItsmWebhookHandler.cs)), Triage-Engine. | **80%** | ❌ Direkte Outbound-REST-Clients für ServiceNow Table API & Jira Cloud REST v3.<br/>❌ Automatischer Rezertifizierungs- & Verlängerungs-Workflow für ablaufende temporäre Consents. |
 | **Lineage & DSGVO Art. 15 Auskunft** | Lineage Graph Store ([`LineageImpactAnalyzerService`](file:///root/gql/src/GqlGateway.Application/Lineage/LineageImpactAnalyzerService.cs)), GDPR Art. 15 Subject Access Report Generator, zyklensichere DFS/Kahn-Validierung. | **85%** | ❌ Standardisierter PDF/Audit-Export für externe Datenschutzbeauftragte.<br/>❌ Lineage-Push zu OpenLineage / Apache Atlas. |
 | **Modern Lakehouse Connector (P4)** | Spezifiziert in [ADR-015](file:///root/gql/docs/adr/ADR-015-apache-iceberg-lakehouse-connector-and-zero-trust-pushdown.md). | **0% (Next Up)** | 🔴 **Nächster großer Meilenstein:** Direkte Iceberg/Parquet-Abfrage über DuckDB.NET / Apache Arrow Flight unter Beibehaltung der Casbin-ABAC. |
-| **Subscriptions & Realtime Events (P5)** | Keine Unterstützung (bisher Query & Mutation Fokus). | **0%** | 🔴 WebSocket (`graphql-transport-ws`) und SSE Subscriptions mit In-Stream Row Level Security (Kafka/Debezium CDC). |
+| **Subscriptions & Realtime Events (P5)** | Vollständig implementiert ([`Subscription.cs`](file:///root/gql/src/GqlGateway.GraphQL/Subscriptions/Subscription.cs), [`WebSocketAuthInterceptor.cs`](file:///root/gql/src/GqlGateway.GraphQL/Subscriptions/WebSocketAuthInterceptor.cs), [`StreamRlsPolicyEnforcer.cs`](file:///root/gql/src/GqlGateway.Application/Streaming/Services/StreamRlsPolicyEnforcer.cs), [`InMemoryCdcEventChannel.cs`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/InMemoryCdcEventChannel.cs), [`DebeziumCdcParser.cs`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/DebeziumCdcParser.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** WebSocket (`graphql-transport-ws`) und SSE Subscriptions mit dynamischer In-Stream Row Level Security (Casbin ABAC), In-Stream Column Masking, strikter Mandanten-Isolation und Debezium/Kafka CDC Ingestion. |
 | **Management Studio & UI (P6)** | Reines Headless-Gateway. | **0%** | 🔴 Visuelles Web-Dashboard für Data Stewards (Policy Simulator, Audit-Viewer, Schema Explorer). |
 
 ---
@@ -66,8 +66,8 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **P2: Dynamic Client Quotas & Cost Telemetrie** | 9 | 1.8 | 95% | 1.2 | 1.5 W | **12.3** | ✅ **100% Abgeschlossen (GA)** |
 | **P7: Subgraph Federation (Hot Chocolate Fusion)** | 6 | 2.5 | 90% | 1.2 | 1.8 W | **9.0** | ✅ **100% Abgeschlossen (GA)** |
 | **P3: CDN Cache-Tag Headers & Edge Invalidation** | 8 | 2.2 | 90% | 1.1 | 2 W | **8.7** | ✅ **100% Abgeschlossen (GA)** |
+| **P5: Realtime Event Subscriptions (Kafka/CDC)** | 7 | 2.5 | 85% | 1.3 | 4 W | **4.8** | ✅ **100% Abgeschlossen (GA)** |
 | **P6: Data Steward Studio & Policy Simulator**<br/>*(Lightweight Blazor / SPA Admin Dashboard)* | 7 | 2.2 | 90% | 1.6 | 4 W | **5.5** | 🟢 **Nächste Priorität (Q2 - P1)** |
-| **P5: Realtime Event Subscriptions (Kafka/CDC)**<br/>*(GraphQL Subscriptions mit Stream-RLS)* | 7 | 2.5 | 85% | 1.3 | 4 W | **4.8** | 🟡 **Q2 (P2)** |
 | **P4: Modern Lakehouse Connector (Iceberg/Arrow)**<br/>*(Umsetzung von [ADR-015](file:///root/gql/docs/adr/ADR-015-apache-iceberg-lakehouse-connector-and-zero-trust-pushdown.md) via DuckDB.NET)* | 6 | 3.0 | 80% | 1.5 | 5 W | **4.3** | 🟡 **Q2/Q3 (P2)** |
 | **P8: Schema Registry & CI/CD Checks (`rover`-Pendant)**<br/>*(Breaking Change Detection via CLI & GitHub Action)* | 6 | 1.8 | 85% | 1.2 | 3.5 W | **3.1** | 🔵 **Q3 (P3)** |
 
@@ -83,12 +83,12 @@ flowchart TD
         D2["P2 Client Quotas & Cost Telemetry (Redis Lua)"]
         D3["P3 CDN Cache-Tags & Edge Invalidation (Cloudflare/Fastly)"]
         D4["P7 Hot Chocolate Fusion Subgraph Router"]
+        D5["P5 Realtime CDC & Event Subscriptions mit In-Stream RLS"]
     end
 
-    subgraph PhaseNext["Nächste Phase: Governance UI & Realtime (Q2 2026)"]
+    subgraph PhaseNext["Nächste Phase: Governance Studio (Q2 2026)"]
         direction TB
         E1["P6 GqlGateway Studio: Visual Policy Simulator & Audit UI"]
-        E2["P5 Realtime CDC & Kafka Event Subscriptions mit Stream-RLS"]
     end
 
     subgraph PhaseLakehouse["Phase Lakehouse & Registry (Q3 2026)"]
@@ -103,12 +103,11 @@ flowchart TD
 
 ### Konkrete Handlungsempfehlungen für die nächsten Sprints:
 
-1. **P6 Data Steward Studio & Policy Simulator (Höchster verbleibender Score: 5.5):**
+1. **P6 Data Steward Studio & Policy Simulator (Höchste verbleibende Priorität, Score: 5.5):**
    * Bereitstellung eines intuitiven Management-Frontends (z.B. Blazor WebAssembly oder React SPA embedded).
    * **Core Feature:** Ein "What-If" Policy Simulator, mit dem Sicherheitsbeauftragte und Data Stewards interaktiv prüfen können, wie Rollen, Abteilungen und Justifications auf konkrete Tabellen und Spaltenmaskierungen wirken.
-2. **P5 Realtime Event Subscriptions mit In-Stream RLS:**
-   * Erweiterung der GraphQL-Pipeline um WebSocket- (`graphql-transport-ws`) und Server-Sent-Events (SSE) Subscriptions.
-   * Direkte Anbindung an Kafka / Debezium CDC mit Vorab-Filterung von Events durch die Casbin-Engine, bevor Daten an den WebSocket gestreamt werden.
-3. **P4 Modern Lakehouse Connector (Iceberg/Parquet via DuckDB):**
+2. **P4 Modern Lakehouse Connector (Iceberg/Parquet via DuckDB):**
    * Realisierung von [ADR-015](file:///root/gql/docs/adr/ADR-015-apache-iceberg-lakehouse-connector-and-zero-trust-pushdown.md) als separates Extension-Projekt `GqlGateway.Extensions.Lakehouse`.
    * Parquet- und Metadata-Parsing über DuckDB.NET und Zero-Allocation Streaming über Apache Arrow.
+3. **P8 Schema Registry, Contracts & CI/CD Checks (`rover`-Pendant):**
+   * CLI-Tool zur Validierung von Schemata gegen aktive Clients und Breaking Change Detection.
