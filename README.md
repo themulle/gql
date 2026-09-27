@@ -59,13 +59,37 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - Transaction-safe atomic audit log persistence with keyed `HMACSHA256.HashData(secretKey, payload)` preventing hash chain tampering even with direct database write access.
   - Continuous cryptographic HMAC-SHA256 hash chaining (`PrevHash -> EntryHash`) persisted across gateway restarts and verifiable via automated health routines using timing-safe `CryptographicOperations.FixedTimeEquals`.
 
-- **OpenMetadata Enterprise Governance Integration**:
-  - Direct synchronization of enterprise catalog tables, schemas, columns, and tags from **OpenMetadata**.
-  - Automatic column masking generation based on classification tags (e.g. `PII.Sensitive` -> REDACT, `PII.Email` -> MASK_EMAIL, `PII.Pseudonym` -> HMAC_SHA256).
-  - OpenMetadata Policies, Rules, Roles, Teams, and Users mapped deterministically to GqlGateway `Consent` entries with Active Directory SID resolution (`TeamToGroupSidMap`, `UserToUserSidMap`).
-  - Real-time webhook ingestion (`POST /api/webhooks/openmetadata`) protected by HMAC-SHA256 signature verification (`X-OpenMetadata-Signature`) and fail-closed replay defense requiring mandatory `Id` and `Timestamp` (5-minute sliding window).
-  - Background periodic synchronization service (`OpenMetadataSyncBackgroundService`) and administrative GraphQL mutation (`syncOpenMetadata(dryRun: Boolean)`).
-  - Immediate multi-instance cache invalidation via monotonic policy epoch incrementation upon catalog/permission sync.
+- **Enterprise Data Catalog Integration (Microsoft Purview, Collibra, Alation, OpenMetadata)**:
+  - Unified multi-catalog provider abstraction (`IDataCatalogClient`) supporting **Microsoft Purview** (Apache Atlas REST), **Collibra** (REST Core API v2), **Alation** (API v2), and **OpenMetadata**.
+  - **Mirror Mode**: Synchronizes schemas, descriptions, tags, and classification rules directly into the local SQLite governance store.
+  - **Reference Mode**: Dynamic, federated on-demand metadata lookup without duplicate persistence.
+  - **Automated GDPR Art. 9 Special Category Protection**: Automatic classification of health, genetic, biometric, religious, and political data (`GDPR_ARTICLE_9`) enforcing mandatory `HIGH` sensitivity, four-eyes approval (`RequiresFourEyes = true`), and `REDACT` masking (`[REDACTED-GDPR-ART9]`).
+  - **Automated PII Tag Mapping**: Maps catalog PII tags (`TagToMaskingRuleMap`) to masking algorithms (`MASK_EMAIL`, `HMAC_SHA256`, `REDACT`).
+  - Administrative GraphQL mutation `syncDataCatalog(dryRun: Boolean)`.
+
+- **Data Lineage: Downstream Consumer Impact & GDPR Art. 15 Disclosure**:
+  - **Static Graph Lineage (DAG BFS)**: Iterative cycle-safe traversal over Dashboards (PowerBI, Tableau), ETL Pipelines (dbt, Airflow), and External Services with distance-from-root metrics.
+  - **Operational Runtime Lineage**: Correlates static graph nodes with cryptographically signed audit logs to identify active consumers, query frequencies, and distinct actors over configurable timeframes.
+  - **Pre-Schema-Change Risk Rating**: Automated blast radius calculation (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`) with proactive mitigation recommendations (deprecation notice windows, affected dashboard/pipeline owner notifications).
+  - **Zero-Trust Contact Protection**: Owner contact emails are masked (`null`) unless the caller is an authorized Data Owner, GovernanceAdmin, or ClusterAdmin.
+  - **GDPR Art. 15 Disclosure Reporting (Right of Access)**: Produces legally compliant reports (Art. 15 Abs. 1 Bst. c DSGVO) detailing all disclosed recipients, recipient categories, accessed columns, masking rules, and purposes over up to 365 days.
+
+- **Modern Hybrid Identity & Machine-to-Machine (M2M) Service Principals**:
+  - Unified Identity Provider abstraction (`IIdentityProvider`) decoupling gateway logic from specific IdPs.
+  - Seamless hybrid migration support for **Microsoft Entra ID / Azure AD (OIDC)** alongside on-premises Windows Active Directory / Kerberos.
+  - **M2M / Batch Service Accounts**: Dedicated Client-Credentials and mutual TLS (mTLS) authentication schema with service principal consents (`SP-<client_id>` SIDs) distinct from interactive user accounts.
+
+- **Developer Onboarding & "Insecure Modes" (Explicit Risk Controls)**:
+  - Pragmatic onboarding for external integrations and incoming webhooks using strictly separated risk-prefixed configurations:
+  - **`warn_` Prefix (Medium Impact)**: `warn_allow_all_cors_origins`, `warn_disable_rate_limiting`, `warn_bypass_query_cost_limits`.
+  - **`danger_` Prefix (Critical Security Impact)**: `danger_allow_anonymous_queries`, `danger_bypass_authorization`, `danger_bypass_webhook_signature_validation`, `danger_allow_untrusted_certificates`, `danger_allow_anonymous_webhooks`.
+  - Fail-closed by default: All insecure flags default to `false` and log conspicuous operational alerts when engaged.
+
+- **Two-Phase ITSM Integration & AI-Assisted Governance**:
+  - **ITSM Webhook Integration**: Bi-directional integration with **ServiceNow** and **Jira** for approval workflows. Webhooks secured with timing-safe HMAC-SHA256 verification and 5-minute replay prevention.
+  - **AI-Assisted Justification Triage**: Evaluates business justifications via `OpenJevClient` with prompt-injection defense, strict 500-character limits, and token-bucket rate limiting.
+  - **Casbin ABAC/RBAC Engine**: Dynamic policy evaluation (`sub_rule`) with standalone policy validation tool (`tools/casbin-policy-lint`).
+  - **dbt Integration**: Ingests dbt `manifest.json` and `catalog.json` to extract models, sources, column classifications, and exposure lineage.
 
 - **Enterprise Network & Edge Protection**:
   - Pre-Authentication IP Rate Limiting and Post-Authentication SID Token-Bucket Concurrency Limiting.
@@ -116,12 +140,14 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 | [`GqlGateway.Domain`](src/GqlGateway.Domain) | `net10.0` | Value Objects (`Sid`, `TableIdentifier`, `CompositeKey`), Models, Options, Enums |
 | [`GqlGateway.Application`](src/GqlGateway.Application) | `net10.0` | Central execution engine (`GatewayExecutionService`, `IGatewayExecutionService`), business services (`ConsentResolutionService`, `ColumnMaskingProvider`, `RlsFilterGenerator`, `ChunkedQueryExecutor`), data sources (`SqlDataSourceExecutor`, `DeclarativeHttpDataSourceExecutor`), OpenMetadata models & interfaces |
 | [`GqlGateway.Infrastructure`](src/GqlGateway.Infrastructure) | `net10.0` | Persistence (`SqliteGovernanceRepository`, `SqlConnectionFactory`), Caching (`ConsentCacheService`), Multi-Instance Messaging (`RedisEventBus`, `InProcessChannelEventBus`), Rate Limiting (`RedisRateLimiterService`), Idempotency (`RedisIdempotencyStore`), Health (`GatewayHealthCheckService`), Security Handlers (`ForwardAuthAuthenticationHandler`, `BasicAuthenticationHandler`, `EnterpriseClaimsTransformation`) |
-| [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 14 GraphQL engine, dynamic schemas, types, queries, mutations (`syncOpenMetadata`), DataLoader execution |
-| [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Host, Basic Auth Login (`/api/auth/login`), ForwardAuth header security, rate limiting, anti-CSRF, health probes, OpenMetadata webhooks |
+| [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 14 GraphQL engine, dynamic schemas, types, queries (`tableConsumers`, `gdprDataDisclosureReport`), mutations (`syncDataCatalog`), DataLoader execution |
+| [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Host, Basic Auth Login (`/api/auth/login`), ForwardAuth header security, rate limiting, anti-CSRF, health probes, ITSM webhooks |
+| [`GqlGateway.Extensions`](/root/gql_extensions/src/GqlGateway.Extensions) | `net10.0` | Enterprise Data Catalog connectors (Purview, Collibra, Alation, OpenMetadata), dbt manifest ingestion, ITSM handlers (ServiceNow, Jira), OData |
 | [`GqlGateway.Benchmarks`](benchmarks/GqlGateway.Benchmarks) | `net10.0` | BenchmarkDotNet suites for throughput, cache hit/miss, and masking allocations |
-| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 391 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
-| [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | NetArchTest rules enforcing Clean Architecture dependency directions |
-| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 33 End-to-end integration tests using `WebApplicationFactory<Program>` |
+| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 401 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
+| [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | 5 NetArchTest rules enforcing Clean Architecture dependency directions |
+| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 83 End-to-end integration tests using `WebApplicationFactory<Program>` |
+| [`GqlGateway.Extensions.Tests`](/root/gql_extensions/tests/GqlGateway.Extensions.Tests) | `net10.0` | 24 Unit & Integration tests for Data Catalog adapters, dbt, ITSM, and OData |
 
 ---
 
@@ -136,18 +162,21 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 
 ```bash
 dotnet build GqlGateway.sln -c Release
+dotnet build /root/gql_extensions/GqlExtensions.slnx -c Release
 ```
-*Note: The project enforces `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.*
+*Note: Both solutions enforce `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>` (0 warnings, 0 errors).*
 
 ### 2. Run Tests
 
 ```bash
 dotnet test GqlGateway.sln -c Release
+dotnet test /root/gql_extensions/GqlExtensions.slnx -c Release
 ```
-Currently passes **429 / 429 tests (100% green)** across Unit, Architecture, and Integration test suites:
-- **391 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking)
+Currently passes **513 / 513 tests (100% green)** across all test suites:
+- **401 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure)
 - **5 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application)
-- **33 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, OpenMetadata webhooks)
+- **83 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails)
+- **24 Extensions Tests** (Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion, ServiceNow/Jira webhooks, OData)
 
 ### 3. Run Gateway Locally
 
@@ -332,12 +361,117 @@ Key configuration settings under the `Gateway` section:
     },
     "DataMasking": {
       "HmacKeyId": "key-2026-q1"
+    },
+    "Catalog": {
+      "Enabled": true,
+      "Provider": "MicrosoftPurview",
+      "SyncMode": "Mirror",
+      "SyncIntervalMinutes": 60,
+      "Purview": {
+        "Endpoint": "https://corp-purview.purview.azure.com",
+        "TenantId": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+        "ClientId": "a820c78a-f326-4d1d-91b4-2195f1342618"
+      }
+    },
+    "Insecure": {
+      "warn_allow_all_cors_origins": false,
+      "warn_disable_rate_limiting": false,
+      "danger_bypass_authorization": false,
+      "danger_allow_anonymous_queries": false,
+      "danger_bypass_webhook_signature_validation": false
     }
   }
 }
 ```
 
 ---
+
+## 🔍 Data Catalog, Lineage & GDPR Operations
+
+GqlGateway exposes comprehensive administrative and governance operations via GraphQL:
+
+### 1. Synchronize Data Catalog (Microsoft Purview / Collibra / Alation / OpenMetadata)
+
+Trigger an on-demand catalog sync (or dry-run) to mirror metadata and update GDPR Art. 9 / PII tag classifications:
+
+```graphql
+mutation SyncEnterpriseCatalog {
+  syncDataCatalog(dryRun: false) {
+    success
+    syncedTablesCount
+    syncedColumnsCount
+    maskedColumnsCount
+    art9ProtectedTablesCount
+    affectedTables {
+      domain
+      schema
+      tableName
+    }
+    warnings
+  }
+}
+```
+
+### 2. Pre-Schema-Change Impact Analysis (Downstream Consumers)
+
+Before renaming or dropping columns, assess affected BI dashboards, ETL pipelines, and active readers:
+
+```graphql
+query AssessSchemaChangeImpact {
+  tableConsumers(domain: "sales", schema: "dbo", tableName: "orders", timeWindowDays: 30) {
+    table
+    breakingChangeRisk # CRITICAL, HIGH, MEDIUM, LOW
+    totalDownstreamCount
+    activeReadersCount
+    lastAccessedAt
+    downstreamConsumers {
+      id
+      name
+      type # Dashboard, Pipeline, ExternalService
+      ownerTeam
+      ownerEmail # Masked for non-admins (Zero-Trust)
+      distanceFromRoot
+    }
+    runtimeConsumers {
+      actorSid
+      clientType # ServicePrincipal, InteractiveUser, DownstreamSystem
+      queryCount
+      lastSeenAt
+    }
+    recommendedMitigations
+  }
+}
+```
+
+### 3. GDPR Art. 15 Disclosure Reporting (Right of Access)
+
+Generate legally binding disclosure reports under Art. 15 Abs. 1 Bst. c DSGVO for auditors or data subjects:
+
+```graphql
+query GenerateGdprDisclosureReport {
+  gdprDataDisclosureReport(
+    domain: "healthcare"
+    schema: "dbo"
+    tableName: "patient_diagnoses"
+    timeWindowDays: 365
+  ) {
+    targetTable
+    totalAccessEvents
+    sensitivityCategories
+    legalBasisNotice
+    disclosedRecipients {
+      recipientSid
+      recipientCategory
+      purpose
+      firstAccess
+      lastAccess
+      totalQueries
+      accessedColumns
+      maskingRuleApplied
+    }
+  }
+}
+```
 
 ## 📝 Code Review & Export Artifacts
 

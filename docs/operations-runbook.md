@@ -146,3 +146,119 @@ def verify_audit_chain(db_path):
 if __name__ == "__main__":
     verify_audit_chain("governance.db")
 ```
+
+---
+
+## 5. Data Catalog Synchronization Operations
+
+### 5.1 Monitoring Background Sync
+The gateway runs `DataCatalogSyncBackgroundService` periodically (configurable via `Gateway:Catalog:SyncIntervalMinutes`, default: 60 minutes).
+- Check health and sync status in logs:
+  ```bash
+  kubectl logs -l app=gql-gateway -n data-governance | grep "DataCatalogSync"
+  ```
+- Alerts to monitor:
+  - `Failed to fetch tables from Data Catalog`: Indicates connectivity or credential issues to Microsoft Purview / Collibra / Alation / OpenMetadata.
+  - `Sync already in progress`: Indicates previous sync cycle exceeded interval; increase `SyncIntervalMinutes`.
+
+### 5.2 Manual / On-Demand Catalog Sync
+Trigger immediate catalog sync via GraphQL mutation without restarting pods:
+```graphql
+mutation ForceCatalogSync {
+  syncDataCatalog(dryRun: false) {
+    success
+    syncedTablesCount
+    syncedColumnsCount
+    maskedColumnsCount
+    art9ProtectedTablesCount
+    warnings
+  }
+}
+```
+
+---
+
+## 6. Pre-Schema-Change Impact Analysis (Downstream Consumers)
+
+### 6.1 Objective
+Before making breaking changes (dropping tables, renaming columns, modifying data types), assess the blast radius on dependent PowerBI/Tableau dashboards, Airflow/dbt ETL pipelines, and active API clients.
+
+### 6.2 Procedure
+Execute the `tableConsumers` GraphQL query for the target table:
+```graphql
+query CheckBreakingChangeRisk {
+  tableConsumers(domain: "finance", schema: "dbo", tableName: "invoices", timeWindowDays: 30) {
+    breakingChangeRisk # CRITICAL, HIGH, MEDIUM, LOW
+    totalDownstreamCount
+    activeReadersCount
+    downstreamConsumers {
+      id
+      name
+      type # Dashboard, Pipeline, ExternalService
+      ownerTeam
+      ownerEmail
+    }
+    recommendedMitigations
+  }
+}
+```
+
+### 6.3 Risk Response Matrix
+- **`CRITICAL`**: Active dashboards/pipelines + high query volume. **Action:** Enforce minimum 14-day deprecation notice. Coordinate deployment windows with affected data owners. Provide temporary backward-compatibility views.
+- **`HIGH`**: Downstream pipelines or dashboards depend on the table, but recent query activity is low. **Action:** Notify team leads of affected downstream systems before release.
+- **`MEDIUM`**: Only external services or occasional queries detected. **Action:** Announce release in engineering channel.
+- **`LOW`**: No active consumers or downstream dependencies. **Action:** Safe to proceed with schema migration.
+
+---
+
+## 7. GDPR Art. 15 Right of Access Disclosures (DSGVO-Auskunft)
+
+### 7.1 Objective
+Respond to data subject access requests (DSGVO Art. 15 Abs. 1 Bst. c) or compliance audits regarding who has accessed sensitive or special category (Art. 9) data.
+
+### 7.2 Procedure
+Execute the `gdprDataDisclosureReport` query specifying the table or subject SID:
+```graphql
+query GetGdprDisclosureReport {
+  gdprDataDisclosureReport(
+    domain: "healthcare"
+    schema: "dbo"
+    tableName: "patient_records"
+    timeWindowDays: 365
+  ) {
+    targetTable
+    totalAccessEvents
+    sensitivityCategories
+    legalBasisNotice
+    disclosedRecipients {
+      recipientSid
+      recipientCategory # ServicePrincipal, InteractiveUser, DownstreamSystem
+      purpose
+      firstAccess
+      lastAccess
+      totalQueries
+      accessedColumns
+      maskingRuleApplied
+    }
+  }
+}
+```
+Export results to CSV/PDF for compliance documentation.
+
+---
+
+## 8. Auditing Insecure Configurations in Production
+
+### 8.1 Verification Rule
+In production environments, all `danger_*` and `warn_*` flags must be strictly `false`.
+
+### 8.2 Audit Check via CLI / K8s ConfigMap
+```bash
+# Verify ConfigMap does not contain active insecure flags
+kubectl get configmap gql-gateway-config -n data-governance -o yaml | grep -E "(warn_|danger_)"
+
+# Ensure no pods log insecure mode warnings
+kubectl logs -l app=gql-gateway -n data-governance | grep -i "INSECURE MODE ENGAGED"
+```
+If any pod logs `[CRITICAL SECURITY ALERT] Insecure flag engaged`, immediately file a Priority-1 security incident and revert the configuration.
+

@@ -496,7 +496,92 @@ Für deklarative HTTP-Datenquellen (`DeclarativeHttpDataSourceExecutor`) gelten 
 
 ---
 
-## 3. Umgebungsvariablen & Kubernetes-Deployment
+### 2.13 `Catalog` (Enterprise Data Catalog Integration & DSGVO-Klassifizierung)
+
+Ermöglicht die zentrale Anbindung an externe Unternehmens-Datenkataloge (**Microsoft Purview**, **Collibra**, **Alation**, **OpenMetadata**) zur automatisierten Spiegelung von Metadaten und Sensitivitäts-Klassifizierungen.
+
+| Eigenschaft | Typ | Wertebereich | Standard | Beschreibung |
+| :--- | :--- | :--- | :--- | :--- |
+| `Enabled` | `bool` | `true \| false` | `false` | Aktiviert die Data-Catalog-Integration. |
+| `Provider` | `string` | `OpenMetadata \| MicrosoftPurview \| Collibra \| Alation` | `"OpenMetadata"` | Aktiver Datenkatalog-Provider. |
+| `SyncMode` | `string` | `Mirror \| Reference` | `"Mirror"` | `Mirror`: Synct Tabellen/Spalten periodisch in den lokalen Store. `Reference`: Führt On-Demand-Lookups durch. |
+| `SyncIntervalMinutes` | `int` | `1 .. 1440` | `60` | Synchronisationsintervall des Hintergrunddienstes in Minuten. |
+| `TagToMaskingRuleMap` | `Dictionary<string, string>` | Key-Value Paare | *(Standard-Map)* | Mappt Katalog-Tags auf Maskierungsregeln (`REDACT`, `MASK_EMAIL`, `HMAC_SHA256`). |
+| `GdprArticle9Tags` | `List<string>` | Tag-Namen | *(Art. 9 Tags)* | Tags für besondere Kategorien (Gesundheit, Biometrie, Genetik, Religion). Erzwingt `HIGH`, Four-Eyes und `REDACT`. |
+| `PiiTags` | `List<string>` | Tag-Namen | *(PII Tags)* | Tags für personenbezogene Daten. |
+
+#### Provider-Konfigurationen:
+- **`Catalog.Purview`**: Azure Purview / Apache Atlas (`Endpoint`, `TenantId`, `ClientId`, `ClientSecretKeyVaultRef`).
+- **`Catalog.Collibra`**: Collibra Data Intelligence Cloud Core API v2 (`BaseUrl`, `Username`, `PasswordKeyVaultRef`).
+- **`Catalog.Alation`**: Alation Integration API v2 (`BaseUrl`, `ApiRefreshTokenKeyVaultRef`, `DefaultDataSourceId`).
+
+```json
+"Catalog": {
+  "Enabled": true,
+  "Provider": "MicrosoftPurview",
+  "SyncMode": "Mirror",
+  "SyncIntervalMinutes": 60,
+  "Purview": {
+    "Endpoint": "https://corp-purview.purview.azure.com",
+    "TenantId": "72f988bf-86f1-41af-91ab-2d7cd011db47",
+    "ClientId": "a820c78a-f326-4d1d-91b4-2195f1342618",
+    "ClientSecretKeyVaultRef": "PURVIEW-SP-SECRET"
+  },
+  "TagToMaskingRuleMap": {
+    "PII.Sensitive": "REDACT",
+    "PII.Email": "MASK_EMAIL",
+    "PII.Pseudonym": "HMAC_SHA256"
+  },
+  "GdprArticle9Tags": [
+    "GDPR.Article9", "Art9", "HealthData", "Biometric", "Genetic",
+    "ReligiousBelief", "TradeUnionMembership", "SexLife", "PoliticalOpinion"
+  ]
+}
+```
+
+---
+
+### 2.14 `Insecure` (Pragmatisches Onboarding & Fremdsystem-Anbindung)
+
+Für schnelle PoCs, Integrationstests, externe Webhook-Systeme oder Third-Party-Konnektoren können Sicherheitsprüfungen per Konfiguration gelockert werden. Um Risiken transparent zu machen, sind alle Parameter zwingend nach Sicherheitsauswirkung präfixiert:
+
+- **`warn_` (Mittlerer Impact)**: Lockert Limits und Netzwerkschutz.
+- **`danger_` (Kritischer Impact)**: Deaktiviert Authentifizierung, Autorisierung oder Zertifikatsprüfungen vollständig.
+
+> [!CAUTION]
+> **Produktions-Warnung**: Alle `danger_`- und `warn_`-Flags müssen in Produktionsumgebungen auf `false` stehen. Bei aktiviertem `danger_`-Flag loggt das Gateway auffällige `CRITICAL`-Sicherheitswarnungen.
+
+| Eigenschaft | Typ | Standard | Sicherheits-Level | Beschreibung |
+| :--- | :--- | :--- | :--- | :--- |
+| `danger_allow_anonymous_queries` | `bool` | `false` | **CRITICAL** | Erlaubt GraphQL-Abfragen ohne jegliche Authentifizierung (anonymer Benutzer). |
+| `danger_bypass_authorization` | `bool` | `false` | **CRITICAL** | Umgeht die Zero-Trust Consent-Prüfung (`ALLOW` für alle Tabellen). |
+| `danger_bypass_webhook_signature_validation` | `bool` | `false` | **CRITICAL** | Erlaubt ungesignete Webhook-Aufrufe (z. B. ServiceNow, Jira, OpenMetadata ohne HMAC-Prüfung). |
+| `danger_allow_untrusted_certificates` | `bool` | `false` | **CRITICAL** | Akzeptiert selbstsignierte oder abgelaufene SSL/TLS-Zertifikate bei ausgehenden HTTP-Aufrufen (Purview, Collibra, APIs). |
+| `danger_allow_anonymous_webhooks` | `bool` | `false` | **CRITICAL** | Akzeptiert eingehende Webhook-Payloads ohne Auth-Token oder Secret. |
+| `warn_allow_all_cors_origins` | `bool` | `false` | **WARN** | Setzt `Access-Control-Allow-Origin: *` und deaktiviert CSRF-Preflight. |
+| `warn_disable_rate_limiting` | `bool` | `false` | **WARN** | Deaktiviert IP- und SID-basiertes Rate-Limiting (keine `429 Too Many Requests`). |
+| `warn_bypass_query_cost_limits` | `bool` | `false` | **WARN** | Deaktiviert AST-Depth- und Complexity-Limits für tief verschachtelte Abfragen. |
+
+```json
+"Insecure": {
+  "warn_allow_all_cors_origins": true,
+  "warn_disable_rate_limiting": true,
+  "danger_bypass_webhook_signature_validation": false,
+  "danger_allow_untrusted_certificates": false
+}
+```
+
+---
+
+### 2.15 `Identity & Multi-Tenant / M2M Service-Accounts`
+
+Unterstützt hybride Identitätsmigration und Machine-to-Machine-Zugriffe für Hintergrund-Jobs:
+
+- **Abstraktionsschicht (`IIdentityProvider`)**: Ermöglicht den parallelen Betrieb von On-Prem-Active-Directory (Kerberos) und Microsoft Entra ID (Azure AD / OIDC) ohne Code-Änderungen an Fachkomponenten.
+- **Service-Accounts & M2M-Zugriff**: Authentifizierung via OAuth2 Client-Credentials oder mutual TLS (mTLS). Im Gateway wird der Aufrufer als Dienst-Prinzipal mit `SP-<client_id>` SID geführt und erhält dedizierte, zeitlich befristete Consents mit technischer Begründung.
+- **Multi-Tenant Datenisolation**: Zweistufige Mandantentrennung über SQL-Pushdown (`WHERE tenant_id = @tenant`) und native PostgreSQL Row-Level-Security mittels transaktionalem `SET LOCAL app.tenant_id = @tenant`.
+
+---
 
 In Containern und Cloud-Umgebungen (Kubernetes, Docker) werden Konfigurationswerte über Umgebungsvariablen mit doppelten Unterstrichen (`__`) überschrieben.
 

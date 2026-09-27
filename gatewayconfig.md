@@ -396,6 +396,48 @@ Steuert revisionssichere Hashketten-Protokollierung und SIEM-Streaming (**NF-OBS
 
 ---
 
+### 4.8 Enterprise Data Catalog Integration (`Gateway:Catalog`)
+Steuert die Anbindung an Microsoft Purview, Collibra, Alation und OpenMetadata zur automatischen Metadaten- und Sensitivitäts-Synchronisation.
+
+| Schlüssel | Typ | Standard | Anforderung | Beschreibung |
+|:---|:---:|:---:|:---:|:---|
+| `Enabled` | `bool` | `false` | NF-GOV-01 | Aktiviert die Hintergrund-Synchronisation mit dem externen Katalog. |
+| `Provider` | `string` | `"OpenMetadata"` | NF-GOV-01 | Provider-Auswahl: `OpenMetadata`, `MicrosoftPurview`, `Collibra`, `Alation`. |
+| `SyncMode` | `string` | `"Mirror"` | NF-GOV-01 | `Mirror` (persistente SQLite-Spiegelung) oder `Reference` (On-Demand Lookup). |
+| `SyncIntervalMinutes` | `int` | `60` | NF-GOV-01 | Periodisches Synchronisationsintervall des Hintergrund-Workers. |
+| `TagToMaskingRuleMap` | `Dictionary` | *(Standard-Map)* | NF-SEC-02 | Zuordnung von externen Katalog-Tags zu internen Maskierungsalgorithmen. |
+| `GdprArticle9Tags` | `List<string>` | *(Art. 9 Tags)* | NF-DSGVO-02 | Liste von Tags für Art. 9 DSGVO Daten (erzwingt `HIGH` und `RequiresFourEyes`). |
+| `PiiTags` | `List<string>` | *(PII Tags)* | NF-DSGVO-01 | Liste von Tags für personenbezogene Daten (PII). |
+
+---
+
+### 4.9 Insecure Modes & Getting-Started (`Gateway:Insecure`)
+Ermöglicht das gezielte Lockern von Sicherheitsbarrieren für Entwicklungs- und Onboarding-Zwecke.
+
+| Schlüssel | Typ | Standard | Level | Beschreibung |
+|:---|:---:|:---:|:---:|:---|
+| `danger_allow_anonymous_queries` | `bool` | `false` | **CRITICAL** | Erlaubt unauthentifizierte GraphQL-Abfragen (Standardbenutzer `S-1-5-21-ANONYMOUS`). |
+| `danger_bypass_authorization` | `bool` | `false` | **CRITICAL** | Deaktiviert Zero-Trust Consent-Prüfungen vollständig (`ALLOW` für alle Tabellen). |
+| `danger_bypass_webhook_signature_validation` | `bool` | `false` | **CRITICAL** | Überspringt HMAC-Signaturprüfung eingehender Webhooks (z. B. ServiceNow/Jira). |
+| `danger_allow_untrusted_certificates` | `bool` | `false` | **CRITICAL** | Deaktiviert TLS-Zertifikatsvalidierung bei ausgehenden API-Verbindungen. |
+| `danger_allow_anonymous_webhooks` | `bool` | `false` | **CRITICAL** | Akzeptiert Webhooks ohne jegliche Authentifizierung. |
+| `warn_allow_all_cors_origins` | `bool` | `false` | **WARN** | Erlaubt alle Origins (`*`) und deaktiviert CSRF-Preflight-Prüfungen. |
+| `warn_disable_rate_limiting` | `bool` | `false` | **WARN** | Deaktiviert IP- und SID-Token-Bucket-Rate-Limiting. |
+| `warn_bypass_query_cost_limits` | `bool` | `false` | **WARN** | Hebt GraphQL AST-Depth- und Query-Complexity-Limits auf. |
+
+---
+
+### 4.10 Identity & M2M Service-Accounts (`Gateway:Identity`)
+Ermöglicht hybride Migration zu Microsoft Entra ID (OIDC) und Machine-to-Machine Authentifizierung.
+
+| Schlüssel | Typ | Standard | Anforderung | Beschreibung |
+|:---|:---:|:---:|:---:|:---|
+| `IdpType` | `string` | `"Hybrid"` | NF-AUTH-06 | `ActiveDirectory`, `EntraId` oder `Hybrid` via `IIdentityProvider`. |
+| `EnableServicePrincipals` | `bool` | `true` | NF-AUTH-07 | Aktiviert M2M-Dienst-Prinzipale via Client-Credentials / mTLS (`SP-<id>` SIDs). |
+| `ServicePrincipalConsentTtlDays` | `int` | `90` | NF-AUTH-07 | Maximale Gültigkeitsdauer für technische Service-Account-Consents. |
+
+---
+
 ## 5. C# Strongly Typed Model & Startup-Validierung
 
 Folgender C#-Code in `GqlGateway.Domain.Options` erzwingt die Validierung zur Compile- und Startzeit:

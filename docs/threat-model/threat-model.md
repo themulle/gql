@@ -107,8 +107,24 @@
 - **Bedrohung 6.2: Kompromittierung des technischen DB-Dienstkontos (Blast Radius).**
   - *Gefahr:* Angreifer erlangt Dienstkonto-Zugangsdaten und greift direkt auf die Quelldatenbank zu.
   - *Gegenmaßnahme:* Das Dienstkonto besitzt auf der Quelldatenbank ausschließlich `SELECT`-Berechtigungen auf freigegebene Schemas/Tabellen. Keine DDL-, Schreib- oder Server-Admin-Rechte. Netzwerk-Isolation (nur Zugriffe von Gateway-Pod-IPs).
+- **Bedrohung 6.3: Rechteausweitung über unbefugte Aktivierung von "Insecure Modes" (`danger_*`).**
+  - *Gefahr:* Ein böswilliger Entwickler oder Operator setzt `danger_bypass_authorization = true` in Produktion, um Zugriffskontrollen auszuhebeln.
+  - *Gegenmaßnahme:*
+    1. Alle unsicheren Optionen tragen das Präfix `danger_` oder `warn_` und sind in `Production` standardmäßig `false`.
+    2. Der Gateway-Host loggt beim Start und bei jeder Nutzung auffällige `CRITICAL SECURITY ALERT`-Events im Audit-Log.
+    3. CI/CD-Pipelines prüfen `appsettings.Production.json` automatisiert auf das Vorkommen von `danger_` oder `warn_` mit Wert `true`.
+- **Bedrohung 6.4: Unbefugtes Auslesen von Data Owner E-Mail-Adressen über Lineage-Abfragen.**
+  - *Gefahr:* Ein regulärer Analyst ruft `tableConsumers` auf, um gezielt E-Mail-Adressen von Systemverantwortlichen für Phishing-Kampagnen zu ernten.
+  - *Gegenmaßnahme:* Zero-Trust Spaltenmaskierung in `LineageImpactAnalyzerService`: Das Feld `OwnerEmail` wird für Aufrufer ohne administrative Rollen (`GovernanceAdmin`, `ClusterAdmin`) oder ohne Data-Owner-Berechtigung auf der Tabelle strikt auf `null` maskiert.
+- **Bedrohung 6.5: Manipulation von Sensitivitäts-Klassifizierungen über gefälschte externe Katalog-Updates.**
+  - *Gefahr:* Ein Angreifer manipuliert Metadaten in Purview/Collibra, um Art.-9-DSGVO-Tags zu entfernen und so Vier-Augen-Freigaben zu umgehen.
+  - *Gegenmaßnahme:*
+    1. TLS-Zertifikatsvalidierung bei allen ausgehenden Catalog-API-Verbindungen.
+    2. Zero-Trust Invariante: Externe Datenkataloge dienen als Metadatenquelle, erteilen jedoch **keine direkten Zugriffsrechte**. Berechtigungen werden ausschließlich über vom Data Owner genehmigte Consents erteilt.
+    3. Monotone Epochen-Invalidierung: Jedes Katalog-Update triggert einen Policy-Epochen-Inkrement, der gecachte Berechtigungen invalidiert.
 
 ---
 
 ## 3. Fazit & Risikoverbleib
 Alle STRIDE-Kategorien sind durch mehrstufige, software- und architekturseitige Schutzmechanismen (Defense-in-Depth) abgedeckt. Das Restrisiko bei verzögerter Übernahme von AD-Gruppenänderungen ist im Risikoregister (R-04) erfasst und durch `GroupCacheTtlMinutes: 5` zeitlich eng begrenzt.
+

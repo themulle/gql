@@ -240,10 +240,17 @@ sequenceDiagram
 - Masks `TableNotFoundException` as generic `FORBIDDEN` in non-development environments to prevent schema probing and table oracle attacks.
 - Sanitized responses return standardized domain codes: `FORBIDDEN`, `UNAUTHENTICATED`, `NOT_FOUND`, `INVALID_REQUEST`.
 
-### 8.3 Performance & Allocation Optimizations
-- **Zero-Allocation Column Masking**: `ColumnMaskingProvider` utilizes `ReadOnlySpan<char>` slicing, `stackalloc char[]` buffers, and `string.Create` to eliminate intermediate object allocations during email and IBAN masking.
-- **Lock-Free Concurrency**: `InMemoryRateLimiterService` uses atomic `Interlocked.Increment` and `Interlocked.Decrement` counters, avoiding lock contention on `ConcurrentDictionary.Count`.
-- **Direct SQL RLS Pushdown**: Row filters pushed directly into database query predicates bypass in-memory `DataTable` post-filtering overhead.
+### 8.4 Enterprise Data Catalog Federation & Lineage Analysis
+- **Multi-Catalog Provider Integration**: Pluggable `IDataCatalogClient` architecture integrating **Microsoft Purview**, **Collibra**, **Alation**, and **OpenMetadata**.
+- **Mirror vs Reference Mode**: Mirroring ingests metadata, descriptions, and classifications into local governance storage; Reference mode queries external catalogs on-demand.
+- **Automated GDPR Art. 9 & PII Tagging**: Automatic detection of special categories of data under GDPR Art. 9 (health, biometrics, genetics, religious, political) enforcing `HIGH` sensitivity, mandatory four-eyes approval (`RequiresFourEyes = true`), and `REDACT` masking.
+- **Static & Operational Lineage Traversal**: Iterative BFS graph traversal over BI Dashboards, ETL Pipelines, and External Services combined with cryptographic audit log correlation to assess breaking change blast radius before schema modifications.
+- **GDPR Art. 15 Right of Access Reporting**: Aggregates all disclosed recipients, access timestamps, purposes, and masking rules over up to 365 days.
+
+### 8.5 Modern Identity Abstraction, M2M Service Principals & Insecure Modes
+- **Hybrid Identity Provider Abstraction (`IIdentityProvider`)**: Allows simultaneous operation of on-prem Active Directory (Kerberos) and cloud-native Microsoft Entra ID (Azure AD / OIDC) without coupling domain components to concrete IdPs.
+- **Machine-to-Machine (M2M) Service Principals**: Client-credentials and mTLS authentication for background batch jobs and downstream services, issuing dedicated service principal consents (`SP-<client_id>` SIDs).
+- **Explicit Insecure Modes (`warn_` and `danger_`)**: Pragmatic developer onboarding and webhook integration controls with risk-labeled flags (`warn_` for medium impact, `danger_` for critical impact) that fail-closed by default and emit conspicuous operational alerts when engaged.
 
 ---
 
@@ -257,13 +264,17 @@ sequenceDiagram
 - [ADR-007: Permissive Union Semantics](../adr/ADR-007-permissive-union-semantics.md)
 - [ADR-008: Composite Keys, Parameter Budgeting & Four-Eyes Governance Workflow](../adr/ADR-008-composite-keys-and-four-eyes.md)
 - [ADR-009: Advanced RLS Subqueries, Multi-Hop Joins & Temporal Validity Predicates](../adr/ADR-009-advanced-rls-subqueries-and-temporal-intervals.md)
+- [ADR-010: Enterprise Data Catalog Abstraction & GDPR Art. 9 Sensitivity](../adr/ADR-010-data-catalog-abstraction-and-sensitivity-classification.md)
+- [ADR-011: Modern Hybrid Identity Abstraction & M2M Service Principals](../adr/ADR-011-modern-identity-abstraction-and-service-principals.md)
+- [ADR-012: Insecure Modes & Pragmatic Onboarding Governance](../adr/ADR-012-insecure-modes-and-getting-started-governance.md)
+- [ADR-013: Graph Lineage Downstream Impact & GDPR Art. 15 Disclosure](../adr/ADR-013-data-lineage-and-gdpr-art15-disclosure.md)
 
 ---
 
 ## 10. Quality Requirements
 - **Quality Gate 1 (Zero Warnings & Strict Typing)**: Solution compiles with zero warnings under `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
 - **Quality Gate 2 (Architecture Integrity)**: NetArchTest asserts Domain and Application have zero inward or improper dependencies, isolating Hot Chocolate to GraphQL.
-- **Quality Gate 3 (TDD Verification)**: 100% test pass rate (429 / 429 tests green across 391 Unit, 5 Architecture, and 33 Integration tests).
+- **Quality Gate 3 (TDD Verification)**: 100% test pass rate (513 / 513 tests green across 401 Unit, 5 Architecture, 83 Integration, and 24 Extensions tests).
 - **Quality Gate 4 (Walking Skeleton End-to-End)**: Integration tests verify full request pipeline, Traefik ForwardAuth Ingress, Basic Auth login, consent resolution, and graceful drain.
 
 ---

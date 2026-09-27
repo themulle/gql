@@ -107,3 +107,100 @@ dotnet test tests/GqlGateway.Tests.Integration/GqlGateway.Tests.Integration.cspr
 2. **Define Columns and Types**: Add column specifications in `TABLE_COLUMNS`.
 3. **Configure Hot Chocolate Dynamic Type**: Handled automatically by `DynamicTableType` which inspects catalog metadata, applies scalar conversions, and hooks field masking.
 4. **Grant Consent**: Ensure the calling SID has an active `ALLOW` consent for the table before querying, otherwise Zero Trust will return `FORBIDDEN`.
+
+---
+
+## 6. Testing Data Catalog Synchronization
+
+You can test Data Catalog synchronization against Microsoft Purview, Collibra, Alation, or OpenMetadata locally:
+
+```graphql
+# Administrative Mutation (requires GovernanceAdmin or ClusterAdmin)
+mutation RunCatalogSync {
+  syncDataCatalog(dryRun: true) {
+    success
+    syncedTablesCount
+    syncedColumnsCount
+    maskedColumnsCount
+    art9ProtectedTablesCount
+    warnings
+  }
+}
+```
+
+In unit tests, mock `IDataCatalogClient` and assert that `DataCatalogSyncService` properly maps tags:
+- `GdprArticle9Tags` -> Enforces `Table.Sensitivity = "HIGH"`, `RequiresFourEyes = true`, and `MaskingRule = REDACT`.
+- `TagToMaskingRuleMap` -> Maps tags (e.g. `PII.Email`) to `MASK_EMAIL` or `HMAC_SHA256`.
+
+---
+
+## 7. Testing Lineage & GDPR Disclosure Queries
+
+To analyze downstream dependencies before schema changes or produce GDPR Art. 15 reports:
+
+```graphql
+# 1. Downstream Lineage Impact
+query CheckConsumers {
+  tableConsumers(domain: "sales", schema: "dbo", tableName: "orders", timeWindowDays: 30) {
+    breakingChangeRisk
+    activeReadersCount
+    downstreamConsumers {
+      name
+      type
+      ownerTeam
+      ownerEmail
+    }
+    recommendedMitigations
+  }
+}
+
+# 2. GDPR Art. 15 Disclosure Report
+query GetGdprDisclosure {
+  gdprDataDisclosureReport(
+    domain: "healthcare"
+    schema: "dbo"
+    tableName: "patient_diagnoses"
+    timeWindowDays: 365
+  ) {
+    totalAccessEvents
+    sensitivityCategories
+    disclosedRecipients {
+      recipientSid
+      recipientCategory
+      totalQueries
+      accessedColumns
+      maskingRuleApplied
+    }
+  }
+}
+```
+
+---
+
+## 8. Rapid Prototyping with Insecure Modes
+
+During early development or when onboarding complex third-party webhooks (e.g., ServiceNow/Jira local tunnels), you can temporarily loosen security checks via `appsettings.Development.json`:
+
+```json
+"Insecure": {
+  "warn_allow_all_cors_origins": true,
+  "warn_disable_rate_limiting": true,
+  "danger_allow_untrusted_certificates": true,
+  "danger_bypass_webhook_signature_validation": true
+}
+```
+
+> [!WARNING]
+> Never commit `danger_* = true` in production configuration files (`appsettings.Production.json`). The gateway emits bold warnings when any insecure flag is engaged.
+
+---
+
+## 9. Validating Casbin Governance Policies
+
+GqlGateway includes a dedicated CLI linter tool for validating Casbin RBAC/ABAC models and policies:
+
+```bash
+# Run the Casbin policy linter
+dotnet run --project tools/casbin-policy-lint/casbin-policy-lint.csproj
+```
+
