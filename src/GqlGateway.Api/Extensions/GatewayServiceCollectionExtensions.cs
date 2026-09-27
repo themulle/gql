@@ -28,6 +28,9 @@ using GqlGateway.Application.Governance;
 using GqlGateway.Application.Lineage;
 using GqlGateway.Application.Workflows;
 using GqlGateway.Application.Dbt.Interfaces;
+using GqlGateway.Application.DataCatalog.Interfaces;
+using GqlGateway.Application.DataCatalog.Services;
+using GqlGateway.Infrastructure.DataCatalog;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Application.Mcp.Services;
 using GqlGateway.Infrastructure.Itsm;
@@ -197,6 +200,13 @@ public static class GatewayServiceCollectionExtensions
             gatewayOptions.GraphQL.MaxInClauseBatchSize,
             sp.GetRequiredService<IParameterBudgetProvider>()));
         services.AddSingleton<ISqlFilterProvider>(new SqlFilterProvider(gatewayOptions.GraphQL.MaxInClauseBatchSize));
+
+        // Data Catalog Services & Clients (P1)
+        services.AddHttpClient<PurviewDataCatalogClient>();
+        services.AddHttpClient<CollibraDataCatalogClient>();
+        services.AddHttpClient<OpenMetadataDataCatalogClient>();
+        services.AddSingleton<IDataCatalogClientFactory, DataCatalogClientFactory>();
+        services.AddSingleton<IDataCatalogSyncService, DataCatalogSyncService>();
 
         // SQL Connection Factory & Health Checks
         services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();
