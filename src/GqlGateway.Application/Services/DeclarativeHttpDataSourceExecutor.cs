@@ -344,11 +344,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         var host = uri.Host.TrimEnd('.').ToLowerInvariant();
 
         // 1. Explicitly forbidden cloud metadata and cluster internal service hosts
-        if (host == "metadata.google.internal" ||
-            host.EndsWith(".metadata.google.internal", StringComparison.OrdinalIgnoreCase) ||
-            host == "kubernetes.default.svc" ||
-            host.EndsWith(".kubernetes.default.svc", StringComparison.OrdinalIgnoreCase) ||
-            host.StartsWith("kubernetes.default.svc.", StringComparison.OrdinalIgnoreCase))
+        if (IsForbiddenMetadataHost(host))
         {
             throw new SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
         }
@@ -389,7 +385,17 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         }
     }
 
-    private static bool IsRestrictedIp(IPAddress ip)
+    public static bool IsForbiddenMetadataHost(string host)
+    {
+        var h = host.TrimEnd('.').ToLowerInvariant();
+        return h == "metadata.google.internal" ||
+               h.EndsWith(".metadata.google.internal", StringComparison.OrdinalIgnoreCase) ||
+               h == "kubernetes.default.svc" ||
+               h.EndsWith(".kubernetes.default.svc", StringComparison.OrdinalIgnoreCase) ||
+               h.StartsWith("kubernetes.default.svc.", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool IsRestrictedIp(IPAddress ip)
     {
         if (ip.IsIPv4MappedToIPv6)
         {

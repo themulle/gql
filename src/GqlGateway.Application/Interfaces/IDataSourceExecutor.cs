@@ -24,5 +24,9 @@ public sealed record DataSourceExecutionContext(
     IReadOnlyDictionary<string, string[]>? RequestHeaders = null,
     int Limit = 1000,
     int Offset = 0,
-    TenantId? Tenant = null
-);
+    TenantId? Tenant = null,
+    IDictionary<string, object?>? Items = null
+)
+{
+    public IDictionary<string, object?> Items { get; init; } = Items ?? new Dictionary<string, object?>();
+}

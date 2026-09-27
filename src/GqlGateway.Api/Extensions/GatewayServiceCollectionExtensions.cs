@@ -209,15 +209,74 @@ public static class GatewayServiceCollectionExtensions
 
         services.AddHttpClient();
         services.AddHttpClient(DeclarativeHttpDataSourceExecutor.HttpClientName)
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            .ConfigurePrimaryHttpMessageHandler(sp =>
             {
-                AllowAutoRedirect = false,
-                SslOptions = gatewayOptions.AreUntrustedCertificatesAllowed
-                    ? new System.Net.Security.SslClientAuthenticationOptions
+                var env = sp.GetRequiredService<IHostEnvironment>();
+                return new SocketsHttpHandler
+                {
+                    AllowAutoRedirect = false,
+                    SslOptions = gatewayOptions.AreUntrustedCertificatesAllowed
+                        ? new System.Net.Security.SslClientAuthenticationOptions
+                        {
+                            RemoteCertificateValidationCallback = delegate { return true; }
+                        }
+                        : new System.Net.Security.SslClientAuthenticationOptions(),
+                    ConnectCallback = async (context, cancellationToken) =>
                     {
-                        RemoteCertificateValidationCallback = delegate { return true; }
+                        var host = context.DnsEndPoint.Host.TrimEnd('.').ToLowerInvariant();
+                        if (DeclarativeHttpDataSourceExecutor.IsForbiddenMetadataHost(host))
+                        {
+                            throw new System.Security.SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
+                        }
+
+                        IPAddress[] addresses;
+                        if (IPAddress.TryParse(host, out var directIp))
+                        {
+                            addresses = [directIp];
+                        }
+                        else
+                        {
+                            addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+                        }
+
+                        if (addresses.Length == 0)
+                        {
+                            throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound);
+                        }
+
+                        bool isDev = env.IsDevelopment();
+                        IPAddress? targetIp = null;
+                        foreach (var ip in addresses)
+                        {
+                            if (isDev || !DeclarativeHttpDataSourceExecutor.IsRestrictedIp(ip))
+                            {
+                                targetIp = ip;
+                                break;
+                            }
+                        }
+
+                        if (targetIp == null)
+                        {
+                            throw new System.Security.SecurityException($"SSRF / DNS Rebinding Defense: Outbound connection to restricted IP address '{addresses[0]}' is strictly forbidden.");
+                        }
+
+                        var socket = new System.Net.Sockets.Socket(targetIp.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp)
+                        {
+                            NoDelay = true
+                        };
+
+                        try
+                        {
+                            await socket.ConnectAsync(new IPEndPoint(targetIp, context.DnsEndPoint.Port), cancellationToken).ConfigureAwait(false);
+                            return new NetworkStream(socket, ownsSocket: true);
+                        }
+                        catch
+                        {
+                            socket.Dispose();
+                            throw;
+                        }
                     }
-                    : new System.Net.Security.SslClientAuthenticationOptions()
+                };
             });
 #pragma warning restore CA5359
         services.AddSingleton<IPluginManager, PluginManager>();
@@ -582,24 +641,30 @@ public static class GatewayServiceCollectionExtensions
             }
         }
 
-        if (!environment.IsDevelopment() && options.Authentication.EnableTestAuthHandler)
+        if (!environment.IsDevelopment())
         {
-            throw new ValidationException("Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
-        }
+            if (options.Authentication.EnableTestAuthHandler)
+            {
+                throw new ValidationException("Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
+            }
 
-        if (!environment.IsDevelopment() && options.IsAnonymousAccessAllowed)
-        {
-            throw new ValidationException("Sicherheitsverletzung: danger_allow_anonymous_access darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
-        }
+            var activeBypasses = options.GetAllActiveBypasses();
+            var disallowedInProd = activeBypasses
+                .Where(b => b.StartsWith("DANGER:", StringComparison.OrdinalIgnoreCase) ||
+                            b == "WARN:warn_auto_approve_access_requests" ||
+                            b == "WARN:warn_fallback_default_tenant_for_webhooks" ||
+                            b == "WARN:warn_mock_external_systems_if_unreachable" ||
+                            b == "WARN:warn_allow_all_cors_origins" ||
+                            b == "WARN:warn_disable_rate_limiting" ||
+                            b == "WARN:warn_allow_unmasked_ai_access")
+                .ToList();
 
-        if (!environment.IsDevelopment() && options.IsMcpAuthBypassed)
-        {
-            throw new ValidationException("Sicherheitsverletzung: danger_bypass_mcp_auth darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
-        }
-
-        if (!environment.IsDevelopment() && options.IsLakehouseAuthBypassed)
-        {
-            throw new ValidationException("Sicherheitsverletzung: danger_bypass_lakehouse_auth darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
+            if (disallowedInProd.Count > 0)
+            {
+                throw new ValidationException(
+                    $"Kritische Sicherheitsverletzung: Folgende Sicherheits-Bypasses dürfen AUSSCHLIESSLICH in der Development-Umgebung aktiv sein:\n  - " +
+                    string.Join("\n  - ", disallowedInProd));
+            }
         }
 
         if (!environment.IsDevelopment())

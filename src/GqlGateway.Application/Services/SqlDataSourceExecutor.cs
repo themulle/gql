@@ -80,6 +80,7 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
     {
         var metadata = context.Metadata;
         var dialect = metadata.Dialect;
+        context.Items["RlsPushdownExecuted"] = true;
 
         ArgumentNullException.ThrowIfNull(_connectionFactory);
         await using var connection = await _connectionFactory.CreateOpenConnectionAsync(connOptions, ct).ConfigureAwait(false);
@@ -262,6 +263,7 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
 
     private static IReadOnlyList<IReadOnlyDictionary<string, object?>> GenerateSyntheticRows(DataSourceExecutionContext context)
     {
+        context.Items["IsSyntheticMock"] = true;
         var rows = new List<IReadOnlyDictionary<string, object?>>();
         var metadata = context.Metadata;
         var count = Math.Max(1, context.Limit);

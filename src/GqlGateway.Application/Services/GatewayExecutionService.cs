@@ -256,17 +256,8 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         // in-memory evaluation is enforced.
         var filteredRows = rawRows.ToList();
 
-        bool isSyntheticMockData = rawRows.Count > 0 &&
-                                   rawRows[0].TryGetValue("name", out var n) &&
-                                   n is string nameStr &&
-                                   nameStr.StartsWith($"Sample {metadata.Identifier.TableName} Record #", StringComparison.Ordinal);
-
-        bool isRealConnectionConfigured = _options?.DataSources?.Connections != null &&
-                                          _options.DataSources.Connections.TryGetValue(metadata.Table.SourceName, out var conn) &&
-                                          !string.IsNullOrWhiteSpace(conn?.ConnectionString);
-
-        bool rlsPushdownAlreadyOccurred = (executor is SqlDataSourceExecutor && !isSyntheticMockData) ||
-                                          (executor is SqlDataSourceExecutor && isRealConnectionConfigured);
+        // Explicit execution signaling: Pushdown is considered complete only if the executor explicitly marked it.
+        bool rlsPushdownAlreadyOccurred = execContext.Items.TryGetValue("RlsPushdownExecuted", out var pushed) && pushed is true;
 
         if (!rlsPushdownAlreadyOccurred && !string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
         {

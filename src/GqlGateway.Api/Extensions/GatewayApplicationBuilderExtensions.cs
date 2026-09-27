@@ -38,7 +38,7 @@ public static class GatewayApplicationBuilderExtensions
             app.UseHttpsRedirection();
         }
 
-        if (gatewayOptions.HasAnySecurityBypassActive)
+        if (app.Environment.IsDevelopment() && gatewayOptions.HasAnySecurityBypassActive)
         {
             app.Use(async (context, next) =>
             {
