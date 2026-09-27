@@ -2,6 +2,7 @@ using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
 using GqlGateway.Application.Dbt.Interfaces;
+using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Extensions.OData;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
@@ -452,6 +453,113 @@ public static class GatewayApplicationBuilderExtensions
 
             return Results.Json(result.Payload, statusCode: result.StatusCode, contentType: "application/json;odata.metadata=minimal;charset=utf-8");
         }).RequireAuthorization();
+
+        // -------------------------------------------------------------
+        // Model Context Protocol (MCP) Server Endpoints (F-AI-01)
+        // -------------------------------------------------------------
+        if (gatewayOptions.Mcp.Enabled)
+        {
+            var mcpBasePath = string.IsNullOrWhiteSpace(gatewayOptions.Mcp.EndpointPath)
+                ? "/mcp"
+                : gatewayOptions.Mcp.EndpointPath.TrimEnd('/');
+
+            // 1. SSE Connection Handshake
+            var sseEndpoint = app.MapGet($"{mcpBasePath}/sse", async (
+                IMcpProtocolHandler mcpHandler,
+                HttpContext context) =>
+            {
+                var principal = context.User;
+                var isAuthenticated = principal.Identity?.IsAuthenticated == true;
+
+                if (!isAuthenticated && !gatewayOptions.IsMcpAuthBypassed)
+                {
+                    return Results.Unauthorized();
+                }
+
+                var principalId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                    ?? principal.Identity?.Name
+                    ?? (gatewayOptions.IsMcpAuthBypassed ? "anonymous-ai-agent" : "unknown-agent");
+
+                var tenantId = principal.FindFirst("tenant_id")?.Value
+                    ?? principal.FindFirst("tid")?.Value
+                    ?? "default";
+
+                var session = mcpHandler.CreateSession(principalId, tenantId);
+
+                context.Response.Headers.ContentType = "text/event-stream";
+                context.Response.Headers.CacheControl = "no-cache";
+                context.Response.Headers.Connection = "keep-alive";
+
+                var messageUri = $"{mcpBasePath}/message?sessionId={session.SessionId}";
+                await context.Response.WriteAsync($"event: endpoint\r\ndata: {messageUri}\r\n\r\n", context.RequestAborted).ConfigureAwait(false);
+                await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
+
+                try
+                {
+                    while (!context.RequestAborted.IsCancellationRequested)
+                    {
+                        await Task.Delay(15000, context.RequestAborted).ConfigureAwait(false);
+                        await context.Response.WriteAsync(": ping\r\n\r\n", context.RequestAborted).ConfigureAwait(false);
+                        await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Normal client disconnect
+                }
+                finally
+                {
+                    mcpHandler.RemoveSession(session.SessionId);
+                }
+
+                return Results.Empty;
+            });
+
+            if (!gatewayOptions.IsMcpAuthBypassed)
+            {
+                sseEndpoint.RequireAuthorization();
+            }
+
+            // 2. JSON-RPC Message Receiver
+            var messageEndpoint = app.MapPost($"{mcpBasePath}/message", async (
+                IMcpProtocolHandler mcpHandler,
+                HttpContext context) =>
+            {
+                var sessionId = context.Request.Query["sessionId"].FirstOrDefault()
+                    ?? context.Request.Headers["X-MCP-Session-Id"].FirstOrDefault();
+
+                if (string.IsNullOrWhiteSpace(sessionId))
+                {
+                    return Results.BadRequest(new { error = "Missing 'sessionId' query parameter or 'X-MCP-Session-Id' header." });
+                }
+
+                using var reader = new System.IO.StreamReader(context.Request.Body);
+                var payload = await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
+
+                if (string.IsNullOrWhiteSpace(payload))
+                {
+                    return Results.BadRequest(new { error = "Empty JSON-RPC payload." });
+                }
+
+                var responseJson = await mcpHandler.HandleMessageAsync(sessionId, payload, context.RequestAborted).ConfigureAwait(false);
+
+                return Results.Content(responseJson, "application/json; charset=utf-8");
+            });
+
+            if (!gatewayOptions.IsMcpAuthBypassed)
+            {
+                messageEndpoint.RequireAuthorization();
+            }
+
+            // 3. Session Teardown
+            app.MapDelete($"{mcpBasePath}/session/{{id}}", (
+                string id,
+                IMcpProtocolHandler mcpHandler) =>
+            {
+                var removed = mcpHandler.RemoveSession(id);
+                return removed ? Results.NoContent() : Results.NotFound();
+            });
+        }
 
         return app;
     }

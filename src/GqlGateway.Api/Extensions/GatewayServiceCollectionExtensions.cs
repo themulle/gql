@@ -25,6 +25,8 @@ using GqlGateway.Application.Governance;
 using GqlGateway.Application.Lineage;
 using GqlGateway.Application.Workflows;
 using GqlGateway.Application.Dbt.Interfaces;
+using GqlGateway.Application.Mcp.Interfaces;
+using GqlGateway.Application.Mcp.Services;
 using GqlGateway.Infrastructure.Itsm;
 using GqlGateway.Infrastructure.Lineage;
 using GqlGateway.Infrastructure.Plugins;
@@ -253,6 +255,12 @@ public static class GatewayServiceCollectionExtensions
             sp.GetService<ITrafficDrainController>(),
             sp.GetServices<IDataSourceExecutor>()));
         services.AddScoped<IGatewayExecutionService>(sp => sp.GetRequiredService<GatewayExecutionService>());
+
+        // Model Context Protocol (MCP) Server & AI Data Guardrails
+        services.AddSingleton<IMcpSessionStore, McpSessionStore>();
+        services.AddSingleton<IMcpToolRegistry, McpToolRegistry>();
+        services.AddScoped<IAiDataGuardrailService, AiDataGuardrailService>();
+        services.AddScoped<IMcpProtocolHandler, McpProtocolHandler>();
 
         // HA & Traffic Drain
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();
@@ -572,6 +580,11 @@ public static class GatewayServiceCollectionExtensions
         if (!environment.IsDevelopment() && options.Authentication.EnableTestAuthHandler && !options.IsAnonymousAccessAllowed)
         {
             throw new ValidationException("Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
+        }
+
+        if (!environment.IsDevelopment() && options.IsMcpAuthBypassed)
+        {
+            throw new ValidationException("Sicherheitsverletzung: danger_bypass_mcp_auth darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
         }
 
         if (!environment.IsDevelopment())

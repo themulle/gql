@@ -22,6 +22,7 @@ public sealed class GatewayOptions
     [Required] public SqlDataSourceOptions DataSources { get; init; } = new();
     [Required] public ItsmOptions Itsm { get; init; } = new();
     [Required] public DataCatalogOptions Catalog { get; init; } = new();
+    [Required] public McpOptions Mcp { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -39,6 +40,8 @@ public sealed class GatewayOptions
     public bool IsWebhookTimestampToleranceIgnored => Insecure.warn_ignore_webhook_timestamp_tolerance || Itsm.warn_ignore_webhook_timestamp_tolerance || OpenMetadata.warn_ignore_webhook_timestamp_tolerance;
     public bool IsWebhookTenantFallbackAllowed => Insecure.warn_fallback_default_tenant_for_webhooks || Itsm.warn_fallback_default_tenant_for_webhooks;
     public bool AreExternalSystemsMockedIfUnreachable => Insecure.warn_mock_external_systems_if_unreachable || Itsm.warn_mock_external_systems_if_unreachable;
+    public bool IsMcpAuthBypassed => Insecure.danger_bypass_mcp_auth || Mcp.danger_bypass_mcp_auth;
+    public bool IsMcpUnmaskedAllowed => Insecure.warn_allow_unmasked_ai_access || Mcp.warn_allow_unmasked_ai_access;
 
     public bool HasAnySecurityBypassActive =>
         IsAnonymousAccessAllowed ||
@@ -54,7 +57,9 @@ public sealed class GatewayOptions
         AreUntrustedCertificatesAllowed ||
         IsWebhookTimestampToleranceIgnored ||
         IsWebhookTenantFallbackAllowed ||
-        AreExternalSystemsMockedIfUnreachable;
+        AreExternalSystemsMockedIfUnreachable ||
+        IsMcpAuthBypassed ||
+        IsMcpUnmaskedAllowed;
 
     public IReadOnlyList<string> GetAllActiveBypasses()
     {
@@ -65,6 +70,7 @@ public sealed class GatewayOptions
         if (IsInsecureTransportAllowed) list.Add("DANGER:danger_allow_insecure_transport");
         if (IsWebhookSignatureBypassed) list.Add("DANGER:danger_bypass_webhook_signature_validation");
         if (AreUntrustedCertificatesAllowed) list.Add("DANGER:danger_allow_untrusted_certificates");
+        if (IsMcpAuthBypassed) list.Add("DANGER:danger_bypass_mcp_auth");
         if (IsAllCorsAllowed) list.Add("WARN:warn_allow_all_cors_origins");
         if (IsRateLimitingDisabled) list.Add("WARN:warn_disable_rate_limiting");
         if (AreQueryLimitsRelaxed) list.Add("WARN:warn_relaxed_query_limits");
@@ -73,6 +79,7 @@ public sealed class GatewayOptions
         if (IsWebhookTimestampToleranceIgnored) list.Add("WARN:warn_ignore_webhook_timestamp_tolerance");
         if (IsWebhookTenantFallbackAllowed) list.Add("WARN:warn_fallback_default_tenant_for_webhooks");
         if (AreExternalSystemsMockedIfUnreachable) list.Add("WARN:warn_mock_external_systems_if_unreachable");
+        if (IsMcpUnmaskedAllowed) list.Add("WARN:warn_allow_unmasked_ai_access");
         return list;
     }
 }
@@ -126,6 +133,12 @@ public sealed class InsecureGettingStartedOptions
     /// </summary>
     public bool danger_allow_anonymous_webhooks { get; init; } = false;
 
+    /// <summary>
+    /// [DANGER] Umgeht die Authentifizierung und Session-Prüfung für den Model Context Protocol (MCP) Server.
+    /// KI-Agenten können ohne API-Key/Bearer-Token auf exponierte Tools zugreifen.
+    /// </summary>
+    public bool danger_bypass_mcp_auth { get; init; } = false;
+
 
     // --- WARN: Mittlerer / Operativer Security-Impact (Lockert Limits und Schutzschilder) ---
 
@@ -169,6 +182,12 @@ public sealed class InsecureGettingStartedOptions
     /// [WARN] Simuliert erfolgreiche Mock-Antworten, wenn externe Fremdsysteme (ServiceNow, Jira) nicht erreichbar sind.
     /// </summary>
     public bool warn_mock_external_systems_if_unreachable { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Deaktiviert das automatische PII- und DSGVO-Art.-9-Masking im AI Data Guardrail des MCP-Servers.
+    /// Rohdaten werden unmaskiert an das Kontextfenster von KI-Agenten und LLMs gestreamt.
+    /// </summary>
+    public bool warn_allow_unmasked_ai_access { get; init; } = false;
 }
 
 public sealed class PluginsOptions
@@ -479,6 +498,20 @@ public sealed class DataCatalogOptions
         "PII", "PersonalData", "Classification.PII", "Email", "Phone",
         "SSN", "NationalId", "CreditCard", "Confidential"
     ];
+}
+
+public sealed class McpOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string EndpointPath { get; init; } = "/mcp";
+    [Range(256, 128000)] public int MaxTokensPerCall { get; init; } = 4096;
+    [Range(1, 10000)] public int MaxResultRows { get; init; } = 100;
+    public bool RequirePiiMasking { get; init; } = true;
+    public List<string> AllowedOperations { get; init; } = [];
+
+    // Insecure flags
+    public bool warn_allow_unmasked_ai_access { get; init; } = false;
+    public bool danger_bypass_mcp_auth { get; init; } = false;
 }
 
 

@@ -583,9 +583,39 @@ Unterstützt hybride Identitätsmigration und Machine-to-Machine-Zugriffe für H
 
 ---
 
-In Containern und Cloud-Umgebungen (Kubernetes, Docker) werden Konfigurationswerte über Umgebungsvariablen mit doppelten Unterstrichen (`__`) überschrieben.
+### 2.16 `Mcp` (Enterprise Model Context Protocol Server & AI Data Guardrails)
 
-### 3.1 Wichtige Umgebungsvariablen-Referenz
+Exponiert autorisierte GraphQL-Persisted-Queries als typisierte Tools für autonome KI-Agenten (Anthropic Claude, AutoGen, LangChain) über standardkonforme Server-Sent Events (SSE) und JSON-RPC 2.0.
+
+| Eigenschaft | Typ | Wertebereich | Standard | Beschreibung |
+| :--- | :--- | :--- | :--- | :--- |
+| `Mcp:Enabled` | `bool` | `true \| false` | `false` | Aktiviert den nativen MCP-Server (`/mcp/sse`, `/mcp/message`). |
+| `Mcp:EndpointPath` | `string` | URL-Pfad | `"/mcp"` | Basis-Endpunkt für den MCP SSE-Handshake und Message-Endpunkt. |
+| `Mcp:MaxTokensPerCall` | `int` | `256 .. 128000` | `4096` | Maximales Token-Budget pro Tool-Aufruf; verhindert Context-Window-Overflows. |
+| `Mcp:MaxResultRows` | `int` | `1 .. 10000` | `100` | Maximale Ergebniszeilen pro Datenabfrage. |
+| `Mcp:RequirePiiMasking` | `bool` | `true \| false` | `true` | Automatisches Scrubbing von PII- (E-Mail, IBAN) und DSGVO-Art.-9-Daten vor Übermittlung an LLMs. |
+| `Mcp:AllowedOperations` | `string[]` | GraphQL Operationen | `[]` | Whitelist freigegebener Abfragen. |
+| `Mcp:warn_allow_unmasked_ai_access` | `bool` | `true \| false` | `false` | **WARN**: Deaktiviert PII-Maskierung für KI-Streams (nur Dev/Sandbox). |
+| `Mcp:danger_bypass_mcp_auth` | `bool` | `true \| false` | `false` | **DANGER**: Umgeht MCP-Authentifizierung (in Produktion verboten). |
+
+```json
+"Mcp": {
+  "Enabled": true,
+  "EndpointPath": "/mcp",
+  "MaxTokensPerCall": 4096,
+  "MaxResultRows": 100,
+  "RequirePiiMasking": true,
+  "AllowedOperations": [
+    "query_customers",
+    "query_invoices",
+    "query_data_catalog"
+  ]
+}
+```
+
+---
+
+## 3. Deployment & Umgebungsvariablen
 
 ```bash
 # ASP.NET Core Hosting & Environment
