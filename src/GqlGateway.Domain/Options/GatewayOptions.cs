@@ -311,6 +311,7 @@ public sealed class GovernanceDbOptions
     [Range(1, 60)] public int CommandTimeoutSeconds { get; init; } = 15;
     public bool EnableOutboxProcessor { get; init; } = true;
     public bool? SeedDemoData { get; init; } = null;
+    public string? AuditHmacKeyVaultRef { get; init; }
     public bool danger_bypass_consent_checks { get; init; } = false;
     public bool warn_auto_approve_access_requests { get; init; } = false;
 }

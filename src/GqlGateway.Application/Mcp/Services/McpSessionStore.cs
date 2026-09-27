@@ -24,13 +24,16 @@ public sealed class McpSessionStore : IMcpSessionStore
         ArgumentException.ThrowIfNullOrWhiteSpace(servicePrincipalId);
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
 
+        // Strict TenantId domain validation prevents injection into downstream logs/JSON (N-9)
+        var validatedTenant = new GqlGateway.Domain.Common.TenantId(tenantId);
+
         var sessionId = Guid.NewGuid().ToString("N");
         var now = DateTimeOffset.UtcNow;
-        var session = new McpSessionContext(sessionId, servicePrincipalId, tenantId, now, now);
+        var session = new McpSessionContext(sessionId, servicePrincipalId, validatedTenant.Value, now, now);
         _sessions[sessionId] = session;
 
         _logger.LogInformation("Created new MCP session {SessionId} for principal {PrincipalId} in tenant {TenantId}.",
-            sessionId, servicePrincipalId, tenantId);
+            sessionId, servicePrincipalId, validatedTenant.Value);
 
         return session;
     }

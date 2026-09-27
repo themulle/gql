@@ -76,6 +76,10 @@ public sealed class RedisRateLimiterService : IRateLimiterService
         }
     }
 
+    private static readonly Prometheus.Counter RateLimiterRedisErrors = Prometheus.Metrics.CreateCounter(
+        "gqlgateway_ratelimiter_redis_errors_total", "Number of Redis errors in Rate Limiter service",
+        new Prometheus.CounterConfiguration { LabelNames = ["limit_type"] });
+
     private readonly InMemoryRateLimiterService _inMemoryFallback = new();
 
     public async Task<RateLimitResult> CheckPreAuthIpAsync(string ip, PreAuthIpRateLimitOptions options, CancellationToken ct = default)
@@ -98,11 +102,13 @@ public sealed class RedisRateLimiterService : IRateLimiterService
                 return new RateLimitResult(count <= options.PermitLimit, retryAfter);
             }
 
+            RateLimiterRedisErrors.WithLabels("pre_auth_ip").Inc();
             _logger.LogWarning("Redis rate limiting returned unexpected result for IP {Ip}. Falling back to in-memory limiter.", ip);
             return await _inMemoryFallback.CheckPreAuthIpAsync(ip, options, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            RateLimiterRedisErrors.WithLabels("pre_auth_ip").Inc();
             _logger.LogWarning(ex, "Redis rate limiting failed for IP {Ip}. Falling back to local in-memory rate limiter.", ip);
             try
             {
@@ -148,11 +154,13 @@ public sealed class RedisRateLimiterService : IRateLimiterService
                 return new RateLimitResult(allowed, waitSeconds);
             }
 
+            RateLimiterRedisErrors.WithLabels("post_auth_sid").Inc();
             _logger.LogWarning("Redis post-auth rate limiting returned unexpected result for SID {Sid}. Falling back to in-memory limiter.", sid);
             return await _inMemoryFallback.CheckPostAuthSidAsync(sid, options, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
+            RateLimiterRedisErrors.WithLabels("post_auth_sid").Inc();
             _logger.LogWarning(ex, "Redis post-auth rate limiting failed for SID {Sid}. Falling back to local in-memory token bucket.", sid);
             try
             {

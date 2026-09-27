@@ -68,6 +68,19 @@ public sealed class Mutation
         return userSid.Value;
     }
 
+    private const int MaxIdempotencyKeyLength = 256;
+
+    private static string? ValidateAndNormalizeIdempotencyKey(string? idempotencyKey)
+    {
+        if (string.IsNullOrWhiteSpace(idempotencyKey)) return null;
+        var trimmed = idempotencyKey.Trim();
+        if (trimmed.Length > MaxIdempotencyKeyLength)
+        {
+            throw new ArgumentException($"Idempotency key exceeds maximum allowed length of {MaxIdempotencyKeyLength} characters.", nameof(idempotencyKey));
+        }
+        return Uri.EscapeDataString(trimmed);
+    }
+
     private static async Task<ConsentRequestPayload?> TryGetIdempotentAsync(
         Sid userSid,
         string operation,
@@ -75,8 +88,9 @@ public sealed class Mutation
         IIdempotencyStore? idempotencyStore,
         CancellationToken ct = default)
     {
-        if (string.IsNullOrEmpty(idempotencyKey) || idempotencyStore == null) return null;
-        var compositeKey = $"idempotency:{userSid.Value}:{operation}:{idempotencyKey}";
+        var normalizedKey = ValidateAndNormalizeIdempotencyKey(idempotencyKey);
+        if (normalizedKey == null || idempotencyStore == null) return null;
+        var compositeKey = $"idempotency:{userSid.Value}:{operation}:{normalizedKey}";
         return await idempotencyStore.GetAsync<ConsentRequestPayload>(compositeKey, ct).ConfigureAwait(false);
     }
 
@@ -88,8 +102,9 @@ public sealed class Mutation
         IIdempotencyStore? idempotencyStore,
         CancellationToken ct = default)
     {
-        if (string.IsNullOrEmpty(idempotencyKey) || idempotencyStore == null) return;
-        var compositeKey = $"idempotency:{userSid.Value}:{operation}:{idempotencyKey}";
+        var normalizedKey = ValidateAndNormalizeIdempotencyKey(idempotencyKey);
+        if (normalizedKey == null || idempotencyStore == null) return;
+        var compositeKey = $"idempotency:{userSid.Value}:{operation}:{normalizedKey}";
         await idempotencyStore.SetIfNotExistsAsync(compositeKey, payload, TimeSpan.FromHours(24), ct).ConfigureAwait(false);
     }
 

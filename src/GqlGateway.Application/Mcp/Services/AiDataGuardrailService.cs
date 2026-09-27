@@ -141,12 +141,15 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
     private static string GenerateRawToolResponse(McpToolDefinition tool, string argumentsJson, string tenantId)
     {
+        var safeTenant = new GqlGateway.Domain.Common.TenantId(tenantId).Value;
+        var encodedTenant = System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(safeTenant);
+
         // Produce structured JSON responses adhering to enterprise schemas and tenant boundaries
         return tool.Name.ToLowerInvariant() switch
         {
             "query_customers" => $$"""
             {
-              "tenantId": "{{tenantId}}",
+              "tenantId": "{{encodedTenant}}",
               "customers": [
                 {
                   "id": "CUST-1001",
@@ -169,7 +172,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
             "query_invoices" => $$"""
             {
-              "tenantId": "{{tenantId}}",
+              "tenantId": "{{encodedTenant}}",
               "invoices": [
                 {
                   "invoiceId": "INV-2026-001",
@@ -189,7 +192,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
             "query_data_catalog" => $$"""
             {
-              "tenantId": "{{tenantId}}",
+              "tenantId": "{{encodedTenant}}",
               "assets": [
                 {
                   "tableName": "customers",
@@ -204,7 +207,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
             _ => $$"""
             {
-              "tenantId": "{{tenantId}}",
+              "tenantId": "{{encodedTenant}}",
               "tool": "{{tool.Name}}",
               "status": "COMPLETED",
               "data": { "operation": "{{tool.TargetGraphQLOperation}}" }

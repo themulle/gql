@@ -198,8 +198,12 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
 
 
-    private static string BuildCacheKey(TenantId tenant, Sid userSid, TableIdentifier table, string? contextHash = null) =>
-        $"{tenant.Value}:consent:{userSid.Value.ToUpperInvariant()}:{(string.IsNullOrWhiteSpace(contextHash) ? "default" : contextHash)}:{table.Domain.ToLowerInvariant()}:{table.Schema.ToLowerInvariant()}:{table.TableName.ToLowerInvariant()}";
+    private static string BuildCacheKey(TenantId tenant, Sid userSid, TableIdentifier table, string? contextHash = null)
+    {
+        var safeSid = Uri.EscapeDataString(userSid.Value.ToUpperInvariant());
+        var safeContext = Uri.EscapeDataString(string.IsNullOrWhiteSpace(contextHash) ? "default" : contextHash);
+        return $"{tenant.Value}:consent:{safeSid}:{safeContext}:{table.Domain.ToLowerInvariant()}:{table.Schema.ToLowerInvariant()}:{table.TableName.ToLowerInvariant()}";
+    }
 
     public void Dispose()
     {

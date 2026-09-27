@@ -33,20 +33,53 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
 
         InitializeDatabase();
 
-        // SEC-04: Derive HMAC-SHA256 key for authentic tamper-evident audit logging
+        // SEC-04: Resolve or derive dedicated HMAC-SHA256 key for authentic tamper-evident audit logging (N-6)
         byte[]? key = null;
-        if (secretProvider != null && !string.IsNullOrWhiteSpace(options?.Value?.DataMasking?.HmacSecretKeyVaultRef))
+        var auditSecretRef = options?.Value?.GovernanceDb?.AuditHmacKeyVaultRef;
+        if (secretProvider != null && !string.IsNullOrWhiteSpace(auditSecretRef))
         {
             try
             {
-                key = secretProvider.GetSecretBytes(options.Value.DataMasking.HmacSecretKeyVaultRef);
+                key = secretProvider.GetSecretBytes(auditSecretRef);
             }
             catch
             {
-                // Fallback to default secret below
+                // Fallback to HKDF derivation below
             }
         }
-        bool isMemory = connStr.Contains(":memory:", StringComparison.OrdinalIgnoreCase) || connStr.Contains("Mode=Memory", StringComparison.OrdinalIgnoreCase);
+
+        if (key == null && secretProvider != null && !string.IsNullOrWhiteSpace(options?.Value?.DataMasking?.HmacSecretKeyVaultRef))
+        {
+            try
+            {
+                var masterKey = secretProvider.GetSecretBytes(options.Value.DataMasking.HmacSecretKeyVaultRef);
+                if (masterKey != null && masterKey.Length > 0)
+                {
+                    // HKDF key separation: ensure audit HMAC key is cryptographically isolated from column masking
+                    key = System.Security.Cryptography.HKDF.DeriveKey(
+                        System.Security.Cryptography.HashAlgorithmName.SHA256,
+                        masterKey,
+                        32,
+                        info: "GqlGateway:AuditChain:v1"u8.ToArray());
+                }
+            }
+            catch
+            {
+                // Fallback below
+            }
+        }
+
+        bool isMemory;
+        try
+        {
+            var csBuilder = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(connStr);
+            isMemory = csBuilder.DataSource == ":memory:" || csBuilder.Mode == Microsoft.Data.Sqlite.SqliteOpenMode.Memory;
+        }
+        catch
+        {
+            isMemory = false;
+        }
+
         bool isDev = environment == null || string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
 
         if (key == null)
@@ -54,7 +87,7 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
             if (!isDev && !isMemory)
             {
                 throw new InvalidOperationException(
-                    "Security critical: HmacSecretKeyVaultRef is missing or could not be resolved from Key Vault in a non-development environment. Tamper-evident audit logging cannot use default fallback keys.");
+                    "Security critical: Audit HMAC secret is missing or could not be resolved from Key Vault in a non-development environment. Tamper-evident audit logging cannot use default fallback keys.");
             }
             _auditHmacKey = "GqlGatewayAuditLogHmacTamperEvidenceSecret2026!"u8.ToArray();
         }

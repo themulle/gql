@@ -151,7 +151,14 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
                 return Task.FromResult(AuthenticateResult.Fail("Missing ForwardAuth shared secret header."));
             }
 
-            var actualBytes = Encoding.UTF8.GetBytes(actualSecretVal.ToString());
+            var actualSecretStr = actualSecretVal.ToString();
+            if (actualSecretStr.Length > 512)
+            {
+                Logger.LogWarning("ForwardAuth rejected: Shared secret header length exceeds maximum permitted limit.");
+                return Task.FromResult(AuthenticateResult.Fail("Invalid ForwardAuth shared secret."));
+            }
+
+            var actualBytes = Encoding.UTF8.GetBytes(actualSecretStr);
 
             if (!CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes))
             {

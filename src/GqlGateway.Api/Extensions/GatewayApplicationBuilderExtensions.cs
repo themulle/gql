@@ -184,12 +184,24 @@ public static class GatewayApplicationBuilderExtensions
     public static WebApplication MapGatewayEndpoints(this WebApplication app, GatewayOptions gatewayOptions)
     {
         app.MapMetrics();
-        app.MapGet("/health/live", () => Results.Ok(new
+        app.MapGet("/health/live", () =>
         {
-            status = "Live",
-            timestamp = DateTimeOffset.UtcNow,
-            securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST"
-        }));
+            if (app.Environment.IsDevelopment())
+            {
+                return Results.Ok(new
+                {
+                    status = "Live",
+                    timestamp = DateTimeOffset.UtcNow,
+                    securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST"
+                });
+            }
+
+            return Results.Ok(new
+            {
+                status = "Live",
+                timestamp = DateTimeOffset.UtcNow
+            });
+        });
 
         app.MapGet("/health/ready", async (
             ITrafficDrainController controller,
@@ -206,23 +218,41 @@ public static class GatewayApplicationBuilderExtensions
                 var report = await healthCheckService.CheckHealthAsync(ct).ConfigureAwait(false);
                 if (!report.IsHealthy)
                 {
+                    if (app.Environment.IsDevelopment())
+                    {
+                        return Results.Json(new
+                        {
+                            status = "Unhealthy",
+                            timestamp = DateTimeOffset.UtcNow,
+                            securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST",
+                            activeBypasses = gatewayOptions.GetAllActiveBypasses(),
+                            components = report.Components
+                        }, statusCode: StatusCodes.Status503ServiceUnavailable);
+                    }
+
                     return Results.Json(new
                     {
                         status = "Unhealthy",
-                        timestamp = DateTimeOffset.UtcNow,
-                        securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST",
-                        activeBypasses = gatewayOptions.GetAllActiveBypasses(),
-                        components = report.Components
+                        timestamp = DateTimeOffset.UtcNow
                     }, statusCode: StatusCodes.Status503ServiceUnavailable);
                 }
+            }
+
+            if (app.Environment.IsDevelopment())
+            {
+                return Results.Ok(new
+                {
+                    status = "Ready",
+                    timestamp = DateTimeOffset.UtcNow,
+                    securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST",
+                    activeBypasses = gatewayOptions.GetAllActiveBypasses()
+                });
             }
 
             return Results.Ok(new
             {
                 status = "Ready",
-                timestamp = DateTimeOffset.UtcNow,
-                securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST",
-                activeBypasses = gatewayOptions.GetAllActiveBypasses()
+                timestamp = DateTimeOffset.UtcNow
             });
         });
 

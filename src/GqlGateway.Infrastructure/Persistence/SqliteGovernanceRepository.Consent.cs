@@ -822,7 +822,6 @@ public partial class SqliteGovernanceRepository
             }
 
             bool isAuthorized = string.Equals(approverSid.Value, "ITSM_SYSTEM", StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(currentStatus, "PENDING_EXTERNAL_APPROVAL", StringComparison.OrdinalIgnoreCase) ||
                                 await IsAuthorizedApproverForTableInternalAsync(req.TableIdentifier, approverSid, ct);
             if (!isAuthorized)
             {

@@ -28,6 +28,10 @@ public sealed class RedisIdempotencyStore : IIdempotencyStore
         }
     }
 
+    private static readonly Prometheus.Counter IdempotencyRedisErrors = Prometheus.Metrics.CreateCounter(
+        "gqlgateway_idempotency_redis_errors_total", "Number of Redis errors in Idempotency store",
+        new Prometheus.CounterConfiguration { LabelNames = ["operation"] });
+
     public async Task<T?> GetAsync<T>(string key, CancellationToken ct = default) where T : class
     {
         try
@@ -42,6 +46,7 @@ public sealed class RedisIdempotencyStore : IIdempotencyStore
         }
         catch (Exception ex)
         {
+            IdempotencyRedisErrors.WithLabels("get").Inc();
             _logger.LogError(ex, "Failed to fetch idempotency key {Key} from Redis", key);
         }
         return null;
@@ -58,6 +63,7 @@ public sealed class RedisIdempotencyStore : IIdempotencyStore
         }
         catch (Exception ex)
         {
+            IdempotencyRedisErrors.WithLabels("set").Inc();
             _logger.LogError(ex, "Failed to set idempotency key {Key} in Redis", key);
             return false;
         }

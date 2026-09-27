@@ -12,11 +12,23 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
 {
     [GeneratedRegex("^[a-zA-Z_][a-zA-Z0-9_]*$")]
     private static partial Regex SafeIdentifierRegex();
+    public const int DefaultMaxTotalParameters = 500;
     private readonly int _maxInClauseSize;
+    private readonly int _maxTotalParameters;
 
-    public SqlFilterProvider(int maxInClauseSize = 1000)
+    public SqlFilterProvider(int maxInClauseSize = 1000, int maxTotalParameters = DefaultMaxTotalParameters)
     {
         _maxInClauseSize = maxInClauseSize > 0 ? maxInClauseSize : 1000;
+        _maxTotalParameters = maxTotalParameters > 0 ? maxTotalParameters : DefaultMaxTotalParameters;
+    }
+
+    private void AddParameter(Dictionary<string, object?> parameters, string rawParamName, object? value)
+    {
+        if (parameters.Count >= _maxTotalParameters)
+        {
+            throw new InvalidOperationException($"QUERY_TOO_COMPLEX: Die maximale Anzahl an Filterparametern ({_maxTotalParameters}) wurde überschritten.");
+        }
+        parameters[rawParamName] = value;
     }
 
     private sealed class Counter
@@ -178,7 +190,7 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
                                 {
                                     var itemVal = ExtractLiteralValue(itemNode);
                                     var pName = GetParamName(dialect, counter);
-                                    parameters[pName.TrimStart('@', '$', ':')] = itemVal;
+                                    AddParameter(parameters, pName.TrimStart('@', '$', ':'), itemVal);
                                     paramNames.Add(pName);
                                 }
                                 clauses.Add($"{quotedColumn} IN ({string.Join(", ", paramNames)})");
@@ -195,7 +207,7 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
                                     {
                                         var itemVal = ExtractLiteralValue(itemNode);
                                         var pName = GetParamName(dialect, counter);
-                                        parameters[pName.TrimStart('@', '$', ':')] = itemVal;
+                                        AddParameter(parameters, pName.TrimStart('@', '$', ':'), itemVal);
                                         paramNames.Add(pName);
                                     }
                                     orClauses.Add($"({quotedColumn} IN ({string.Join(", ", paramNames)}))");
@@ -220,7 +232,8 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
                         }
 
                         var paramName = GetParamName(dialect, counter);
-                        parameters[paramName.TrimStart('@', '$', ':')] = opVal;
+                        var rawParam = paramName.TrimStart('@', '$', ':');
+                        AddParameter(parameters, rawParam, opVal);
 
                         var condition = op switch
                         {
@@ -238,15 +251,15 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
 
                         if (op == "contains")
                         {
-                            parameters[paramName.TrimStart('@', '$', ':')] = $"%{EscapeLikePattern(opVal)}%";
+                            parameters[rawParam] = $"%{EscapeLikePattern(opVal)}%";
                         }
                         else if (op == "startswith")
                         {
-                            parameters[paramName.TrimStart('@', '$', ':')] = $"{EscapeLikePattern(opVal)}%";
+                            parameters[rawParam] = $"{EscapeLikePattern(opVal)}%";
                         }
                         else if (op == "endswith")
                         {
-                            parameters[paramName.TrimStart('@', '$', ':')] = $"%{EscapeLikePattern(opVal)}";
+                            parameters[rawParam] = $"%{EscapeLikePattern(opVal)}";
                         }
 
                         clauses.Add(condition);
