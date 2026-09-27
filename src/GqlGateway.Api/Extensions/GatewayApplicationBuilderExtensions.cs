@@ -1,6 +1,7 @@
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
+using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 using System.Security.Claims;
@@ -285,6 +286,36 @@ public static class GatewayApplicationBuilderExtensions
 
             return Results.Ok(new { status = "Processed" });
         }).AllowAnonymous();
+
+        // dbt Ingestion & Exposure Endpoints (F-DATA-11)
+        app.MapPost("/api/extensions/dbt/sync", async (
+            HttpContext context,
+            IDbtMetadataIngestionService dbtService) =>
+        {
+            if (context.Request.ContentLength > 100 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Manifest size exceeds maximum allowed size (100 MB)." });
+            }
+
+            var dryRun = context.Request.Query.ContainsKey("dryRun") &&
+                         bool.TryParse(context.Request.Query["dryRun"], out var dr) && dr;
+
+            var result = await dbtService.IngestManifestStreamAsync(context.Request.Body, dryRun, context.RequestAborted);
+            if (!result.Success)
+            {
+                return Results.BadRequest(result);
+            }
+
+            return Results.Ok(result);
+        }).RequireAuthorization();
+
+        app.MapGet("/api/extensions/dbt/exposures", async (
+            IDbtExposurePublisher exposurePublisher,
+            HttpContext context) =>
+        {
+            var yaml = await exposurePublisher.GenerateExposuresYamlAsync(context.RequestAborted);
+            return Results.Content(yaml, "text/yaml; charset=utf-8");
+        }).RequireAuthorization();
 
         return app;
     }

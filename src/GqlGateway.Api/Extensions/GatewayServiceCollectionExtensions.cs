@@ -24,6 +24,7 @@ using GqlGateway.Application.Plugins;
 using GqlGateway.Application.Governance;
 using GqlGateway.Application.Lineage;
 using GqlGateway.Application.Workflows;
+using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Infrastructure.Itsm;
 using GqlGateway.Infrastructure.Lineage;
 using GqlGateway.Infrastructure.Plugins;
@@ -171,6 +172,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IConsentApprovalRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
         services.AddSingleton<IDataOwnershipRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
         services.AddSingleton<ITableRelationRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
+        services.AddSingleton<IDbtProposalRepository, InMemoryDbtProposalRepository>();
         services.AddSingleton<IRlsFilterGenerator, RlsFilterGenerator>();
         services.AddSingleton<IRowFilterSqlBuilder, RowFilterSqlBuilder>();
         services.AddSingleton<IConsentResolutionService, ConsentResolutionService>();
