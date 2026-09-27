@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using GqlGateway.Domain.Options;
 
 namespace GqlGateway.Api.Security;
 
@@ -10,12 +11,16 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
 {
     public const string SchemeName = "TestAuth";
 
+    private readonly IOptions<GatewayOptions>? _gatewayOptions;
+
     public TestAuthHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
-        UrlEncoder encoder)
+        UrlEncoder encoder,
+        IOptions<GatewayOptions>? gatewayOptions = null)
         : base(options, logger, encoder)
     {
+        _gatewayOptions = gatewayOptions;
     }
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
@@ -27,6 +32,24 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
             if (headers.TryGetValue("X-Test-AppId", out var appIdOnly) && !string.IsNullOrWhiteSpace(appIdOnly))
             {
                 userSidVal = appIdOnly;
+            }
+            else if (_gatewayOptions?.Value.IsAnonymousAccessAllowed == true)
+            {
+                // Insecure Getting-Started: Allow anonymous access with DeveloperAdmin identity
+                List<Claim> anonClaims =
+                [
+                    new(ClaimTypes.PrimarySid, "S-1-5-21-DEV-ANONYMOUS"),
+                    new(ClaimTypes.Name, "DEV_ANONYMOUS"),
+                    new(ClaimTypes.NameIdentifier, "S-1-5-21-DEV-ANONYMOUS"),
+                    new("objectSid", "S-1-5-21-DEV-ANONYMOUS"),
+                    new(ClaimTypes.Role, "DeveloperAdmin"),
+                    new(ClaimTypes.Role, "GovernanceAdmin"),
+                    new(ClaimTypes.Role, "ClusterAdmin")
+                ];
+                var anonIdentity = new ClaimsIdentity(anonClaims, SchemeName, ClaimTypes.Name, ClaimTypes.Role);
+                var anonPrincipal = new ClaimsPrincipal(anonIdentity);
+                var anonTicket = new AuthenticationTicket(anonPrincipal, SchemeName);
+                return Task.FromResult(AuthenticateResult.Success(anonTicket));
             }
             else
             {

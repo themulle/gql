@@ -21,6 +21,153 @@ public sealed class GatewayOptions
     [Required] public PluginsOptions Plugins { get; init; } = new();
     [Required] public SqlDataSourceOptions DataSources { get; init; } = new();
     [Required] public ItsmOptions Itsm { get; init; } = new();
+    [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
+
+    // Convenience accessors combining global 'Insecure' section and domain-specific options
+    public bool IsAnonymousAccessAllowed => Insecure.danger_allow_anonymous_access || Authentication.danger_allow_anonymous_access;
+    public bool IsConsentBypassed => Insecure.danger_bypass_consent_checks || GovernanceDb.danger_bypass_consent_checks;
+    public bool IsColumnMaskingDisabled => Insecure.danger_disable_column_masking || DataMasking.danger_disable_column_masking;
+    public bool IsInsecureTransportAllowed => Insecure.danger_allow_insecure_transport;
+    public bool IsAllCorsAllowed => Insecure.warn_allow_all_cors_origins || GraphQL.warn_allow_all_cors_origins;
+    public bool IsRateLimitingDisabled => Insecure.warn_disable_rate_limiting || RateLimiting.warn_disable_rate_limiting;
+    public bool AreQueryLimitsRelaxed => Insecure.warn_relaxed_query_limits || GraphQL.warn_relaxed_query_limits;
+    public bool IsIntrospectionForced => Insecure.warn_enable_introspection || GraphQL.warn_enable_introspection;
+    public bool IsAutoApproveEnabled => Insecure.warn_auto_approve_access_requests || GovernanceDb.warn_auto_approve_access_requests;
+    public bool IsWebhookSignatureBypassed => Insecure.danger_bypass_webhook_signature_validation || Insecure.danger_allow_anonymous_webhooks || Itsm.danger_bypass_webhook_signature_validation || OpenMetadata.danger_bypass_webhook_signature_validation;
+    public bool AreUntrustedCertificatesAllowed => Insecure.danger_allow_untrusted_certificates || Insecure.danger_allow_insecure_transport || Itsm.danger_allow_untrusted_certificates || OpenMetadata.danger_allow_untrusted_certificates;
+    public bool IsWebhookTimestampToleranceIgnored => Insecure.warn_ignore_webhook_timestamp_tolerance || Itsm.warn_ignore_webhook_timestamp_tolerance || OpenMetadata.warn_ignore_webhook_timestamp_tolerance;
+    public bool IsWebhookTenantFallbackAllowed => Insecure.warn_fallback_default_tenant_for_webhooks || Itsm.warn_fallback_default_tenant_for_webhooks;
+    public bool AreExternalSystemsMockedIfUnreachable => Insecure.warn_mock_external_systems_if_unreachable || Itsm.warn_mock_external_systems_if_unreachable;
+
+    public bool HasAnySecurityBypassActive =>
+        IsAnonymousAccessAllowed ||
+        IsConsentBypassed ||
+        IsColumnMaskingDisabled ||
+        IsInsecureTransportAllowed ||
+        IsAllCorsAllowed ||
+        IsRateLimitingDisabled ||
+        AreQueryLimitsRelaxed ||
+        IsIntrospectionForced ||
+        IsAutoApproveEnabled ||
+        IsWebhookSignatureBypassed ||
+        AreUntrustedCertificatesAllowed ||
+        IsWebhookTimestampToleranceIgnored ||
+        IsWebhookTenantFallbackAllowed ||
+        AreExternalSystemsMockedIfUnreachable;
+
+    public IReadOnlyList<string> GetAllActiveBypasses()
+    {
+        var list = new List<string>();
+        if (IsAnonymousAccessAllowed) list.Add("DANGER:danger_allow_anonymous_access");
+        if (IsConsentBypassed) list.Add("DANGER:danger_bypass_consent_checks");
+        if (IsColumnMaskingDisabled) list.Add("DANGER:danger_disable_column_masking");
+        if (IsInsecureTransportAllowed) list.Add("DANGER:danger_allow_insecure_transport");
+        if (IsWebhookSignatureBypassed) list.Add("DANGER:danger_bypass_webhook_signature_validation");
+        if (AreUntrustedCertificatesAllowed) list.Add("DANGER:danger_allow_untrusted_certificates");
+        if (IsAllCorsAllowed) list.Add("WARN:warn_allow_all_cors_origins");
+        if (IsRateLimitingDisabled) list.Add("WARN:warn_disable_rate_limiting");
+        if (AreQueryLimitsRelaxed) list.Add("WARN:warn_relaxed_query_limits");
+        if (IsIntrospectionForced) list.Add("WARN:warn_enable_introspection");
+        if (IsAutoApproveEnabled) list.Add("WARN:warn_auto_approve_access_requests");
+        if (IsWebhookTimestampToleranceIgnored) list.Add("WARN:warn_ignore_webhook_timestamp_tolerance");
+        if (IsWebhookTenantFallbackAllowed) list.Add("WARN:warn_fallback_default_tenant_for_webhooks");
+        if (AreExternalSystemsMockedIfUnreachable) list.Add("WARN:warn_mock_external_systems_if_unreachable");
+        return list;
+    }
+}
+
+/// <summary>
+/// Entwickler- und Schnelleinstiegs-Optionen ("Getting Started").
+/// Ermöglicht das bewusste Lockern oder Umgehen einzelner Sicherheitsbarrieren.
+/// Alle Optionen tragen das Präfix 'warn_' (mittlerer Impact) oder 'danger_' (kritischer Impact).
+/// </summary>
+public sealed class InsecureGettingStartedOptions
+{
+    // --- DANGER: Kritischer Security-Impact (Hebelt Kern-Sicherheitsmechanismen komplett aus) ---
+
+    /// <summary>
+    /// [DANGER] Erlaubt vollständig anonymen Zugriff ohne Token/Authentifizierung.
+    /// Ordnet anonymen Anfragen automatisch einen virtuellen Developer-Admin-Sicherheitskontext zu.
+    /// </summary>
+    public bool danger_allow_anonymous_access { get; init; } = false;
+
+    /// <summary>
+    /// [DANGER] Deaktiviert Zero-Trust-Consent-Prüfungen. Alle Tabellen im Metadaten-Katalog sind
+    /// ohne vorherigen Genehmigungsworkflow für alle Clients sofort abfragbar.
+    /// </summary>
+    public bool danger_bypass_consent_checks { get; init; } = false;
+
+    /// <summary>
+    /// [DANGER] Deaktiviert sämtliche Spaltenmaskierungs- und Redaktionsregeln (Hashing, Masking, PII-Schutz).
+    /// Alle Spalten werden im Klartext ausgeliefert.
+    /// </summary>
+    public bool danger_disable_column_masking { get; init; } = false;
+
+    /// <summary>
+    /// [DANGER] Erlaubt unverschlüsselte HTTP-Transporte und Entwickler-Secrets auch in Staging/Produktionsumgebungen.
+    /// </summary>
+    public bool danger_allow_insecure_transport { get; init; } = false;
+
+    /// <summary>
+    /// [DANGER] Umgeht die HMAC-SHA256-Signaturprüfung für eingehende Webhooks (ITSM, OpenMetadata etc.).
+    /// Webhooks ohne Signatur oder mit ungültiger Signatur werden akzeptiert.
+    /// </summary>
+    public bool danger_bypass_webhook_signature_validation { get; init; } = false;
+
+    /// <summary>
+    /// [DANGER] Akzeptiert selbstsignierte, ungültige oder nicht vertrauenswürdige SSL/TLS-Zertifikate
+    /// bei ausgehenden Verbindungen zu Fremdsystemen (ServiceNow, Jira, OpenMetadata, APIs).
+    /// </summary>
+    public bool danger_allow_untrusted_certificates { get; init; } = false;
+
+    /// <summary>
+    /// [DANGER] Erlaubt vollständig anonyme Webhook-Aufrufe ohne Authentifizierungs- oder Signatur-Header.
+    /// </summary>
+    public bool danger_allow_anonymous_webhooks { get; init; } = false;
+
+
+    // --- WARN: Mittlerer / Operativer Security-Impact (Lockert Limits und Schutzschilder) ---
+
+    /// <summary>
+    /// [WARN] Lockert CORS und CSRF-Schutz: Erlaubt alle Origins ('*') und überspringt die strikte
+    /// Origin/Referer-Validierung bei Browseranfragen.
+    /// </summary>
+    public bool warn_allow_all_cors_origins { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Deaktiviert IP- und SID-basiertes Rate-Limiting vollständig (keine HTTP 429 Antworten).
+    /// </summary>
+    public bool warn_disable_rate_limiting { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Hebt GraphQL Query-Depth- und Query-Complexity-Limits für tief verschachtelte Abfragen auf.
+    /// </summary>
+    public bool warn_relaxed_query_limits { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Aktiviert GraphQL-Schema-Introspektion und Banana Cake Pop Tooling in jeder Umgebung.
+    /// </summary>
+    public bool warn_enable_introspection { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Schaltet automatische Sofort-Genehmigung für Tabellenzugriffsanträge ein.
+    /// </summary>
+    public bool warn_auto_approve_access_requests { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Ignoriert die 5-Minuten-Gültigkeitsprüfung für Webhook-Timestamps (Replay-Schutz).
+    /// </summary>
+    public bool warn_ignore_webhook_timestamp_tolerance { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Verhindert Cross-Tenant-Abbrüche bei Webhooks durch Fallback auf den Mandanten des Antrags.
+    /// </summary>
+    public bool warn_fallback_default_tenant_for_webhooks { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Simuliert erfolgreiche Mock-Antworten, wenn externe Fremdsysteme (ServiceNow, Jira) nicht erreichbar sind.
+    /// </summary>
+    public bool warn_mock_external_systems_if_unreachable { get; init; } = false;
 }
 
 public sealed class PluginsOptions
@@ -52,6 +199,7 @@ public sealed class AuthenticationOptions
     public bool RequireKerberosOnly { get; init; } = true;
     [Range(1, 60)] public int GroupCacheTtlMinutes { get; init; } = 5;
     public bool EnableTestAuthHandler { get; init; }
+    public bool danger_allow_anonymous_access { get; init; } = false;
 
     public BasicAuthOptions BasicAuth { get; init; } = new();
     public EntraIdAuthOptions EntraId { get; init; } = new();
@@ -123,6 +271,8 @@ public sealed class GovernanceDbOptions
     [Range(1, 60)] public int CommandTimeoutSeconds { get; init; } = 15;
     public bool EnableOutboxProcessor { get; init; } = true;
     public bool? SeedDemoData { get; init; } = null;
+    public bool danger_bypass_consent_checks { get; init; } = false;
+    public bool warn_auto_approve_access_requests { get; init; } = false;
 }
 
 public sealed class CachingOptions
@@ -158,6 +308,7 @@ public sealed class EpochValidationOptions
 
 public sealed class RateLimitingOptions
 {
+    public bool warn_disable_rate_limiting { get; init; } = false;
     [Required] public PreAuthIpRateLimitOptions PreAuthIpRateLimit { get; init; } = new();
     [Required] public PostAuthSidRateLimitOptions PostAuthSidRateLimit { get; init; } = new();
 }
@@ -188,6 +339,9 @@ public sealed class GraphQLOptions
     [Range(1048576, 104857600)] public long MaxResponseBytes { get; init; } = 10485760;
     [Range(10, 10000)] public int MaxInClauseBatchSize { get; init; } = 500;
     public List<string> TrustedOrigins { get; init; } = [];
+    public bool warn_allow_all_cors_origins { get; init; } = false;
+    public bool warn_relaxed_query_limits { get; init; } = false;
+    public bool warn_enable_introspection { get; init; } = false;
 }
 
 public sealed class DataMaskingOptions
@@ -195,6 +349,7 @@ public sealed class DataMaskingOptions
     public string HmacKeyId { get; init; } = "key-2026-q1";
     public string HmacSecretKeyVaultRef { get; init; } = "DEV_INSECURE_TEST_KEY_ONLY";
     [Range(1, 168)] public int MaskingCacheTtlHours { get; init; } = 24;
+    public bool danger_disable_column_masking { get; init; } = false;
 }
 
 public sealed class AuditOptions
@@ -223,6 +378,9 @@ public sealed class OpenMetadataOptions
     };
     public Dictionary<string, string> TeamToGroupSidMap { get; init; } = new();
     public Dictionary<string, string> UserToUserSidMap { get; init; } = new();
+    public bool danger_bypass_webhook_signature_validation { get; init; } = false;
+    public bool warn_ignore_webhook_timestamp_tolerance { get; init; } = false;
+    public bool danger_allow_untrusted_certificates { get; init; } = false;
 }
 
 public sealed class SqlDataSourceOptions
@@ -244,6 +402,11 @@ public sealed class ItsmOptions
     public string ServiceNowBaseUrl { get; init; } = string.Empty;
     public string JiraBaseUrl { get; init; } = string.Empty;
     public Dictionary<string, string> InstanceToTenantMap { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    public bool danger_bypass_webhook_signature_validation { get; init; } = false;
+    public bool warn_ignore_webhook_timestamp_tolerance { get; init; } = false;
+    public bool warn_fallback_default_tenant_for_webhooks { get; init; } = false;
+    public bool warn_mock_external_systems_if_unreachable { get; init; } = false;
+    public bool danger_allow_untrusted_certificates { get; init; } = false;
 
     public TenantId? GetTenantForInstance(string instanceId)
     {

@@ -152,6 +152,19 @@ public sealed class Mutation
 
         var created = await approvalRepository.CreateConsentRequestAsync(request, ct);
 
+        if (gatewayOptions?.Value.IsAutoApproveEnabled == true)
+        {
+            await approvalRepository.ActivateConsentAsync(created.Id, ct);
+            var payload = new ConsentRequestPayload
+            {
+                RequestId = created.Id,
+                Status = "APPROVED",
+                Message = "[INSECURE GETTING STARTED] Consent request auto-approved."
+            };
+            await StoreIdempotentAsync(userSid, "RequestTableAccess", idempotencyKey, payload, idempotencyStore, ct);
+            return payload;
+        }
+
         if (isItsmEnabled)
         {
             ItsmTicketResult? ticketResult = null;

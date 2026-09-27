@@ -11,6 +11,7 @@ namespace GqlGateway.Api.Middleware;
 public sealed class PreAuthIpRateLimitingMiddleware
 {
     private readonly RequestDelegate _next;
+    private readonly GatewayOptions _gatewayOptions;
     private readonly PreAuthIpRateLimitOptions _options;
     private readonly IRateLimiterService _rateLimiter;
 
@@ -20,6 +21,7 @@ public sealed class PreAuthIpRateLimitingMiddleware
         IRateLimiterService rateLimiter)
     {
         _next = next;
+        _gatewayOptions = options.Value;
         _options = options.Value.RateLimiting.PreAuthIpRateLimit;
         _rateLimiter = rateLimiter;
     }
@@ -32,8 +34,10 @@ public sealed class PreAuthIpRateLimitingMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        // Skip health and metrics endpoints
-        if (context.Request.Path.StartsWithSegments("/health") || context.Request.Path.StartsWithSegments("/metrics"))
+        // Skip health and metrics endpoints or when rate limiting is explicitly disabled (warn_disable_rate_limiting)
+        if (context.Request.Path.StartsWithSegments("/health") ||
+            context.Request.Path.StartsWithSegments("/metrics") ||
+            _gatewayOptions.IsRateLimitingDisabled)
         {
             await _next(context);
             return;
@@ -69,6 +73,7 @@ public sealed class PreAuthIpRateLimitingMiddleware
 public sealed class PostAuthSidRateLimitingMiddleware
 {
     private readonly RequestDelegate _next;
+    private readonly GatewayOptions _gatewayOptions;
     private readonly PostAuthSidRateLimitOptions _options;
     private readonly IRateLimiterService _rateLimiter;
 
@@ -78,14 +83,17 @@ public sealed class PostAuthSidRateLimitingMiddleware
         IRateLimiterService rateLimiter)
     {
         _next = next;
+        _gatewayOptions = options.Value;
         _options = options.Value.RateLimiting.PostAuthSidRateLimit;
         _rateLimiter = rateLimiter;
     }
 
     public async Task InvokeAsync(HttpContext context)
     {
-        // Skip health and metrics endpoints
-        if (context.Request.Path.StartsWithSegments("/health") || context.Request.Path.StartsWithSegments("/metrics"))
+        // Skip health and metrics endpoints or when rate limiting is explicitly disabled (warn_disable_rate_limiting)
+        if (context.Request.Path.StartsWithSegments("/health") ||
+            context.Request.Path.StartsWithSegments("/metrics") ||
+            _gatewayOptions.IsRateLimitingDisabled)
         {
             await _next(context);
             return;

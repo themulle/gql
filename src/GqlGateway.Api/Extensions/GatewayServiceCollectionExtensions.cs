@@ -72,21 +72,22 @@ public static class GatewayServiceCollectionExtensions
                 (!string.IsNullOrWhiteSpace(opts.Authentication.ForwardAuth.SharedSecret) || !string.IsNullOrWhiteSpace(opts.Authentication.ForwardAuth.SharedSecretKeyVaultRef)),
                 "Sicherheitsverletzung: Außerhalb von Development erfordert ForwardAuth zwingend ein konfiguriertes SharedSecret oder SharedSecretKeyVaultRef.")
             .Validate(opts =>
-                environment.IsDevelopment() || !opts.Authentication.EnableTestAuthHandler,
+                environment.IsDevelopment() || !opts.Authentication.EnableTestAuthHandler || opts.IsAnonymousAccessAllowed,
                 "Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!")
             .Validate(opts =>
                 environment.IsDevelopment() || (
                     !string.IsNullOrWhiteSpace(opts.DataMasking.HmacSecretKeyVaultRef) &&
                     opts.DataMasking.HmacSecretKeyVaultRef != "DEV_INSECURE_TEST_KEY_ONLY" &&
                     opts.DataMasking.HmacSecretKeyVaultRef != "dev-only-hmac-salt-secure-fallback"
-                ),
+                ) || opts.IsInsecureTransportAllowed || opts.IsColumnMaskingDisabled,
                 "NF-SEC-03 Verletzung: HmacSecretKeyVaultRef muss außerhalb von Development eine gültige Key Vault Secret-Referenz sein!")
             .Validate(opts =>
                 string.Equals(opts.GovernanceDb.Provider, "Sqlite", StringComparison.OrdinalIgnoreCase),
                 "GovernanceDb Provider wird aktuell nur als 'Sqlite' unterstützt.")
             .Validate(opts =>
                 environment.IsDevelopment() || !opts.OpenMetadata.Enabled ||
-                (Uri.TryCreate(opts.OpenMetadata.ServerUrl, UriKind.Absolute, out var uri) && string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase)),
+                (Uri.TryCreate(opts.OpenMetadata.ServerUrl, UriKind.Absolute, out var uri) && string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase)) ||
+                opts.IsInsecureTransportAllowed,
                 "Sicherheitsverletzung: OpenMetadata.ServerUrl muss außerhalb von Development zwingend HTTPS verwenden.")
             .Validate(opts =>
                 environment.IsDevelopment() || !opts.HighAvailability.MultiNodeClusterMode || opts.Caching.Redis.Enabled,
@@ -189,12 +190,31 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IGatewayHealthCheckService, GatewayHealthCheckService>();
 
         // HTTP & Plugin Data Sources
+#pragma warning disable CA5359 // Intentionally allowed via danger_allow_untrusted_certificates for Getting Started / Dev
+        if (gatewayOptions.AreUntrustedCertificatesAllowed)
+        {
+            services.ConfigureHttpClientDefaults(builder =>
+            {
+                builder.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+                {
+                    ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+                });
+            });
+        }
+
         services.AddHttpClient();
         services.AddHttpClient(DeclarativeHttpDataSourceExecutor.HttpClientName)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
-                AllowAutoRedirect = false
+                AllowAutoRedirect = false,
+                SslOptions = gatewayOptions.AreUntrustedCertificatesAllowed
+                    ? new System.Net.Security.SslClientAuthenticationOptions
+                    {
+                        RemoteCertificateValidationCallback = delegate { return true; }
+                    }
+                    : new System.Net.Security.SslClientAuthenticationOptions()
             });
+#pragma warning restore CA5359
         services.AddSingleton<IPluginManager, PluginManager>();
         services.AddSingleton<IDataSourceExecutor, SqlDataSourceExecutor>();
         services.AddSingleton<IDataSourceExecutor, DeclarativeHttpDataSourceExecutor>();
@@ -435,12 +455,14 @@ public static class GatewayServiceCollectionExtensions
                     }
                 }
 
-                // 3. Development Test Auth Simulation
-                if (environment.IsDevelopment() && gatewayOptions.Authentication.EnableTestAuthHandler)
+                // 3. Development Test Auth Simulation or Insecure Anonymous Access
+                if ((environment.IsDevelopment() && gatewayOptions.Authentication.EnableTestAuthHandler) ||
+                    gatewayOptions.IsAnonymousAccessAllowed)
                 {
                     if (context.Request.Headers.ContainsKey("X-Test-User-Sid") ||
                         context.Request.Headers.ContainsKey("X-Test-AppId") ||
-                        string.IsNullOrWhiteSpace(authHeader))
+                        string.IsNullOrWhiteSpace(authHeader) ||
+                        gatewayOptions.IsAnonymousAccessAllowed)
                     {
                         return TestAuthHandler.SchemeName;
                     }
@@ -468,8 +490,8 @@ public static class GatewayServiceCollectionExtensions
         this IServiceCollection services,
         GatewayOptions gatewayOptions)
     {
-        var maxDepth = gatewayOptions.GraphQL.MaxAllowedExecutionDepth;
-        var maxCost = gatewayOptions.GraphQL.MaxAllowedComplexity;
+        var maxDepth = gatewayOptions.AreQueryLimitsRelaxed ? 100 : gatewayOptions.GraphQL.MaxAllowedExecutionDepth;
+        var maxCost = gatewayOptions.AreQueryLimitsRelaxed ? 100000 : gatewayOptions.GraphQL.MaxAllowedComplexity;
 
         var gqlBuilder = services
             .AddGraphQLServer()
@@ -499,7 +521,7 @@ public static class GatewayServiceCollectionExtensions
             gqlBuilder.UseOnlyPersistedOperationAllowed();
         }
 
-        if (!gatewayOptions.GraphQL.EnableIntrospection)
+        if (!gatewayOptions.GraphQL.EnableIntrospection && !gatewayOptions.IsIntrospectionForced)
         {
             gqlBuilder.DisableIntrospection();
         }
@@ -510,6 +532,17 @@ public static class GatewayServiceCollectionExtensions
     private static void ValidateGatewayOptions(GatewayOptions options, IHostEnvironment environment)
     {
         ValidateObjectRecursively(options);
+
+        if (options.HasAnySecurityBypassActive)
+        {
+            var bypasses = string.Join("\n  - ", options.GetAllActiveBypasses());
+            Console.WriteLine(
+                $"\n================================================================================\n" +
+                $"⚠️⚠️⚠️  INSECURE GETTING-STARTED CONFIGURATION DETECTED  ⚠️⚠️⚠️\n" +
+                $"The following security bypasses are currently ACTIVE:\n  - {bypasses}\n" +
+                $"NEVER USE THESE INSECURE SETTINGS IN PRODUCTION ENVIRONMENTS!\n" +
+                $"================================================================================\n");
+        }
 
         if (options.HighAvailability.ShutdownTimeoutSeconds < options.HighAvailability.QueryTimeoutSeconds + 10)
         {
@@ -536,21 +569,22 @@ public static class GatewayServiceCollectionExtensions
             }
         }
 
-        if (!environment.IsDevelopment() && options.Authentication.EnableTestAuthHandler)
+        if (!environment.IsDevelopment() && options.Authentication.EnableTestAuthHandler && !options.IsAnonymousAccessAllowed)
         {
             throw new ValidationException("Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
         }
 
         if (!environment.IsDevelopment())
         {
-            if (string.IsNullOrWhiteSpace(options.DataMasking.HmacSecretKeyVaultRef) ||
+            if (!options.IsInsecureTransportAllowed && !options.IsColumnMaskingDisabled &&
+                (string.IsNullOrWhiteSpace(options.DataMasking.HmacSecretKeyVaultRef) ||
                 options.DataMasking.HmacSecretKeyVaultRef == "DEV_INSECURE_TEST_KEY_ONLY" ||
-                options.DataMasking.HmacSecretKeyVaultRef == "dev-only-hmac-salt-secure-fallback")
+                options.DataMasking.HmacSecretKeyVaultRef == "dev-only-hmac-salt-secure-fallback"))
             {
                 throw new ValidationException("NF-SEC-03 Verletzung: HmacSecretKeyVaultRef muss außerhalb von Development eine gültige Key Vault Secret-Referenz sein!");
             }
 
-            if (options.OpenMetadata.Enabled &&
+            if (!options.IsInsecureTransportAllowed && options.OpenMetadata.Enabled &&
                 Uri.TryCreate(options.OpenMetadata.ServerUrl, UriKind.Absolute, out var omUri) &&
                 !string.Equals(omUri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
             {

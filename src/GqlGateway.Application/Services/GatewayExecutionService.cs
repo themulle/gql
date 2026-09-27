@@ -106,7 +106,22 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         using var _ = _drainController?.TrackQuery();
         if (principal == null || principal.Identity?.IsAuthenticated != true)
         {
-            throw new GatewayUnauthorizedException("Authentication is required to query tables.");
+            if (_options?.IsAnonymousAccessAllowed == true)
+            {
+                var anonSid = new Sid("S-1-5-21-DEV-ANONYMOUS");
+                principal = new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.PrimarySid, anonSid.Value),
+                    new Claim(ClaimTypes.Name, "DEV_ANONYMOUS"),
+                    new Claim(ClaimTypes.Role, "DeveloperAdmin"),
+                    new Claim(ClaimTypes.Role, "GovernanceAdmin"),
+                    new Claim(ClaimTypes.Role, "ClusterAdmin")
+                ], "InsecureAnonymousAuth"));
+            }
+            else
+            {
+                throw new GatewayUnauthorizedException("Authentication is required to query tables.");
+            }
         }
 
         var userSidNullable = principal.GetUserSid();
@@ -126,22 +141,34 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             throw new TableNotFoundException(table);
         }
 
-        // Check Consent Cache (L1/L2 with Epoch Validation & Group/Role Context Hash)
-        var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
-        var decision = await _cacheService.GetCachedDecisionAsync(userSid, table, contextHash, ct);
-        if (decision == null)
+        TableAccessDecision decision;
+        if (_options?.IsConsentBypassed == true)
         {
-            // Cache Miss -> Load from Governance DB
-            var allSubjects = groupSids.Append(userSid).ToList();
-            var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
+            decision = TableAccessDecision.Allowed(table, new Dictionary<string, ColumnAccessLevel>(), rowFilterSql: null, hasUnconstrainedColumnAllow: true);
+        }
+        else
+        {
+            // Check Consent Cache (L1/L2 with Epoch Validation & Group/Role Context Hash)
+            var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
+            var cached = await _cacheService.GetCachedDecisionAsync(userSid, table, contextHash, ct);
+            if (cached == null)
+            {
+                // Cache Miss -> Load from Governance DB
+                var allSubjects = groupSids.Append(userSid).ToList();
+                var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
 
-            decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
+                decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
 
-            // Cache decision
-            var ttl = metadata.Table.IsHighlySensitive
-                ? TimeSpan.FromSeconds(60)
-                : TimeSpan.FromMinutes(10);
-            await _cacheService.SetCachedDecisionAsync(userSid, table, decision, ttl, contextHash, ct);
+                // Cache decision
+                var ttl = metadata.Table.IsHighlySensitive
+                    ? TimeSpan.FromSeconds(60)
+                    : TimeSpan.FromMinutes(10);
+                await _cacheService.SetCachedDecisionAsync(userSid, table, decision, ttl, contextHash, ct);
+            }
+            else
+            {
+                decision = cached;
+            }
         }
 
         // Audit evaluation
@@ -261,7 +288,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
 
                 if (r.TryGetValue(col.ColumnName, out var rawVal))
                 {
-                    if (access == ColumnAccessLevel.Mask)
+                    if (access == ColumnAccessLevel.Mask && _options?.IsColumnMaskingDisabled != true)
                     {
                         var rule = metadata.ColumnMaskingRules.TryGetValue(col.ColumnName, out var mRule) ? mRule : new MaskingRule { RuleType = "REDACT" };
                         rawVal = _maskingProvider.MaskValue(col.ColumnName, rawVal, rule);

@@ -9,6 +9,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Prometheus;
 
 namespace GqlGateway.Api.Extensions;
@@ -36,6 +37,15 @@ public static class GatewayApplicationBuilderExtensions
             app.UseHttpsRedirection();
         }
 
+        if (gatewayOptions.HasAnySecurityBypassActive)
+        {
+            app.Use(async (context, next) =>
+            {
+                context.Response.Headers.Append("X-Gateway-Insecure-Mode", string.Join("; ", gatewayOptions.GetAllActiveBypasses()));
+                await next();
+            });
+        }
+
         var endpoint = gatewayOptions.GraphQL.EndpointPath.StartsWith('/')
             ? gatewayOptions.GraphQL.EndpointPath
             : "/" + gatewayOptions.GraphQL.EndpointPath;
@@ -43,6 +53,25 @@ public static class GatewayApplicationBuilderExtensions
         // Anti-CSRF Middleware: Enforce custom preflight header on GraphQL POST and GET query requests
         app.Use(async (context, next) =>
         {
+            if (gatewayOptions.IsAllCorsAllowed)
+            {
+                if (context.Request.Headers.TryGetValue("Origin", out var originVal))
+                {
+                    context.Response.Headers.AccessControlAllowOrigin = originVal;
+                    context.Response.Headers.AccessControlAllowMethods = "GET, POST, OPTIONS";
+                    context.Response.Headers.AccessControlAllowHeaders = "*";
+                }
+
+                if (HttpMethods.IsOptions(context.Request.Method))
+                {
+                    context.Response.StatusCode = StatusCodes.Status200OK;
+                    return;
+                }
+
+                await next();
+                return;
+            }
+
             if ((HttpMethods.IsPost(context.Request.Method) ||
                  (HttpMethods.IsGet(context.Request.Method) && context.Request.Query.ContainsKey("query")))
                 && context.Request.Path.StartsWithSegments(endpoint))
@@ -154,7 +183,12 @@ public static class GatewayApplicationBuilderExtensions
     public static WebApplication MapGatewayEndpoints(this WebApplication app, GatewayOptions gatewayOptions)
     {
         app.MapMetrics();
-        app.MapGet("/health/live", () => Results.Ok(new { status = "Live", timestamp = DateTimeOffset.UtcNow }));
+        app.MapGet("/health/live", () => Results.Ok(new
+        {
+            status = "Live",
+            timestamp = DateTimeOffset.UtcNow,
+            securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST"
+        }));
 
         app.MapGet("/health/ready", async (
             ITrafficDrainController controller,
@@ -175,12 +209,20 @@ public static class GatewayApplicationBuilderExtensions
                     {
                         status = "Unhealthy",
                         timestamp = DateTimeOffset.UtcNow,
+                        securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST",
+                        activeBypasses = gatewayOptions.GetAllActiveBypasses(),
                         components = report.Components
                     }, statusCode: StatusCodes.Status503ServiceUnavailable);
                 }
             }
 
-            return Results.Ok(new { status = "Ready", timestamp = DateTimeOffset.UtcNow });
+            return Results.Ok(new
+            {
+                status = "Ready",
+                timestamp = DateTimeOffset.UtcNow,
+                securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST",
+                activeBypasses = gatewayOptions.GetAllActiveBypasses()
+            });
         });
 
         var endpoint = gatewayOptions.GraphQL.EndpointPath.StartsWith('/')
@@ -233,7 +275,8 @@ public static class GatewayApplicationBuilderExtensions
 
         app.MapPost("/api/webhooks/openmetadata", async (
             HttpContext context,
-            IOpenMetadataSyncService syncService) =>
+            IOpenMetadataSyncService syncService,
+            IOptions<GatewayOptions> gatewayOptions) =>
         {
             if (context.Request.ContentLength > 2 * 1024 * 1024)
             {
@@ -246,6 +289,11 @@ public static class GatewayApplicationBuilderExtensions
             string? signature = context.Request.Headers["X-OpenMetadata-Signature"].FirstOrDefault() ??
                                 context.Request.Headers["X-OM-Signature"].FirstOrDefault();
 
+            if (string.IsNullOrWhiteSpace(signature) && gatewayOptions.Value.IsWebhookSignatureBypassed)
+            {
+                signature = "bypassed";
+            }
+
             var success = await syncService.HandleWebhookEventAsync(payload, signature, context.RequestAborted);
             if (!success)
             {
@@ -257,7 +305,8 @@ public static class GatewayApplicationBuilderExtensions
 
         app.MapPost("/api/webhooks/itsm/status-change", async (
             HttpContext context,
-            IItsmWebhookHandler webhookHandler) =>
+            IItsmWebhookHandler webhookHandler,
+            IOptions<GatewayOptions> gatewayOptions) =>
         {
             if (context.Request.ContentLength > 2 * 1024 * 1024)
             {
@@ -267,16 +316,26 @@ public static class GatewayApplicationBuilderExtensions
             using var reader = new StreamReader(context.Request.Body);
             var payload = await reader.ReadToEndAsync(context.RequestAborted);
 
+            var opts = gatewayOptions.Value;
             string? signature = context.Request.Headers["X-ITSM-Signature"].FirstOrDefault();
             if (string.IsNullOrWhiteSpace(signature))
             {
-                return Results.Unauthorized();
+                if (!opts.IsWebhookSignatureBypassed)
+                {
+                    return Results.Unauthorized();
+                }
+                signature = "bypassed";
             }
 
+            DateTimeOffset timestamp;
             if (!context.Request.Headers.TryGetValue("X-ITSM-Timestamp", out var tsHeader) ||
-                !DateTimeOffset.TryParse(tsHeader.FirstOrDefault(), out var timestamp))
+                !DateTimeOffset.TryParse(tsHeader.FirstOrDefault(), out timestamp))
             {
-                return Results.BadRequest(new { error = "Header X-ITSM-Timestamp is required and must be a valid ISO 8601 timestamp." });
+                if (!opts.IsWebhookTimestampToleranceIgnored)
+                {
+                    return Results.BadRequest(new { error = "Header X-ITSM-Timestamp is required and must be a valid ISO 8601 timestamp." });
+                }
+                timestamp = DateTimeOffset.UtcNow;
             }
 
             var success = await webhookHandler.HandleStatusChangeAsync(payload, signature, timestamp, context.RequestAborted);

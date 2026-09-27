@@ -38,48 +38,64 @@ public sealed class ItsmWebhookHandler(
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rawPayload);
-        ArgumentException.ThrowIfNullOrWhiteSpace(hmacSignature);
 
-        // 1. Replay-Schutz: 5 Minuten Gültigkeitsfenster
-        var diff = DateTimeOffset.UtcNow - timestamp;
-        if (diff > TimeSpan.FromMinutes(5) || diff < TimeSpan.FromMinutes(-5))
+        bool bypassSignature = options.Value.IsWebhookSignatureBypassed;
+        if (!bypassSignature && string.IsNullOrWhiteSpace(hmacSignature))
         {
-            logger.LogWarning("Webhook abgelehnt: Timestamp außerhalb des 5-Minuten-Gültigkeitsfensters.");
-            return false;
+            throw new ArgumentException("HMAC signature must be provided unless danger_bypass_webhook_signature_validation is enabled.", nameof(hmacSignature));
         }
 
-        // 2. Secret-Bezug aus dediziertem Key-Vault-Pfad (kein HMAC_SECRET Fallback!)
-        byte[] secretKey;
-        try
+        // 1. Replay-Schutz: 5 Minuten Gültigkeitsfenster (umgehbar via warn_ignore_webhook_timestamp_tolerance)
+        bool ignoreTimestampTolerance = options.Value.IsWebhookTimestampToleranceIgnored;
+        if (!ignoreTimestampTolerance)
         {
-            secretKey = secretProvider.GetSecretBytes("itsm:webhook-secret");
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Fehler beim Laden des Webhook-Secrets 'itsm:webhook-secret'.");
-            return false;
-        }
-
-        byte[] computedHashWithTimestamp = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes($"t={timestamp:O}.v1={rawPayload}"));
-        byte[] computedHashRaw = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes(rawPayload));
-        byte[] providedHash;
-        try
-        {
-            providedHash = Convert.FromHexString(hmacSignature);
-        }
-        catch (FormatException)
-        {
-            logger.LogWarning("Webhook abgelehnt: Ungültiges Hex-Format der HMAC-SHA256-Signatur.");
-            return false;
+            var diff = DateTimeOffset.UtcNow - timestamp;
+            if (diff > TimeSpan.FromMinutes(5) || diff < TimeSpan.FromMinutes(-5))
+            {
+                logger.LogWarning("Webhook abgelehnt: Timestamp außerhalb des 5-Minuten-Gültigkeitsfensters.");
+                return false;
+            }
         }
 
-        // 3. Timing-sicherer Signaturvergleich (Timestamp-gebunden oder Roh-Payload)
-        bool signatureValid = CryptographicOperations.FixedTimeEquals(computedHashWithTimestamp, providedHash) ||
-                              CryptographicOperations.FixedTimeEquals(computedHashRaw, providedHash);
-        if (!signatureValid)
+        // 2. Secret-Bezug & Signaturvergleich (umgehbar via danger_bypass_webhook_signature_validation)
+        if (!bypassSignature)
         {
-            logger.LogWarning("Webhook abgelehnt: Ungültige HMAC-SHA256-Signatur.");
-            return false;
+            byte[] secretKey;
+            try
+            {
+                secretKey = secretProvider.GetSecretBytes("itsm:webhook-secret");
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Fehler beim Laden des Webhook-Secrets 'itsm:webhook-secret'.");
+                return false;
+            }
+
+            byte[] computedHashWithTimestamp = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes($"t={timestamp:O}.v1={rawPayload}"));
+            byte[] computedHashRaw = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes(rawPayload));
+            byte[] providedHash;
+            try
+            {
+                providedHash = Convert.FromHexString(hmacSignature);
+            }
+            catch (FormatException)
+            {
+                logger.LogWarning("Webhook abgelehnt: Ungültiges Hex-Format der HMAC-SHA256-Signatur.");
+                return false;
+            }
+
+            // 3. Timing-sicherer Signaturvergleich (Timestamp-gebunden oder Roh-Payload)
+            bool signatureValid = CryptographicOperations.FixedTimeEquals(computedHashWithTimestamp, providedHash) ||
+                                  CryptographicOperations.FixedTimeEquals(computedHashRaw, providedHash);
+            if (!signatureValid)
+            {
+                logger.LogWarning("Webhook abgelehnt: Ungültige HMAC-SHA256-Signatur.");
+                return false;
+            }
+        }
+        else
+        {
+            logger.LogWarning("[INSECURE GETTING STARTED] Bypassing ITSM webhook HMAC-SHA256 signature verification.");
         }
 
         // Payload parsen
@@ -107,15 +123,24 @@ public sealed class ItsmWebhookHandler(
             return false;
         }
 
-        // 4. Strikte Tenant-Bindungsprüfung
+        // 4. Strikte Tenant-Bindungsprüfung (umgehbar via warn_fallback_default_tenant_for_webhooks)
         var expectedTenant = _itsmOptions.GetTenantForInstance(payload.InstanceId);
         if (expectedTenant == null || request.TenantId != expectedTenant.Value)
         {
-            GatewayDiagnostics.CrossTenantMismatchCounter.Add(1);
-            logger.LogError(
-                "CROSS_TENANT_WEBHOOK_MISMATCH: Ticket {TicketId} gehört zu Tenant {ReqTenant}, Callback kam von {CbTenant}",
-                payload.TicketId, request.TenantId, expectedTenant?.Value ?? "UNKNOWN_INSTANCE");
-            return false; // Streng verweigern!
+            if (options.Value.IsWebhookTenantFallbackAllowed)
+            {
+                logger.LogWarning(
+                    "[INSECURE GETTING STARTED] Bypassing cross-tenant mismatch for ticket {TicketId}. Request tenant: {ReqTenant}, callback instance: {InstanceId}",
+                    payload.TicketId, request.TenantId, payload.InstanceId);
+            }
+            else
+            {
+                GatewayDiagnostics.CrossTenantMismatchCounter.Add(1);
+                logger.LogError(
+                    "CROSS_TENANT_WEBHOOK_MISMATCH: Ticket {TicketId} gehört zu Tenant {ReqTenant}, Callback kam von {CbTenant}",
+                    payload.TicketId, request.TenantId, expectedTenant?.Value ?? "UNKNOWN_INSTANCE");
+                return false; // Streng verweigern!
+            }
         }
 
         // 5. Idempotente Bearbeitung (nur PENDING_EXTERNAL_APPROVAL darf bearbeitet werden)
