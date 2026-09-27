@@ -323,8 +323,10 @@ public static class GatewayServiceCollectionExtensions
         // Model Context Protocol (MCP) Server & AI Data Guardrails
         services.AddSingleton<IMcpSessionStore, McpSessionStore>();
         services.AddSingleton<IMcpToolRegistry, McpToolRegistry>();
+        services.AddScoped<IMcpQueryExecutor, GqlGateway.GraphQL.Mcp.GatewayMcpQueryExecutor>();
         services.AddScoped<IAiDataGuardrailService, AiDataGuardrailService>();
         services.AddScoped<IMcpProtocolHandler, McpProtocolHandler>();
+        services.AddHostedService<GqlGateway.GraphQL.Mcp.McpSchemaDiscoveryService>();
 
         // HA & Traffic Drain
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();
@@ -572,6 +574,7 @@ public static class GatewayServiceCollectionExtensions
             .AddQueryType<Query>()
             .AddMutationType<Mutation>()
             .AddTypeExtension<InvoiceRecordExtensions>()
+            .AddDirectiveType<GqlGateway.GraphQL.Directives.McpToolDirectiveType>()
             .AddErrorFilter<ErrorSanitizingFilter>()
             .AddMaxExecutionDepthRule(maxDepth)
             .AddValidationRule<GqlGateway.GraphQL.Interceptors.QueryCostAnalyzerRule>((sp, _) =>

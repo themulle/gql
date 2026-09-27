@@ -3,12 +3,17 @@ namespace GqlGateway.Tests.Unit;
 using System;
 using System.Text.Json;
 using System.Threading.Tasks;
+using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Application.Mcp.Services;
+using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
+using GqlGateway.GraphQL.Mcp;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using NSubstitute;
 using Shouldly;
 using Xunit;
 
@@ -194,5 +199,146 @@ public sealed class McpServerTests
         var expiredResponse = await handler.HandleMessageAsync(session.SessionId, pingPayload);
         using var expDoc = JsonDocument.Parse(expiredResponse);
         expDoc.RootElement.GetProperty("error").GetProperty("code").GetInt32().ShouldBe(-32000);
+    }
+
+    [Fact]
+    public async Task AiDataGuardrailService_ShouldRecordAuditLogEntry_OnToolExecution()
+    {
+        var registry = new McpToolRegistry();
+        var options = Options.Create(new GatewayOptions { Mcp = new McpOptions { Enabled = true } });
+        var auditRepo = Substitute.For<IAuditLogRepository>();
+        var guardrail = new AiDataGuardrailService(
+            registry,
+            options,
+            NullLogger<AiDataGuardrailService>.Instance,
+            auditLogRepository: auditRepo);
+
+        var session = new McpSessionContext("sess-audit-1", "agent-audit", "tenant-audit", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var request = new McpToolCallRequest("query_customers", "{}");
+
+        var result = await guardrail.ExecuteToolWithGuardrailAsync(request, session);
+
+        result.IsSuccess.ShouldBeTrue();
+        await auditRepo.Received(1).RecordAuditEventAsync(
+            Arg.Is<AuditLogEntry>(e =>
+                e.EventType == "MCP_TOOL_EXECUTION" &&
+                e.ActorSid == new Sid("agent-audit") &&
+                e.TargetTable == "query_customers" &&
+                e.Decision == "ALLOW"),
+            Arg.Any<System.Threading.CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AiDataGuardrailService_WhenPolicyDenies_ShouldReturnErrorAndRecordDenyAudit()
+    {
+        var registry = new McpToolRegistry();
+        var options = Options.Create(new GatewayOptions { Mcp = new McpOptions { Enabled = true } });
+        var auditRepo = Substitute.For<IAuditLogRepository>();
+        var policyService = new DenyingPolicyService();
+
+        var guardrail = new AiDataGuardrailService(
+            registry,
+            options,
+            NullLogger<AiDataGuardrailService>.Instance,
+            auditLogRepository: auditRepo,
+            policyEnforcementService: policyService);
+
+        var session = new McpSessionContext("sess-deny-1", "agent-unauthorized", "tenant-test", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var request = new McpToolCallRequest("query_customers", "{}");
+
+        var result = await guardrail.ExecuteToolWithGuardrailAsync(request, session);
+
+        result.IsSuccess.ShouldBeFalse();
+        result.ErrorMessage.ShouldNotBeNull();
+        result.ErrorMessage.ShouldContain("denied");
+
+        await auditRepo.Received(1).RecordAuditEventAsync(
+            Arg.Is<AuditLogEntry>(e =>
+                e.EventType == "MCP_TOOL_EXECUTION" &&
+                e.Decision == "DENY"),
+            Arg.Any<System.Threading.CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AiDataGuardrailService_WhenTargetTableRequiresFourEyes_ShouldReturnFourEyesErrorAndRecordDenyAudit()
+    {
+        var registry = new McpToolRegistry();
+        var options = Options.Create(new GatewayOptions { Mcp = new McpOptions { Enabled = true } });
+        var auditRepo = Substitute.For<IAuditLogRepository>();
+        var metadataRepo = Substitute.For<ITableMetadataRepository>();
+
+        metadataRepo.GetTableMetadataAsync(Arg.Any<TableIdentifier>(), Arg.Any<System.Threading.CancellationToken>())
+            .Returns(new TableMetadata
+            {
+                Table = new Table
+                {
+                    Sensitivity = "HIGH",
+                    RequiresFourEyes = true,
+                    IsActive = true
+                }
+            });
+
+        var guardrail = new AiDataGuardrailService(
+            registry,
+            options,
+            NullLogger<AiDataGuardrailService>.Instance,
+            auditLogRepository: auditRepo,
+            tableMetadataRepository: metadataRepo);
+
+        var session = new McpSessionContext("sess-4eyes-1", "agent-claude", "tenant-test", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var request = new McpToolCallRequest("query_customers", "{}");
+
+        var result = await guardrail.ExecuteToolWithGuardrailAsync(request, session);
+
+        result.IsSuccess.ShouldBeFalse();
+        result.ErrorMessage.ShouldNotBeNull();
+        result.ErrorMessage.ShouldContain("Four-Eyes justification approval");
+
+        await auditRepo.Received(1).RecordAuditEventAsync(
+            Arg.Is<AuditLogEntry>(e =>
+                e.EventType == "MCP_TOOL_EXECUTION" &&
+                e.Decision == "DENY" &&
+                e.DetailsJson.Contains("Four-Eyes")),
+            Arg.Any<System.Threading.CancellationToken>());
+    }
+
+    [Fact]
+    public async Task McpSessionStore_RegisterAndSendSseEvent_ShouldDispatchEventToActiveStream()
+    {
+        var store = new McpSessionStore(NullLogger<McpSessionStore>.Instance);
+        var session = store.CreateSession("svc-ai", "tenant-1");
+
+        string? receivedEvent = null;
+        string? receivedData = null;
+
+        store.RegisterSseSender(session.SessionId, (evt, data) =>
+        {
+            receivedEvent = evt;
+            receivedData = data;
+            return Task.CompletedTask;
+        });
+
+        var dispatched = await store.SendEventAsync(session.SessionId, "notifications/progress", """{"progress":50}""");
+        dispatched.ShouldBeTrue();
+        receivedEvent.ShouldBe("notifications/progress");
+        receivedData.ShouldNotBeNull();
+        receivedData.ShouldContain("50");
+
+        // Terminating session cleans up sender
+        store.RemoveSession(session.SessionId).ShouldBeTrue();
+        var dispatchedAfterRemove = await store.SendEventAsync(session.SessionId, "notifications/progress", """{"progress":100}""");
+        dispatchedAfterRemove.ShouldBeFalse();
+    }
+
+    private sealed class DenyingPolicyService : IPolicyEnforcementService
+    {
+        public ValueTask<TableAccessDecision> EvaluatePolicyAsync(SecurityEvaluationContext context, System.Threading.CancellationToken ct = default)
+        {
+            return ValueTask.FromResult(TableAccessDecision.Denied(
+                context.TargetTable,
+                $"Role 'AiAgent' not authorized for table '{context.TargetTable}'."));
+        }
+
+        public Task ReloadPoliciesAsync(TenantId tenant, System.Threading.CancellationToken ct = default) => Task.CompletedTask;
     }
 }

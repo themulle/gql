@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging;
 public sealed class McpSessionStore : IMcpSessionStore
 {
     private readonly ConcurrentDictionary<string, McpSessionContext> _sessions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Func<string, string, Task>> _sseSenders = new(StringComparer.Ordinal);
     private readonly ILogger<McpSessionStore> _logger;
 
     public McpSessionStore(ILogger<McpSessionStore> logger)
@@ -47,11 +48,39 @@ public sealed class McpSessionStore : IMcpSessionStore
     public bool RemoveSession(string sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
+        _sseSenders.TryRemove(sessionId, out _);
         var removed = _sessions.TryRemove(sessionId, out _);
         if (removed)
         {
             _logger.LogInformation("Terminated MCP session {SessionId}.", sessionId);
         }
         return removed;
+    }
+
+    public void RegisterSseSender(string sessionId, Func<string, string, Task> sendEventAsync)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(sendEventAsync);
+        _sseSenders[sessionId] = sendEventAsync;
+    }
+
+    public async Task<bool> SendEventAsync(string sessionId, string eventType, string eventData)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return false;
+        if (_sseSenders.TryGetValue(sessionId, out var sender))
+        {
+            try
+            {
+                await sender(eventType, eventData).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to dispatch SSE event to MCP session {SessionId}.", sessionId);
+                _sseSenders.TryRemove(sessionId, out _);
+                return false;
+            }
+        }
+        return false;
     }
 }

@@ -5,21 +5,30 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.Mcp.Interfaces;
+using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 /// <summary>
-/// Guardrail engine enforcing zero-trust data protection, automated PII scrubbing,
-/// token budgeting, and GDPR Article 9 redaction on data supplied to AI agents.
+/// Enterprise Guardrail engine enforcing zero-trust data protection, Casbin ABAC enforcement,
+/// automated PII scrubbing, token budgeting, Four-Eyes justification gating, and SHA-256 tamper-evident
+/// audit logging on all data supplied to AI agents via the Model Context Protocol (MCP).
 /// </summary>
 public sealed class AiDataGuardrailService : IAiDataGuardrailService
 {
     private readonly IMcpToolRegistry _toolRegistry;
     private readonly IOptions<GatewayOptions> _options;
     private readonly ILogger<AiDataGuardrailService> _logger;
+    private readonly IMcpQueryExecutor? _queryExecutor;
+    private readonly IAuditLogRepository? _auditLogRepository;
+    private readonly IPolicyEnforcementService? _policyEnforcementService;
+    private readonly ITableMetadataRepository? _tableMetadataRepository;
+    private readonly IMcpSessionStore? _sessionStore;
 
     private static readonly TimeSpan DefaultRegexTimeout = TimeSpan.FromMilliseconds(250);
 
@@ -42,14 +51,24 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
     public AiDataGuardrailService(
         IMcpToolRegistry toolRegistry,
         IOptions<GatewayOptions> options,
-        ILogger<AiDataGuardrailService> logger)
+        ILogger<AiDataGuardrailService> logger,
+        IMcpQueryExecutor? queryExecutor = null,
+        IAuditLogRepository? auditLogRepository = null,
+        IPolicyEnforcementService? policyEnforcementService = null,
+        ITableMetadataRepository? tableMetadataRepository = null,
+        IMcpSessionStore? sessionStore = null)
     {
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _queryExecutor = queryExecutor;
+        _auditLogRepository = auditLogRepository;
+        _policyEnforcementService = policyEnforcementService;
+        _tableMetadataRepository = tableMetadataRepository;
+        _sessionStore = sessionStore;
     }
 
-    public ValueTask<McpToolCallResult> ExecuteToolWithGuardrailAsync(
+    public async ValueTask<McpToolCallResult> ExecuteToolWithGuardrailAsync(
         McpToolCallRequest request,
         McpSessionContext sessionContext,
         CancellationToken cancellationToken = default)
@@ -61,17 +80,118 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         if (tool == null)
         {
             _logger.LogWarning("AI Agent attempted to call unauthorized or unknown MCP tool '{ToolName}'.", request.ToolName);
-            return ValueTask.FromResult(new McpToolCallResult(
+            await RecordAuditEventAsync(
+                request.ToolName,
+                sessionContext,
+                decision: "DENY",
+                details: $"Tool '{request.ToolName}' is not registered or allowed.",
+                isMasked: false,
+                truncated: false,
+                estimatedTokens: 0,
+                cancellationToken).ConfigureAwait(false);
+
+            return new McpToolCallResult(
                 IsSuccess: false,
                 ContentJson: "{}",
                 ErrorMessage: $"Tool '{request.ToolName}' is not registered or allowed."
-            ));
+            );
         }
 
-        // 1. Mock execution or data extraction based on tool name and tenant context
-        string rawDataJson = GenerateRawToolResponse(tool, request.ArgumentsJson, sessionContext.TenantId);
+        // 1. Notify client via SSE progress notification if stream is open
+        if (_sessionStore != null)
+        {
+            var progressData = JsonSerializer.Serialize(new
+            {
+                jsonrpc = "2.0",
+                method = "notifications/progress",
+                @params = new
+                {
+                    tool = tool.Name,
+                    status = "executing",
+                    sessionId = sessionContext.SessionId
+                }
+            });
+            _ = _sessionStore.SendEventAsync(sessionContext.SessionId, "message", progressData);
+        }
 
-        // 2. Automated PII & GDPR Art. 9 Scrubbing
+        // 2. Pre-Execution Policy Check: Casbin ABAC Enforcement
+        var targetTable = ParseTableIdentifierFromTool(tool);
+        if (_policyEnforcementService != null && targetTable != null && !_options.Value.IsMcpAuthBypassed)
+        {
+            var secContext = new SecurityEvaluationContext(
+                UserSid: new Sid(sessionContext.ServicePrincipalId),
+                GroupSids: Array.Empty<Sid>(),
+                Tenant: new TenantId(sessionContext.TenantId),
+                TargetTable: targetTable.Value,
+                RequestedColumns: Array.Empty<string>(),
+                ClientIp: System.Net.IPAddress.Loopback,
+                Timestamp: DateTimeOffset.UtcNow,
+                PurposeId: "MCP_AI_AGENT_QUERY"
+            );
+
+            var policyDecision = await _policyEnforcementService.EvaluatePolicyAsync(secContext, cancellationToken).ConfigureAwait(false);
+            if (!policyDecision.IsAllowed)
+            {
+                _logger.LogWarning("Casbin ABAC policy denied AI Agent '{Principal}' tool call '{ToolName}' in tenant '{TenantId}'. Reasons: {Reasons}",
+                    sessionContext.ServicePrincipalId, tool.Name, sessionContext.TenantId, string.Join("; ", policyDecision.DeniedReasons));
+
+                await RecordAuditEventAsync(
+                    tool.Name,
+                    sessionContext,
+                    decision: "DENY",
+                    details: $"Access denied by Casbin ABAC policy: {string.Join("; ", policyDecision.DeniedReasons)}",
+                    isMasked: false,
+                    truncated: false,
+                    estimatedTokens: 0,
+                    cancellationToken).ConfigureAwait(false);
+
+                return new McpToolCallResult(
+                    IsSuccess: false,
+                    ContentJson: "{}",
+                    ErrorMessage: $"Access denied to tool '{tool.Name}' by ABAC security policy."
+                );
+            }
+        }
+
+        // 3. Four-Eyes Justification Gate
+        if (targetTable != null && _tableMetadataRepository != null)
+        {
+            var meta = await _tableMetadataRepository.GetTableMetadataAsync(targetTable.Value, cancellationToken).ConfigureAwait(false);
+            if (meta?.Table.RequiresFourEyes == true)
+            {
+                _logger.LogWarning("Tool '{ToolName}' targets table '{Table}' which requires Four-Eyes approval. Denying automated AI agent execution.",
+                    tool.Name, targetTable);
+
+                await RecordAuditEventAsync(
+                    tool.Name,
+                    sessionContext,
+                    decision: "DENY",
+                    details: $"Tool execution denied: table {targetTable} requires interactive Four-Eyes justification approval.",
+                    isMasked: false,
+                    truncated: false,
+                    estimatedTokens: 0,
+                    cancellationToken).ConfigureAwait(false);
+
+                return new McpToolCallResult(
+                    IsSuccess: false,
+                    ContentJson: "{}",
+                    ErrorMessage: $"Tool '{tool.Name}' requires interactive Four-Eyes justification approval. Consent ticket must be generated."
+                );
+            }
+        }
+
+        // 4. Execution Bridge: Execute operation via IMcpQueryExecutor or test fallback
+        string rawDataJson;
+        if (_queryExecutor != null)
+        {
+            rawDataJson = await _queryExecutor.ExecuteOperationAsync(tool, request.ArgumentsJson, sessionContext, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            rawDataJson = GenerateRawToolResponse(tool, request.ArgumentsJson, sessionContext.TenantId);
+        }
+
+        // 5. Automated PII & GDPR Art. 9 Scrubbing
         bool shouldMask = !_options.Value.IsMcpUnmaskedAllowed;
         bool wasMasked = false;
         string scrubbedJson = rawDataJson;
@@ -85,7 +205,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             _logger.LogWarning("SECURITY ALERT [WARN]: AI tool execution for tool '{ToolName}' is running unmasked (warn_allow_unmasked_ai_access is ACTIVE).", tool.Name);
         }
 
-        // 3. Token-Budgeting & Context Window Safeguards
+        // 6. Token-Budgeting & Context Window Safeguards
         int maxTokens = _options.Value.Mcp.MaxTokensPerCall > 0 ? _options.Value.Mcp.MaxTokensPerCall : 4096;
         int estimatedTokens = Math.Max(1, scrubbedJson.Length / 4);
         bool truncated = false;
@@ -104,13 +224,75 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             }
         }
 
-        return ValueTask.FromResult(new McpToolCallResult(
+        // 7. SHA-256 Tamper-Evident Audit Logging
+        await RecordAuditEventAsync(
+            tool.Name,
+            sessionContext,
+            decision: "ALLOW",
+            details: "Tool executed successfully under AI guardrails.",
+            isMasked: wasMasked,
+            truncated: truncated,
+            estimatedTokens: estimatedTokens,
+            cancellationToken).ConfigureAwait(false);
+
+        return new McpToolCallResult(
             IsSuccess: true,
             ContentJson: scrubbedJson,
             EstimatedTokens: estimatedTokens,
             IsMasked: wasMasked,
             TruncatedDueToBudget: truncated
-        ));
+        );
+    }
+
+    private async Task RecordAuditEventAsync(
+        string toolName,
+        McpSessionContext sessionContext,
+        string decision,
+        string details,
+        bool isMasked,
+        bool truncated,
+        int estimatedTokens,
+        CancellationToken ct)
+    {
+        if (_auditLogRepository == null) return;
+
+        try
+        {
+            var entry = new AuditLogEntry
+            {
+                EventType = "MCP_TOOL_EXECUTION",
+                ActorSid = new Sid(sessionContext.ServicePrincipalId),
+                TargetTable = toolName,
+                Decision = decision,
+                TraceId = sessionContext.SessionId,
+                DetailsJson = JsonSerializer.Serialize(new
+                {
+                    sessionId = sessionContext.SessionId,
+                    tenantId = sessionContext.TenantId,
+                    tool = toolName,
+                    decision,
+                    details,
+                    isMasked,
+                    truncated,
+                    estimatedTokens,
+                    timestamp = DateTimeOffset.UtcNow
+                })
+            };
+            await _auditLogRepository.RecordAuditEventAsync(entry, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to record audit event for MCP tool execution '{ToolName}'.", toolName);
+        }
+    }
+
+    private static TableIdentifier? ParseTableIdentifierFromTool(McpToolDefinition tool)
+    {
+        if (tool.Name.Equals("query_customers", StringComparison.OrdinalIgnoreCase))
+            return new TableIdentifier("finance", "dbo", "customers");
+        if (tool.Name.Equals("query_invoices", StringComparison.OrdinalIgnoreCase))
+            return new TableIdentifier("finance", "dbo", "invoices");
+        return null;
     }
 
     private static string ScrubPiiAndSensitiveData(string input, out bool wasModified)
@@ -146,10 +328,9 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
     private static string GenerateRawToolResponse(McpToolDefinition tool, string argumentsJson, string tenantId)
     {
-        var safeTenant = new GqlGateway.Domain.Common.TenantId(tenantId).Value;
+        var safeTenant = new TenantId(tenantId).Value;
         var encodedTenant = System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(safeTenant);
 
-        // Produce structured JSON responses adhering to enterprise schemas and tenant boundaries
         return tool.Name.ToLowerInvariant() switch
         {
             "query_customers" => $$"""

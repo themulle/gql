@@ -496,6 +496,7 @@ public static class GatewayApplicationBuilderExtensions
             // 1. SSE Connection Handshake
             var sseEndpoint = app.MapGet($"{mcpBasePath}/sse", async (
                 IMcpProtocolHandler mcpHandler,
+                IMcpSessionStore sessionStore,
                 HttpContext context) =>
             {
                 var principal = context.User;
@@ -515,6 +516,12 @@ public static class GatewayApplicationBuilderExtensions
                     ?? "default";
 
                 var session = mcpHandler.CreateSession(principalId, tenantId);
+
+                sessionStore.RegisterSseSender(session.SessionId, async (evt, data) =>
+                {
+                    await context.Response.WriteAsync($"event: {evt}\r\ndata: {data}\r\n\r\n", context.RequestAborted).ConfigureAwait(false);
+                    await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
+                });
 
                 context.Response.Headers.ContentType = "text/event-stream";
                 context.Response.Headers.CacheControl = "no-cache";

@@ -21,4 +21,14 @@ public interface IMcpSessionStore
     /// Removes and terminates an active session.
     /// </summary>
     bool RemoveSession(string sessionId);
+
+    /// <summary>
+    /// Registers an active SSE event sender callback for the specified session.
+    /// </summary>
+    void RegisterSseSender(string sessionId, System.Func<string, string, System.Threading.Tasks.Task> sendEventAsync);
+
+    /// <summary>
+    /// Sends an SSE event to the client stream of an active session.
+    /// </summary>
+    System.Threading.Tasks.Task<bool> SendEventAsync(string sessionId, string eventType, string eventData);
 }
