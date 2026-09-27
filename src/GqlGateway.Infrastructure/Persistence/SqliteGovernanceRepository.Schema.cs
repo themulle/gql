@@ -214,6 +214,24 @@ public partial class SqliteGovernanceRepository
                 join_key_child TEXT NOT NULL,
                 cardinality TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS ITSM_OUTBOX (
+                id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                preferred_system TEXT NOT NULL,
+                status INTEGER NOT NULL,
+                retry_count INTEGER NOT NULL,
+                max_retries INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                next_retry_at TEXT,
+                last_error TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_itsm_outbox_status_retry
+                ON ITSM_OUTBOX (status, next_retry_at);
         ";
         cmd.ExecuteNonQuery();
 

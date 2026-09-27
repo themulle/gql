@@ -393,6 +393,21 @@ public sealed class DataMaskingOptions
     public bool danger_disable_column_masking { get; init; } = false;
 }
 
+public sealed class WormAuditOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string StorageType { get; init; } = "Local"; // "Local" | "S3"
+    public string ExportPath { get; init; } = string.Empty;
+    public string S3Endpoint { get; init; } = string.Empty;
+    public string S3Bucket { get; init; } = string.Empty;
+    public string S3Prefix { get; init; } = "audit-worm-archives/";
+    public string S3AccessKey { get; init; } = string.Empty;
+    public string S3SecretKey { get; init; } = string.Empty;
+    [Range(1, 7300)] public int RetentionDays { get; init; } = 3650;
+    public string ObjectLockMode { get; init; } = "COMPLIANCE"; // "COMPLIANCE" | "GOVERNANCE"
+    public bool EnforceObjectLock { get; init; } = true;
+}
+
 public sealed class AuditOptions
 {
     public bool TierAEnabled { get; init; } = true;
@@ -400,6 +415,7 @@ public sealed class AuditOptions
     [Range(1, 7300)] public int AuditLogRetentionDays { get; init; } = 3650;
     [Range(1, 168)] public int VerifyHashChainIntervalHours { get; init; } = 24;
     public string ElasticsearchSinkUrl { get; init; } = string.Empty;
+    public WormAuditOptions Worm { get; init; } = new();
 }
 
 public sealed class OpenMetadataOptions
@@ -490,6 +506,7 @@ public sealed class DataCatalogOptions
     public DataCatalogProviderType Provider { get; init; } = DataCatalogProviderType.OpenMetadata;
     public DataCatalogSyncMode SyncMode { get; init; } = DataCatalogSyncMode.Mirror;
     [Range(1, 1440)] public int SyncIntervalMinutes { get; init; } = 60;
+    public string WebhookSecret { get; init; } = string.Empty;
 
     public PurviewOptions Purview { get; init; } = new();
     public CollibraOptions Collibra { get; init; } = new();

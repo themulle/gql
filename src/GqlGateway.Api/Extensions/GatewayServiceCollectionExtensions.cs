@@ -180,7 +180,9 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IConsentApprovalRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
         services.AddSingleton<IDataOwnershipRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
         services.AddSingleton<ITableRelationRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
+        services.AddSingleton<IItsmOutboxRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
         services.AddSingleton<IDbtProposalRepository, InMemoryDbtProposalRepository>();
+        services.AddHttpClient<IAuditWormExportService, AuditWormExportService>();
         services.AddSingleton<IRlsFilterGenerator, RlsFilterGenerator>();
         services.AddSingleton<IRowFilterSqlBuilder, RowFilterSqlBuilder>();
         services.AddSingleton<IConsentResolutionService, ConsentResolutionService>();
@@ -292,6 +294,10 @@ public static class GatewayServiceCollectionExtensions
         // ITSM Dispatcher & Inbound Webhooks (Outbound clients in GqlGateway.Extensions)
         services.AddScoped<ItsmWorkflowDispatcher>();
         services.AddScoped<IItsmWebhookHandler, ItsmWebhookHandler>();
+        if (gatewayOptions.Itsm.Enabled)
+        {
+            services.AddHostedService<ItsmOutboxDispatcherHostedService>();
+        }
 
         // Lineage Graph Store & Impact Analyzer
         services.AddSingleton<ILineageGraphStore, LineageGraphStore>();

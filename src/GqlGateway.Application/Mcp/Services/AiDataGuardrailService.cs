@@ -1,11 +1,13 @@
 namespace GqlGateway.Application.Mcp.Services;
 
 using System;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.Mcp.Diagnostics;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
@@ -76,9 +78,25 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(sessionContext);
 
+        using var activity = McpDiagnostics.ActivitySource.StartActivity($"gen_ai.tool {request.ToolName}", ActivityKind.Internal);
+        if (activity != null)
+        {
+            activity.SetTag(McpDiagnostics.GenAiSystemKey, "gqlgateway_mcp");
+            activity.SetTag(McpDiagnostics.GenAiOperationNameKey, "tool_execution");
+            activity.SetTag(McpDiagnostics.GenAiToolNameKey, request.ToolName);
+            activity.SetTag(McpDiagnostics.GenAiToolCallIdKey, sessionContext.SessionId);
+            activity.SetTag(McpDiagnostics.GenAiClientIdKey, sessionContext.ServicePrincipalId);
+            var inputTokens = Math.Max(1, (request.ArgumentsJson?.Length ?? 0) / 4);
+            activity.SetTag(McpDiagnostics.GenAiUsageInputTokensKey, inputTokens);
+            McpDiagnostics.RecordTokenUsage(inputTokens, "input", request.ToolName);
+        }
+
         var tool = _toolRegistry.FindTool(request.ToolName);
         if (tool == null)
         {
+            activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+            McpDiagnostics.RecordGuardrailVerdict("deny", request.ToolName, false, false);
+
             _logger.LogWarning("AI Agent attempted to call unauthorized or unknown MCP tool '{ToolName}'.", request.ToolName);
             await RecordAuditEventAsync(
                 request.ToolName,
@@ -132,6 +150,9 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             var policyDecision = await _policyEnforcementService.EvaluatePolicyAsync(secContext, cancellationToken).ConfigureAwait(false);
             if (!policyDecision.IsAllowed)
             {
+                activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+                McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, false, false);
+
                 _logger.LogWarning("Casbin ABAC policy denied AI Agent '{Principal}' tool call '{ToolName}' in tenant '{TenantId}'. Reasons: {Reasons}",
                     sessionContext.ServicePrincipalId, tool.Name, sessionContext.TenantId, string.Join("; ", policyDecision.DeniedReasons));
 
@@ -159,6 +180,9 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             var meta = await _tableMetadataRepository.GetTableMetadataAsync(targetTable.Value, cancellationToken).ConfigureAwait(false);
             if (meta?.Table.RequiresFourEyes == true)
             {
+                activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+                McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, false, false);
+
                 _logger.LogWarning("Tool '{ToolName}' targets table '{Table}' which requires Four-Eyes approval. Denying automated AI agent execution.",
                     tool.Name, targetTable);
 
@@ -182,13 +206,14 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
         // 4. Execution Bridge: Execute operation via IMcpQueryExecutor or test fallback
         string rawDataJson;
+        var argsJson = request.ArgumentsJson ?? "{}";
         if (_queryExecutor != null)
         {
-            rawDataJson = await _queryExecutor.ExecuteOperationAsync(tool, request.ArgumentsJson, sessionContext, cancellationToken).ConfigureAwait(false);
+            rawDataJson = await _queryExecutor.ExecuteOperationAsync(tool, argsJson, sessionContext, cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            rawDataJson = GenerateRawToolResponse(tool, request.ArgumentsJson, sessionContext.TenantId);
+            rawDataJson = GenerateRawToolResponse(tool, argsJson, sessionContext.TenantId);
         }
 
         // 5. Automated PII & GDPR Art. 9 Scrubbing
@@ -234,6 +259,14 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             truncated: truncated,
             estimatedTokens: estimatedTokens,
             cancellationToken).ConfigureAwait(false);
+
+        // 8. OpenTelemetry GenAI Semantic Conventions & Metrics
+        var verdict = wasMasked ? "masked" : "allow";
+        activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, verdict);
+        activity?.SetTag(McpDiagnostics.GenAiGuardrailPiiDetectedKey, wasMasked);
+        activity?.SetTag(McpDiagnostics.GenAiUsageOutputTokensKey, estimatedTokens);
+        McpDiagnostics.RecordTokenUsage(estimatedTokens, "output", tool.Name);
+        McpDiagnostics.RecordGuardrailVerdict(verdict, tool.Name, wasMasked, false);
 
         return new McpToolCallResult(
             IsSuccess: true,

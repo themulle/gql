@@ -341,4 +341,44 @@ public sealed class McpServerTests
 
         public Task ReloadPoliciesAsync(TenantId tenant, System.Threading.CancellationToken ct = default) => Task.CompletedTask;
     }
+
+    [Fact]
+    public async Task AiDataGuardrailService_ShouldEmitGenAiOpenTelemetrySpanAndAttributes()
+    {
+        // Arrange
+        System.Diagnostics.Activity? capturedActivity = null;
+        using var listener = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = source => source.Name == GqlGateway.Application.Mcp.Diagnostics.McpDiagnostics.ActivitySourceName,
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) => System.Diagnostics.ActivitySamplingResult.AllData,
+            ActivityStopped = act => capturedActivity = act
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(listener);
+
+        var registry = new McpToolRegistry();
+        var options = Options.Create(new GatewayOptions());
+        var queryExecutor = Substitute.For<IMcpQueryExecutor>();
+        queryExecutor.ExecuteOperationAsync(Arg.Any<McpToolDefinition>(), Arg.Any<string>(), Arg.Any<McpSessionContext>(), Arg.Any<System.Threading.CancellationToken>())
+            .Returns(Task.FromResult("""{"customers":[{"id":"1","name":"Alice"}]}"""));
+
+        var guardrail = new AiDataGuardrailService(
+            registry,
+            options,
+            NullLogger<AiDataGuardrailService>.Instance,
+            queryExecutor);
+
+        var request = new McpToolCallRequest("query_customers", """{"limit":1}""");
+        var session = new McpSessionContext("session-otel", "agent-1", "tenant-1", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        // Act
+        var result = await guardrail.ExecuteToolWithGuardrailAsync(request, session);
+
+        // Assert
+        result.IsSuccess.ShouldBeTrue();
+        capturedActivity.ShouldNotBeNull();
+        capturedActivity.GetTagItem("gen_ai.system").ShouldBe("gqlgateway_mcp");
+        capturedActivity.GetTagItem("gen_ai.operation.name").ShouldBe("tool_execution");
+        capturedActivity.GetTagItem("gen_ai.tool.name").ShouldBe("query_customers");
+        capturedActivity.GetTagItem("gen_ai.guardrail.verdict").ShouldBe("allow");
+    }
 }

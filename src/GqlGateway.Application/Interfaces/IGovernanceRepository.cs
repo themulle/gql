@@ -69,6 +69,7 @@ public interface IGovernanceRepository :
     IPolicyEpochRepository,
     IConsentApprovalRepository,
     IDataOwnershipRepository,
-    ITableRelationRepository
+    ITableRelationRepository,
+    IItsmOutboxRepository
 {
 }

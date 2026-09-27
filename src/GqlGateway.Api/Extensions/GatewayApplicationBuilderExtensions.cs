@@ -1,6 +1,7 @@
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
+using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Extensions.OData;
@@ -376,6 +377,50 @@ public static class GatewayApplicationBuilderExtensions
             }
 
             return Results.Ok(new { status = "Processed" });
+        }).AllowAnonymous();
+
+        // Real-Time Data Catalog Webhook Endpoint (OpenMetadata, Purview, Collibra, Alation)
+        app.MapPost("/api/webhooks/catalog", async (
+            HttpContext context,
+            IDataCatalogWebhookHandler webhookHandler,
+            IOptions<GatewayOptions> options) =>
+        {
+            var opts = options.Value;
+            if (context.Request.ContentLength > 10 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Payload exceeds maximum allowed size (10 MB)." });
+            }
+
+            using var reader = new StreamReader(context.Request.Body);
+            var payload = await reader.ReadToEndAsync(context.RequestAborted);
+
+            string? signature = null;
+            if (context.Request.Headers.TryGetValue("X-Catalog-Signature", out var sigHeader) ||
+                context.Request.Headers.TryGetValue("X-Signature", out sigHeader) ||
+                context.Request.Headers.TryGetValue("X-Hub-Signature-256", out sigHeader))
+            {
+                signature = sigHeader.FirstOrDefault();
+            }
+
+            DateTimeOffset? timestamp = null;
+            if (context.Request.Headers.TryGetValue("X-Catalog-Timestamp", out var tsHeader) ||
+                context.Request.Headers.TryGetValue("X-Timestamp", out tsHeader))
+            {
+                if (DateTimeOffset.TryParse(tsHeader.FirstOrDefault(), out var ts))
+                {
+                    timestamp = ts;
+                }
+            }
+
+            var provider = context.Request.Query.TryGetValue("provider", out var prov) ? prov.FirstOrDefault() : null;
+
+            var result = await webhookHandler.HandleWebhookAsync(payload, signature, timestamp, provider, context.RequestAborted);
+            if (!result.Success)
+            {
+                return Results.Json(result, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            return Results.Ok(result);
         }).AllowAnonymous();
 
         // dbt Ingestion & Exposure Endpoints (F-DATA-11)
