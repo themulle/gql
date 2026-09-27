@@ -8,12 +8,14 @@ using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Model;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 public sealed class JiraClient : IItsmWorkflowClient
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<JiraClient> _logger;
+    private readonly IHostEnvironment? _environment;
 
     private int _consecutiveFailures;
     private DateTimeOffset _circuitBreakerUntil = DateTimeOffset.MinValue;
@@ -21,10 +23,11 @@ public sealed class JiraClient : IItsmWorkflowClient
 
     public ItsmSystemType SystemType => ItsmSystemType.Jira;
 
-    public JiraClient(HttpClient httpClient, ILogger<JiraClient> logger)
+    public JiraClient(HttpClient httpClient, ILogger<JiraClient> logger, IHostEnvironment? environment = null)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _environment = environment;
     }
 
     public async Task<ItsmTicketResult> CreateAccessTicketAsync(ItsmTicketRequest request, CancellationToken ct = default)
@@ -62,6 +65,13 @@ public sealed class JiraClient : IItsmWorkflowClient
                 }
                 else
                 {
+                    bool isDev = _environment == null || _environment.IsDevelopment();
+                    if (!isDev)
+                    {
+                        _logger.LogError("Jira endpoint URL is not configured in non-development environment.");
+                        return new ItsmTicketResult(false, null, "ITSM_NOT_CONFIGURED", "Jira endpoint URL is not configured in non-development environment.");
+                    }
+
                     response = new HttpResponseMessage(System.Net.HttpStatusCode.Created)
                     {
                         Content = JsonContent.Create(new { key = $"SEC-{RandomNumberGenerator.GetInt32(1000, 9999)}" })

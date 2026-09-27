@@ -46,10 +46,22 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
                 // Fallback to default secret below
             }
         }
-        _auditHmacKey = key ?? "GqlGatewayAuditLogHmacTamperEvidenceSecret2026!"u8.ToArray();
-
         bool isMemory = connStr.Contains(":memory:", StringComparison.OrdinalIgnoreCase) || connStr.Contains("Mode=Memory", StringComparison.OrdinalIgnoreCase);
         bool isDev = environment == null || string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
+
+        if (key == null)
+        {
+            if (!isDev && !isMemory)
+            {
+                throw new InvalidOperationException(
+                    "Security critical: HmacSecretKeyVaultRef is missing or could not be resolved from Key Vault in a non-development environment. Tamper-evident audit logging cannot use default fallback keys.");
+            }
+            _auditHmacKey = "GqlGatewayAuditLogHmacTamperEvidenceSecret2026!"u8.ToArray();
+        }
+        else
+        {
+            _auditHmacKey = key;
+        }
         bool shouldSeed = options?.Value?.GovernanceDb?.SeedDemoData ?? (isMemory && isDev);
         if (shouldSeed)
         {

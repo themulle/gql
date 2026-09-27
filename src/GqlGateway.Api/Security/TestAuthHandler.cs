@@ -59,6 +59,11 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
             }
         }
 
+        if (headers.TryGetValue("X-Test-Tenant", out var tenantVal) && !string.IsNullOrWhiteSpace(tenantVal))
+        {
+            claims.Add(new Claim("tenant", tenantVal.ToString().Trim()));
+        }
+
         var identity = new ClaimsIdentity(claims, SchemeName, ClaimTypes.Name, ClaimTypes.Role);
         var principal = new ClaimsPrincipal(identity);
         var ticket = new AuthenticationTicket(principal, SchemeName);

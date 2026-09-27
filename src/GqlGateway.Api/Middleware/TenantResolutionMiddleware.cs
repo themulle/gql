@@ -13,22 +13,37 @@ public sealed class TenantResolutionMiddleware(RequestDelegate next)
 
     public async Task InvokeAsync(HttpContext context)
     {
-        string? rawTenant = null;
-
-        if (context.Request.Headers.TryGetValue(TenantHeaderName, out var headerVal) && !string.IsNullOrWhiteSpace(headerVal))
+        string? claimTenant = null;
+        if (context.User.Identity?.IsAuthenticated == true)
         {
-            rawTenant = headerVal.ToString();
-        }
-        else if (context.Request.Headers.TryGetValue(TenantHeaderNameAlt, out var headerValAlt) && !string.IsNullOrWhiteSpace(headerValAlt))
-        {
-            rawTenant = headerValAlt.ToString();
-        }
-        else if (context.User.Identity?.IsAuthenticated == true)
-        {
-            rawTenant = context.User.FindFirst("tenant")?.Value
+            claimTenant = context.User.FindFirst("tenant")?.Value
                 ?? context.User.FindFirst("tid")?.Value
                 ?? context.User.FindFirst("tenant_id")?.Value;
         }
+
+        string? headerTenant = null;
+        if (context.Request.Headers.TryGetValue(TenantHeaderName, out var headerVal) && !string.IsNullOrWhiteSpace(headerVal))
+        {
+            headerTenant = headerVal.ToString();
+        }
+        else if (context.Request.Headers.TryGetValue(TenantHeaderNameAlt, out var headerValAlt) && !string.IsNullOrWhiteSpace(headerValAlt))
+        {
+            headerTenant = headerValAlt.ToString();
+        }
+
+        // Security Guard: An authenticated user cannot spoof or switch to another tenant via header.
+        if (!string.IsNullOrWhiteSpace(claimTenant) && !string.IsNullOrWhiteSpace(headerTenant))
+        {
+            if (!string.Equals(claimTenant, headerTenant, StringComparison.OrdinalIgnoreCase))
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("{\"errors\":[{\"message\":\"Cross-tenant access forbidden. Requested header tenant does not match authenticated token claim.\",\"code\":\"CROSS_TENANT_ACCESS_FORBIDDEN\"}]}");
+                return;
+            }
+        }
+
+        string? rawTenant = claimTenant ?? headerTenant;
 
         TenantId tenantId;
         if (!string.IsNullOrWhiteSpace(rawTenant))

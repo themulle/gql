@@ -31,6 +31,12 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
 
     public void Validate(IDocumentValidatorContext context, DocumentNode document)
     {
+        var fragments = document.Definitions
+            .OfType<FragmentDefinitionNode>()
+            .ToDictionary(f => f.Name.Value, f => f, StringComparer.Ordinal);
+
+        var visitedFragments = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var def in document.Definitions)
         {
             if (def is OperationDefinitionNode operation)
@@ -42,7 +48,7 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                     _ => context.Schema.QueryType
                 };
 
-                int totalCost = CalculateSelectionSetCost(operation.SelectionSet, rootType);
+                int totalCost = CalculateSelectionSetCost(operation.SelectionSet, rootType, fragments, visitedFragments, context.Schema);
                 if (totalCost > _maxAllowedCost)
                 {
                     _onQueryTooComplex?.Invoke();
@@ -58,7 +64,12 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
         }
     }
 
-    private int CalculateSelectionSetCost(SelectionSetNode? selectionSet, ObjectType? currentType)
+    private int CalculateSelectionSetCost(
+        SelectionSetNode? selectionSet,
+        ObjectType? currentType,
+        IReadOnlyDictionary<string, FragmentDefinitionNode> fragments,
+        HashSet<string> visitedFragments,
+        ISchema schema)
     {
         if (selectionSet == null || selectionSet.Selections.Count == 0)
         {
@@ -128,17 +139,8 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
 
                     if (field.SelectionSet != null)
                     {
-                        int maskingCost = 0;
-                        foreach (var childSel in field.SelectionSet.Selections)
-                        {
-                            if (childSel is FieldNode childField && IsMaskedCandidate(childField.Name.Value))
-                            {
-                                maskingCost += 3;
-                            }
-                        }
-
-                        cost += maskingCost;
-                        cost += CalculateSelectionSetCost(field.SelectionSet, nextType);
+                        cost += CalculateMaskingCost(field.SelectionSet, fragments, visitedFragments);
+                        cost += CalculateSelectionSetCost(field.SelectionSet, nextType, fragments, visitedFragments, schema);
                     }
                 }
                 else
@@ -147,13 +149,67 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                     cost += isList ? 5 : 1;
                     if (field.SelectionSet != null)
                     {
-                        cost += CalculateSelectionSetCost(field.SelectionSet, nextType);
+                        cost += CalculateSelectionSetCost(field.SelectionSet, nextType, fragments, visitedFragments, schema);
                     }
+                }
+            }
+            else if (selection is InlineFragmentNode inlineFrag)
+            {
+                ObjectType? inlineType = currentType;
+                if (inlineFrag.TypeCondition != null && schema.TryGetType<ObjectType>(inlineFrag.TypeCondition.Name.Value, out var foundType))
+                {
+                    inlineType = foundType;
+                }
+
+                cost += CalculateSelectionSetCost(inlineFrag.SelectionSet, inlineType, fragments, visitedFragments, schema);
+            }
+            else if (selection is FragmentSpreadNode fragmentSpread)
+            {
+                if (fragments.TryGetValue(fragmentSpread.Name.Value, out var fragDef) && visitedFragments.Add(fragDef.Name.Value))
+                {
+                    ObjectType? fragType = currentType;
+                    if (fragDef.TypeCondition != null && schema.TryGetType<ObjectType>(fragDef.TypeCondition.Name.Value, out var foundType))
+                    {
+                        fragType = foundType;
+                    }
+
+                    cost += CalculateSelectionSetCost(fragDef.SelectionSet, fragType, fragments, visitedFragments, schema);
+                    visitedFragments.Remove(fragDef.Name.Value);
                 }
             }
         }
 
         return cost;
+    }
+
+    private static int CalculateMaskingCost(
+        SelectionSetNode selectionSet,
+        IReadOnlyDictionary<string, FragmentDefinitionNode> fragments,
+        HashSet<string> visitedFragments)
+    {
+        int maskingCost = 0;
+        foreach (var childSel in selectionSet.Selections)
+        {
+            if (childSel is FieldNode childField)
+            {
+                if (IsMaskedCandidate(childField.Name.Value))
+                {
+                    maskingCost += 3;
+                }
+            }
+            else if (childSel is InlineFragmentNode inlineFrag)
+            {
+                maskingCost += CalculateMaskingCost(inlineFrag.SelectionSet, fragments, visitedFragments);
+            }
+            else if (childSel is FragmentSpreadNode spread &&
+                     fragments.TryGetValue(spread.Name.Value, out var fragDef) &&
+                     visitedFragments.Add(fragDef.Name.Value))
+            {
+                maskingCost += CalculateMaskingCost(fragDef.SelectionSet, fragments, visitedFragments);
+                visitedFragments.Remove(fragDef.Name.Value);
+            }
+        }
+        return maskingCost;
     }
 
     private static bool IsMaskedCandidate(string fieldName)

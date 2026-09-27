@@ -26,8 +26,6 @@ public static class GatewayApplicationBuilderExtensions
         });
 
         app.UseForwardedHeaders();
-        app.UseMiddleware<TenantResolutionMiddleware>();
-        app.UseMiddleware<OpenTelemetryTracingMiddleware>();
         app.UseCors();
 
         if (!app.Environment.IsDevelopment())
@@ -144,6 +142,8 @@ public static class GatewayApplicationBuilderExtensions
         app.UseMiddleware<PreAuthIpRateLimitingMiddleware>();
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseMiddleware<TenantResolutionMiddleware>();
+        app.UseMiddleware<OpenTelemetryTracingMiddleware>();
         app.UseMiddleware<PostAuthSidRateLimitingMiddleware>();
 
         return app;

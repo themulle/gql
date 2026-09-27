@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Model;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 public sealed class ServiceNowClient : IItsmWorkflowClient
@@ -19,12 +20,15 @@ public sealed class ServiceNowClient : IItsmWorkflowClient
     private DateTimeOffset _circuitBreakerUntil = DateTimeOffset.MinValue;
     private readonly object _circuitLock = new();
 
+    private readonly IHostEnvironment? _environment;
+
     public ItsmSystemType SystemType => ItsmSystemType.ServiceNow;
 
-    public ServiceNowClient(HttpClient httpClient, ILogger<ServiceNowClient> logger)
+    public ServiceNowClient(HttpClient httpClient, ILogger<ServiceNowClient> logger, IHostEnvironment? environment = null)
     {
         _httpClient = httpClient;
         _logger = logger;
+        _environment = environment;
     }
 
     public async Task<ItsmTicketResult> CreateAccessTicketAsync(ItsmTicketRequest request, CancellationToken ct = default)
@@ -62,6 +66,13 @@ public sealed class ServiceNowClient : IItsmWorkflowClient
                 }
                 else
                 {
+                    bool isDev = _environment == null || _environment.IsDevelopment();
+                    if (!isDev)
+                    {
+                        _logger.LogError("ServiceNow endpoint URL is not configured in non-development environment.");
+                        return new ItsmTicketResult(false, null, "ITSM_NOT_CONFIGURED", "ServiceNow endpoint URL is not configured in non-development environment.");
+                    }
+
                     // Simulated in-memory success for test / dev environment
                     response = new HttpResponseMessage(System.Net.HttpStatusCode.Created)
                     {

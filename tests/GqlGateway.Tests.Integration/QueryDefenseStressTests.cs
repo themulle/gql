@@ -144,4 +144,96 @@ public class QueryDefenseStressTests : IClassFixture<WebApplicationFactory<Progr
         var content = await response.Content.ReadAsStringAsync();
         content.ShouldContain("depth");
     }
+
+    [Fact]
+    public async Task QueryCostAnalyzer_FragmentSpreadBypassAttempt_IsDetectedAndBlocked()
+    {
+        var client = CreateClient();
+
+        // An attacker wraps excessive list query in a named fragment attempting to bypass cost analysis
+        var payload = new
+        {
+            query = @"
+                query MassiveQueryViaFragment {
+                    finance {
+                        ...HeavyFragment
+                    }
+                }
+                fragment HeavyFragment on FinanceQueries {
+                    invoicesWithItems(first: 5000) {
+                        id
+                        amount
+                        vendor
+                        email
+                    }
+                }"
+        };
+
+        var response = await client.PostAsJsonAsync("/graphql", payload);
+        var content = await response.Content.ReadAsStringAsync();
+        content.ShouldContain("QUERY_TOO_COMPLEX");
+    }
+
+    [Fact]
+    public async Task QueryCostAnalyzer_InlineFragmentBypassAttempt_IsDetectedAndBlocked()
+    {
+        var client = CreateClient();
+
+        // An attacker wraps excessive list query in an inline fragment attempting to bypass cost analysis
+        var payload = new
+        {
+            query = @"
+                query MassiveQueryViaInlineFragment {
+                    finance {
+                        ... on FinanceQueries {
+                            invoicesWithItems(first: 5000) {
+                                id
+                                amount
+                                vendor
+                                email
+                            }
+                        }
+                    }
+                }"
+        };
+
+        var response = await client.PostAsJsonAsync("/graphql", payload);
+        var content = await response.Content.ReadAsStringAsync();
+        content.ShouldContain("QUERY_TOO_COMPLEX");
+    }
+
+    [Fact]
+    public async Task CrossTenantSpoofing_WhenHeaderDiffersFromClaim_Returns403Forbidden()
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Tenant", "tenant-alpha");
+        client.DefaultRequestHeaders.Add("X-Tenant-ID", "tenant-bravo");
+
+        var payload = new
+        {
+            query = "{ __typename }"
+        };
+
+        var response = await client.PostAsJsonAsync("/graphql", payload);
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+
+        var content = await response.Content.ReadAsStringAsync();
+        content.ShouldContain("CROSS_TENANT_ACCESS_FORBIDDEN");
+    }
+
+    [Fact]
+    public async Task CrossTenantSpoofing_WhenHeaderMatchesClaim_Succeeds()
+    {
+        var client = CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-Tenant", "tenant-alpha");
+        client.DefaultRequestHeaders.Add("X-Tenant-ID", "tenant-alpha");
+
+        var payload = new
+        {
+            query = "{ __typename }"
+        };
+
+        var response = await client.PostAsJsonAsync("/graphql", payload);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
 }

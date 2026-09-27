@@ -170,9 +170,17 @@ public sealed partial class OpenJevClient : IOpenJevClient
             GrantedDuration: null));
     }
 
+    private long _requestCounter;
+
     private bool CheckRateLimit(string userSid)
     {
         var now = DateTimeOffset.UtcNow;
+
+        if (Interlocked.Increment(ref _requestCounter) % 100 == 0 && _rateLimits.Count > 500)
+        {
+            EvictStaleRateLimitEntries(now);
+        }
+
         bool allowed = false;
 
         _rateLimits.AddOrUpdate(
@@ -199,5 +207,17 @@ public sealed partial class OpenJevClient : IOpenJevClient
             });
 
         return allowed;
+    }
+
+    private void EvictStaleRateLimitEntries(DateTimeOffset now)
+    {
+        var cutoff = now.AddMinutes(-5);
+        foreach (var entry in _rateLimits)
+        {
+            if (entry.Value.LastRefill < cutoff)
+            {
+                _rateLimits.TryRemove(entry.Key, out _);
+            }
+        }
     }
 }

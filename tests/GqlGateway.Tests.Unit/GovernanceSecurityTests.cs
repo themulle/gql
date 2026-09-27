@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.GraphQL.Types;
@@ -568,5 +569,53 @@ public class GovernanceSecurityTests : IDisposable
         {
             await _repository.RejectConsentRequestAsync(req.Id, unauthorizedApproverSid, "Malicious rejection");
         });
+    }
+
+    private sealed class DummyHostEnvironment(string name) : Microsoft.Extensions.Hosting.IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = name;
+        public string ApplicationName { get; set; } = "Test";
+        public string ContentRootPath { get; set; } = "/";
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = null!;
+    }
+
+    [Fact]
+    public void SqliteGovernanceRepository_InProductionWithoutKeyVaultSecret_ThrowsInvalidOperationException()
+    {
+        var epochService = new EpochValidationService();
+        var prodEnv = new DummyHostEnvironment("Production");
+        var opts = Microsoft.Extensions.Options.Options.Create(new GqlGateway.Domain.Options.GatewayOptions
+        {
+            GovernanceDb = new GqlGateway.Domain.Options.GovernanceDbOptions
+            {
+                ConnectionString = "Data Source=test_prod.db;Mode=ReadWriteCreate;"
+            }
+        });
+
+        Should.Throw<InvalidOperationException>(() =>
+        {
+            using var repo = new SqliteGovernanceRepository(epochService, opts, prodEnv, secretProvider: null);
+        });
+    }
+
+    [Fact]
+    public async Task ServiceNowClient_InProductionWithoutBaseAddress_ReturnsError()
+    {
+        var prodEnv = new DummyHostEnvironment("Production");
+        using var httpClient = new System.Net.Http.HttpClient(); // BaseAddress is null
+        var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<GqlGateway.Infrastructure.Itsm.ServiceNowClient>.Instance;
+        var client = new GqlGateway.Infrastructure.Itsm.ServiceNowClient(httpClient, logger, prodEnv);
+
+        var result = await client.CreateAccessTicketAsync(new ItsmTicketRequest(
+            new TenantId("tenant-a"),
+            new Sid("S-1-5-21-1234"),
+            new TableIdentifier("finance", "dbo", "invoices"),
+            "Need access",
+            7,
+            null,
+            null));
+
+        result.Success.ShouldBeFalse();
+        result.ErrorCode.ShouldBe("ITSM_NOT_CONFIGURED");
     }
 }
