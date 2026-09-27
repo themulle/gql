@@ -21,6 +21,7 @@ public sealed class GatewayOptions
     [Required] public PluginsOptions Plugins { get; init; } = new();
     [Required] public SqlDataSourceOptions DataSources { get; init; } = new();
     [Required] public ItsmOptions Itsm { get; init; } = new();
+    [Required] public DataCatalogOptions Catalog { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -416,6 +417,68 @@ public sealed class ItsmOptions
         }
         return null;
     }
+}
+
+public sealed class PurviewOptions
+{
+    public string Endpoint { get; init; } = string.Empty;
+    public string TenantId { get; init; } = string.Empty;
+    public string ClientId { get; init; } = string.Empty;
+    public string ClientSecret { get; init; } = string.Empty;
+    public string AccountName { get; init; } = string.Empty;
+}
+
+public sealed class CollibraOptions
+{
+    public string BaseUrl { get; init; } = string.Empty;
+    public string ApiToken { get; init; } = string.Empty;
+    public string Username { get; init; } = string.Empty;
+    public string Password { get; init; } = string.Empty;
+    public string? CommunityId { get; init; }
+}
+
+public sealed class AlationOptions
+{
+    public string BaseUrl { get; init; } = string.Empty;
+    public string ApiToken { get; init; } = string.Empty;
+    public int CustomFieldIdPii { get; init; } = 1001;
+}
+
+public sealed class DataCatalogOptions
+{
+    public bool Enabled { get; init; } = false;
+    public DataCatalogProviderType Provider { get; init; } = DataCatalogProviderType.OpenMetadata;
+    public DataCatalogSyncMode SyncMode { get; init; } = DataCatalogSyncMode.Mirror;
+    [Range(1, 1440)] public int SyncIntervalMinutes { get; init; } = 60;
+
+    public PurviewOptions Purview { get; init; } = new();
+    public CollibraOptions Collibra { get; init; } = new();
+    public AlationOptions Alation { get; init; } = new();
+
+    public Dictionary<string, string> TagToMaskingRuleMap { get; init; } = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["PII.Sensitive"] = "REDACT",
+        ["PII.Email"] = "MASK_EMAIL",
+        ["PII.Pseudonym"] = "HMAC_SHA256",
+        ["PersonalData.Personal"] = "REDACT",
+        ["Classification.PII"] = "REDACT",
+        ["Classification.Email"] = "MASK_EMAIL",
+        ["Confidential"] = "REDACT",
+        ["Restricted"] = "REDACT"
+    };
+
+    public List<string> GdprArticle9Tags { get; init; } =
+    [
+        "GDPR.Article9", "GDPR.Art9", "Art9", "HealthData", "Biometric",
+        "Genetic", "ReligiousBelief", "TradeUnionMembership", "SexLife",
+        "SexualOrientation", "PoliticalOpinion", "SpecialCategoryData"
+    ];
+
+    public List<string> PiiTags { get; init; } =
+    [
+        "PII", "PersonalData", "Classification.PII", "Email", "Phone",
+        "SSN", "NationalId", "CreditCard", "Confidential"
+    ];
 }
 
 

@@ -17,4 +17,27 @@ public interface ILineageImpactAnalyzerService
         Guid consentId,
         CallerSecurityContext callerContext,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Analysiert statische Downstream-Abhängigkeiten (Dashboards, Pipelines, Services) und
+    /// verknüpft sie mit Laufzeit-Konsumenten aus den Audit-Logs (wer hat Tabelle in den letzten N Tagen gelesen?).
+    /// Dient der Impact-Analyse vor Schema-Änderungen (Breaking Change Risk).
+    /// </summary>
+    Task<TableConsumersReport> GetTableConsumersAsync(
+        TableIdentifier table,
+        int timeWindowDays = 30,
+        CallerSecurityContext? callerContext = null,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Erstellt eine DSGVO-Art.-15-Auskunft (Right of Access) über alle Empfänger und Kategorien von Empfängern,
+    /// die im angegebenen Zeitraum Daten einer Tabelle oder eines Betroffenen über das Gateway abgefragt haben.
+    /// </summary>
+    Task<GdprDisclosureReport> GetGdprDataDisclosureReportAsync(
+        TableIdentifier? table,
+        Sid? subjectSid,
+        int timeWindowDays = 365,
+        CallerSecurityContext? callerContext = null,
+        CancellationToken ct = default);
 }
+

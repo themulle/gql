@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
+using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.Workflows;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
@@ -21,6 +22,16 @@ public sealed class OpenMetadataSyncPayload
     public int SyncedTables { get; init; }
     public int SyncedConsents { get; init; }
     public int SyncedMaskingRules { get; init; }
+    public List<string> Warnings { get; init; } = [];
+}
+
+public sealed class DataCatalogSyncPayload
+{
+    public bool Success { get; init; }
+    public int SyncedTablesCount { get; init; }
+    public int SyncedColumnsCount { get; init; }
+    public int MaskedColumnsCount { get; init; }
+    public int Art9ProtectedTablesCount { get; init; }
     public List<string> Warnings { get; init; } = [];
 }
 
@@ -507,6 +518,42 @@ public sealed class Mutation
             SyncedTables = result.SyncedTables,
             SyncedConsents = result.SyncedConsents,
             SyncedMaskingRules = result.SyncedMaskingRules,
+            Warnings = result.Warnings.ToList()
+        };
+    }
+
+    public async Task<DataCatalogSyncPayload> SyncDataCatalogAsync(
+        bool dryRun = false,
+        [Service] IDataCatalogSyncService catalogSyncService = default!,
+        [Service] IHttpContextAccessor httpContextAccessor = default!,
+        CancellationToken ct = default)
+    {
+        var principal = httpContextAccessor?.HttpContext?.User;
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("UNAUTHORIZED")
+                .SetMessage("Authentifizierung erforderlich.")
+                .Build());
+        }
+
+        var roles = principal.FindAll(ClaimTypes.Role).Select(r => r.Value).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!roles.Contains("GovernanceAdmin") && !roles.Contains("ClusterAdmin") && !roles.Contains("DeveloperAdmin"))
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("FORBIDDEN")
+                .SetMessage("Nur Governance- oder Cluster-Administratoren dürfen den Datenkatalog synchronisieren.")
+                .Build());
+        }
+
+        var result = await catalogSyncService.SyncCatalogAsync(dryRun, ct);
+        return new DataCatalogSyncPayload
+        {
+            Success = result.Success,
+            SyncedTablesCount = result.SyncedTablesCount,
+            SyncedColumnsCount = result.SyncedColumnsCount,
+            MaskedColumnsCount = result.MaskedColumnsCount,
+            Art9ProtectedTablesCount = result.Art9ProtectedTablesCount,
             Warnings = result.Warnings.ToList()
         };
     }

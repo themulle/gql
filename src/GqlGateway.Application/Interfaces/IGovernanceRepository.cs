@@ -20,6 +20,12 @@ public interface IAuditLogRepository
 {
     Task RecordAuditEventAsync(AuditLogEntry entry, CancellationToken ct = default);
     Task<IReadOnlyList<AuditLogEntry>> GetAuditLogEntriesAsync(int limit = 100, CancellationToken ct = default);
+    Task<IReadOnlyList<AuditLogEntry>> QueryAuditLogsAsync(
+        string? targetTable = null,
+        Sid? actorSid = null,
+        DateTimeOffset? since = null,
+        int limit = 1000,
+        CancellationToken ct = default);
     Task<bool> VerifyAuditHashChainAsync(CancellationToken ct = default);
 }
 

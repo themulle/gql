@@ -169,6 +169,48 @@ public sealed class Query
         [Service] IHttpContextAccessor httpContextAccessor,
         CancellationToken ct = default)
     {
+        var callerContext = GetCallerSecurityContext(httpContextAccessor);
+        return await lineageService.CalculateConsentRevocationImpactAsync(
+            callerContext.Tenant,
+            consentId,
+            callerContext,
+            ct);
+    }
+
+    public async Task<TableConsumersReport> GetTableConsumersAsync(
+        string domain,
+        string schema,
+        string tableName,
+        int timeWindowDays = 30,
+        [Service] ILineageImpactAnalyzerService lineageService = null!,
+        [Service] IHttpContextAccessor httpContextAccessor = null!,
+        CancellationToken ct = default)
+    {
+        var tableId = new TableIdentifier(domain, schema, tableName);
+        var callerContext = GetCallerSecurityContext(httpContextAccessor);
+        return await lineageService.GetTableConsumersAsync(tableId, timeWindowDays, callerContext, ct);
+    }
+
+    public async Task<GdprDisclosureReport> GetGdprDataDisclosureReportAsync(
+        string? domain = null,
+        string? schema = null,
+        string? tableName = null,
+        string? subjectSid = null,
+        int timeWindowDays = 365,
+        [Service] ILineageImpactAnalyzerService lineageService = null!,
+        [Service] IHttpContextAccessor httpContextAccessor = null!,
+        CancellationToken ct = default)
+    {
+        TableIdentifier? tableId = !string.IsNullOrWhiteSpace(domain) && !string.IsNullOrWhiteSpace(schema) && !string.IsNullOrWhiteSpace(tableName)
+            ? new TableIdentifier(domain, schema, tableName)
+            : null;
+        Sid? sid = !string.IsNullOrWhiteSpace(subjectSid) ? new Sid(subjectSid) : (Sid?)null;
+        var callerContext = GetCallerSecurityContext(httpContextAccessor);
+        return await lineageService.GetGdprDataDisclosureReportAsync(tableId, sid, timeWindowDays, callerContext, ct);
+    }
+
+    private static CallerSecurityContext GetCallerSecurityContext(IHttpContextAccessor httpContextAccessor)
+    {
         var httpContext = httpContextAccessor?.HttpContext;
         var principal = httpContext?.User ?? new ClaimsPrincipal();
         var userSid = principal.GetUserSid() ?? new Sid("S-1-5-21-ANONYMOUS");
@@ -184,19 +226,13 @@ public sealed class Query
         bool isGovAdmin = roles.Contains("GovernanceAdmin", StringComparer.OrdinalIgnoreCase);
         bool isClusterAdmin = roles.Contains("ClusterAdmin", StringComparer.OrdinalIgnoreCase);
 
-        var callerContext = new CallerSecurityContext(
+        return new CallerSecurityContext(
             userSid,
             groupSids,
             roles,
             tenantId,
             isGovAdmin,
             isClusterAdmin);
-
-        return await lineageService.CalculateConsentRevocationImpactAsync(
-            tenantId,
-            consentId,
-            callerContext,
-            ct);
     }
 }
 

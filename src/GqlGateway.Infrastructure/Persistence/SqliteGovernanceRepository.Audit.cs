@@ -113,7 +113,71 @@ public partial class SqliteGovernanceRepository
         }
     }
 
+    public async Task<IReadOnlyList<AuditLogEntry>> QueryAuditLogsAsync(
+        string? targetTable = null,
+        Sid? actorSid = null,
+        DateTimeOffset? since = null,
+        int limit = 1000,
+        CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var list = new List<AuditLogEntry>();
+            using var cmd = _connection.CreateCommand();
+            var sql = new StringBuilder(@"SELECT id, occurred_at, event_type, actor_sid, target_table, target_column,
+                                               decision, trace_id, details_json, prev_hash, entry_hash
+                                        FROM AUDIT_LOG_ENTRIES
+                                        WHERE 1=1");
+
+            if (!string.IsNullOrWhiteSpace(targetTable))
+            {
+                sql.Append(" AND target_table = @targetTable");
+                cmd.Parameters.AddWithValue("@targetTable", targetTable);
+            }
+            if (actorSid.HasValue && !string.IsNullOrWhiteSpace(actorSid.Value.Value))
+            {
+                sql.Append(" AND actor_sid = @actorSid");
+                cmd.Parameters.AddWithValue("@actorSid", actorSid.Value.Value);
+            }
+            if (since.HasValue)
+            {
+                sql.Append(" AND occurred_at >= @since");
+                cmd.Parameters.AddWithValue("@since", since.Value.ToString("O"));
+            }
+
+            sql.Append(" ORDER BY occurred_at DESC LIMIT @lim");
+            cmd.Parameters.AddWithValue("@lim", Math.Clamp(limit, 1, 5000));
+            cmd.CommandText = sql.ToString();
+
+            using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                list.Add(new AuditLogEntry
+                {
+                    Id = Guid.Parse(reader.GetString(0)),
+                    OccurredAt = DateTimeOffset.Parse(reader.GetString(1)),
+                    EventType = reader.GetString(2),
+                    ActorSid = new Sid(reader.GetString(3)),
+                    TargetTable = reader.GetString(4),
+                    TargetColumn = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    Decision = reader.GetString(6),
+                    TraceId = reader.GetString(7),
+                    DetailsJson = reader.GetString(8),
+                    PrevHash = reader.GetString(9),
+                    EntryHash = reader.GetString(10)
+                });
+            }
+            return list;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     public async Task<bool> VerifyAuditHashChainAsync(CancellationToken ct = default)
+
     {
         await _lock.WaitAsync(ct);
         try

@@ -224,6 +224,29 @@ public class RedTeamPromptInjectionTests
             return Task.FromResult<IReadOnlyList<AuditLogEntry>>(RecordedEvents);
         }
 
+        public Task<IReadOnlyList<AuditLogEntry>> QueryAuditLogsAsync(
+            string? targetTable = null,
+            Sid? actorSid = null,
+            DateTimeOffset? since = null,
+            int limit = 1000,
+            System.Threading.CancellationToken ct = default)
+        {
+            var query = RecordedEvents.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(targetTable))
+            {
+                query = query.Where(e => string.Equals(e.TargetTable, targetTable, StringComparison.OrdinalIgnoreCase));
+            }
+            if (actorSid.HasValue && !string.IsNullOrWhiteSpace(actorSid.Value.Value))
+            {
+                query = query.Where(e => e.ActorSid == actorSid.Value);
+            }
+            if (since.HasValue)
+            {
+                query = query.Where(e => e.OccurredAt >= since.Value);
+            }
+            return Task.FromResult<IReadOnlyList<AuditLogEntry>>(query.OrderByDescending(e => e.OccurredAt).Take(limit).ToList());
+        }
+
         public Task<bool> VerifyAuditHashChainAsync(System.Threading.CancellationToken ct = default)
         {
             return Task.FromResult(true);

@@ -78,3 +78,78 @@ public sealed record JustificationTriageResult(
     bool AutoGrantEligible,
     TimeSpan? GrantedDuration
 );
+
+public enum DataCatalogProviderType
+{
+    OpenMetadata = 1,
+    MicrosoftPurview = 2,
+    Collibra = 3,
+    Alation = 4
+}
+
+public enum DataCatalogSyncMode
+{
+    Mirror = 1,      // Ingest/Sync catalog into local SQLite governance store
+    Reference = 2    // Referencing/federated lookup on-demand
+}
+
+public enum DataSensitivityClassification
+{
+    Normal = 1,
+    Internal = 2,
+    Confidential = 3,
+    Pii = 4,
+    GdprArticle9 = 5 // Special category under GDPR Art. 9 (Health, Biometrics, Political, Religious, etc.)
+}
+
+public sealed record DownstreamConsumerEntity(
+    string Id,
+    string Name,
+    LineageNodeType Type,
+    string? OwnerTeam,
+    string? OwnerEmail, // Null unless caller is authorized approver or admin (Zero-Trust)
+    int DistanceFromRoot,
+    string? UpstreamDependencyId
+);
+
+public sealed record RuntimeConsumerSummary(
+    string ActorSid,
+    int QueryCount,
+    DateTimeOffset FirstSeenAt,
+    DateTimeOffset LastSeenAt,
+    string ClientType // "ServicePrincipal", "InteractiveUser", "DownstreamSystem"
+);
+
+public sealed record TableConsumersReport(
+    string Table,
+    string BreakingChangeRisk, // "CRITICAL", "HIGH", "MEDIUM", "LOW"
+    int TotalDownstreamCount,
+    int ActiveReadersCount,
+    DateTimeOffset? LastAccessedAt,
+    IReadOnlyList<DownstreamConsumerEntity> DownstreamConsumers,
+    IReadOnlyList<RuntimeConsumerSummary> RuntimeConsumers,
+    IReadOnlyList<string> RecommendedMitigations
+);
+
+public sealed record GdprRecipientAccessRecord(
+    string RecipientSid,
+    string RecipientCategory, // "InteractiveUser", "ServicePrincipal", "DownstreamSystem"
+    string Purpose,
+    DateTimeOffset FirstAccess,
+    DateTimeOffset LastAccess,
+    int TotalQueries,
+    IReadOnlyList<string> AccessedColumns,
+    string? MaskingRuleApplied
+);
+
+public sealed record GdprDisclosureReport(
+    string? TargetTable,
+    string? SubjectSid,
+    DateTimeOffset GeneratedAt,
+    int TimeWindowDays,
+    int TotalAccessEvents,
+    IReadOnlyList<GdprRecipientAccessRecord> DisclosedRecipients,
+    IReadOnlyList<string> SensitivityCategories,
+    string LegalBasisNotice
+);
+
