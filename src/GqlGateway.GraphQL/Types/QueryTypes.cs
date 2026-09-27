@@ -170,6 +170,14 @@ public sealed class Query
         CancellationToken ct = default)
     {
         var callerContext = GetCallerSecurityContext(httpContextAccessor);
+        if (callerContext.UserSid.Value == "S-1-5-21-ANONYMOUS" || httpContextAccessor?.HttpContext?.User?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("UNAUTHORIZED")
+                .SetMessage("Authentifizierung erforderlich für Lineage- und Auswirkungsanalysen.")
+                .Build());
+        }
+
         return await lineageService.CalculateConsentRevocationImpactAsync(
             callerContext.Tenant,
             consentId,
@@ -186,8 +194,16 @@ public sealed class Query
         [Service] IHttpContextAccessor httpContextAccessor = null!,
         CancellationToken ct = default)
     {
-        var tableId = new TableIdentifier(domain, schema, tableName);
         var callerContext = GetCallerSecurityContext(httpContextAccessor);
+        if (callerContext.UserSid.Value == "S-1-5-21-ANONYMOUS" || httpContextAccessor?.HttpContext?.User?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("UNAUTHORIZED")
+                .SetMessage("Authentifizierung erforderlich für Konsumentenanalysen.")
+                .Build());
+        }
+
+        var tableId = new TableIdentifier(domain, schema, tableName);
         return await lineageService.GetTableConsumersAsync(tableId, timeWindowDays, callerContext, ct);
     }
 
@@ -201,11 +217,37 @@ public sealed class Query
         [Service] IHttpContextAccessor httpContextAccessor = null!,
         CancellationToken ct = default)
     {
+        var callerContext = GetCallerSecurityContext(httpContextAccessor);
+        if (callerContext.UserSid.Value == "S-1-5-21-ANONYMOUS" || httpContextAccessor?.HttpContext?.User?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("UNAUTHORIZED")
+                .SetMessage("Authentifizierung erforderlich für DSGVO-Auskunftsberichte.")
+                .Build());
+        }
+
         TableIdentifier? tableId = !string.IsNullOrWhiteSpace(domain) && !string.IsNullOrWhiteSpace(schema) && !string.IsNullOrWhiteSpace(tableName)
             ? new TableIdentifier(domain, schema, tableName)
             : null;
         Sid? sid = !string.IsNullOrWhiteSpace(subjectSid) ? new Sid(subjectSid) : (Sid?)null;
-        var callerContext = GetCallerSecurityContext(httpContextAccessor);
+
+        if (sid.HasValue && !sid.Value.Equals(callerContext.UserSid))
+        {
+            bool canAccessForeignReports = callerContext.Roles.Any(r =>
+                r.Equals("PrivacyAdmin", StringComparison.OrdinalIgnoreCase) ||
+                r.Equals("DataProtectionOfficer", StringComparison.OrdinalIgnoreCase) ||
+                r.Equals("GovernanceAdmin", StringComparison.OrdinalIgnoreCase) ||
+                r.Equals("ClusterAdmin", StringComparison.OrdinalIgnoreCase));
+
+            if (!canAccessForeignReports)
+            {
+                throw new GraphQLException(ErrorBuilder.New()
+                    .SetCode("FORBIDDEN")
+                    .SetMessage("DSGVO-Auskunftsberichte für fremde Identitäten erfordern PrivacyAdmin- oder GovernanceAdmin-Rechte.")
+                    .Build());
+            }
+        }
+
         return await lineageService.GetGdprDataDisclosureReportAsync(tableId, sid, timeWindowDays, callerContext, ct);
     }
 
@@ -245,7 +287,14 @@ public sealed class FinanceQuery
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         CancellationToken ct = default)
     {
-        var principal = httpContextAccessor?.HttpContext?.User ?? new ClaimsPrincipal();
+        var principal = httpContextAccessor?.HttpContext?.User;
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("UNAUTHORIZED")
+                .SetMessage("Authentifizierung erforderlich für Finanzabfragen.")
+                .Build());
+        }
 
         var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
         var (rows, decision) = await executionService.ExecuteTableQueryAsync(principal, tableId, first, after, ct);
@@ -265,7 +314,15 @@ public sealed class FinanceQuery
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         CancellationToken ct = default)
     {
-        var principal = httpContextAccessor?.HttpContext?.User ?? new ClaimsPrincipal();
+        var principal = httpContextAccessor?.HttpContext?.User;
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("UNAUTHORIZED")
+                .SetMessage("Authentifizierung erforderlich für Finanzabfragen.")
+                .Build());
+        }
+
         var parentTableId = new TableIdentifier("finance", "dbo", "finance_table_1");
         var (rows, _) = await executionService.ExecuteTableQueryAsync(principal, parentTableId, first, 0, ct);
 
@@ -293,7 +350,14 @@ public sealed class HrQuery
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         CancellationToken ct = default)
     {
-        var principal = httpContextAccessor?.HttpContext?.User ?? new ClaimsPrincipal();
+        var principal = httpContextAccessor?.HttpContext?.User;
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("UNAUTHORIZED")
+                .SetMessage("Authentifizierung erforderlich für Personalabfragen.")
+                .Build());
+        }
 
         var tableId = new TableIdentifier("hr", "dbo", "hr_table_1");
         var (rows, decision) = await executionService.ExecuteTableQueryAsync(principal, tableId, first, after, ct);

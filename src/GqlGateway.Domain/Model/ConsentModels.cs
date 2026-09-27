@@ -58,6 +58,7 @@ public sealed class Consent
     public TableIdentifier TableIdentifier { get; init; }
     public Guid? ConsentRequestId { get; init; }
     public ConsentEffect Effect { get; init; } = ConsentEffect.Allow;
+    public TenantId TenantId { get; set; } = TenantId.LegacySingleTenant;
     public GranteeType GranteeType { get; init; } = GranteeType.User;
     public Sid? GranteeSid { get; init; }
     public Guid? RoleId { get; init; }

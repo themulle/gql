@@ -139,6 +139,38 @@ public sealed class Mutation
     {
         var userSid = GetAuthenticatedUserSid(httpContextAccessor);
 
+        if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(schema) || string.IsNullOrWhiteSpace(tableName))
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("INVALID_ARGUMENT")
+                .SetMessage("Domain, Schema und TableName müssen gültige, nicht-leere Werte sein.")
+                .Build());
+        }
+
+        if (string.IsNullOrWhiteSpace(justification) || justification.Trim().Length < 5)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("INVALID_ARGUMENT")
+                .SetMessage("Eine Begründung (Justification) mit mindestens 5 Zeichen ist erforderlich.")
+                .Build());
+        }
+
+        if (justification.Length > 2000)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("INVALID_ARGUMENT")
+                .SetMessage("Die Begründung darf maximal 2000 Zeichen lang sein.")
+                .Build());
+        }
+
+        if (durationDays < 1 || durationDays > 365)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("INVALID_ARGUMENT")
+                .SetMessage("Die Dauer (durationDays) muss zwischen 1 und 365 Tagen liegen.")
+                .Build());
+        }
+
         var existing = await TryGetIdempotentAsync(userSid, "RequestTableAccess", idempotencyKey, idempotencyStore, ct);
         if (existing != null)
         {
@@ -170,8 +202,8 @@ public sealed class Mutation
             RequesterSid = userSid,
             RequestedGranteeType = GranteeType.User,
             RequestedGranteeRef = userSid.Value,
-            BusinessJustification = justification,
-            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(Math.Clamp(durationDays, 1, 365)),
+            BusinessJustification = justification.Trim(),
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(durationDays),
             Status = isItsmEnabled ? "PENDING_EXTERNAL_APPROVAL" : "PENDING",
             TenantId = tenantId
         };
@@ -307,6 +339,29 @@ public sealed class Mutation
         var roles = principal?.FindAll(ClaimTypes.Role).Select(r => r.Value).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new();
         bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
 
+        var tenantId = TenantId.LegacySingleTenant;
+        if (httpContextAccessor?.HttpContext?.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
+        {
+            tenantId = tid;
+        }
+
+        if (req.TenantId != tenantId && !isPrivilegedAdmin)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("FORBIDDEN")
+                .SetMessage("Mandantenübergreifender Zugriff verboten: Consent-Antrag gehört zu einem anderen Mandanten.")
+                .Build());
+        }
+
+        // Four-Eyes Principle / Separation of Duties (Funktionstrennung)
+        if (req.RequesterSid == approverSid && !roles.Contains("ClusterAdmin"))
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("FORBIDDEN")
+                .SetMessage("Funktionstrennung verletzt: Der Antragsteller kann den eigenen Consent-Antrag nicht genehmigen.")
+                .Build());
+        }
+
         if (!isPrivilegedAdmin)
         {
             var isAuthorized = await ownershipRepository.IsAuthorizedApproverForTableAsync(req.TableIdentifier, approverSid, ct);
@@ -330,6 +385,7 @@ public sealed class Mutation
                 TableId = approved.TableId,
                 TableIdentifier = approved.TableIdentifier,
                 ConsentRequestId = approved.Id,
+                TenantId = approved.TenantId,
                 Effect = ConsentEffect.Allow,
                 GranteeType = approved.RequestedGranteeType,
                 GranteeSid = isRole ? (Sid?)null : new Sid(approved.RequestedGranteeRef),
@@ -378,6 +434,22 @@ public sealed class Mutation
     {
         var approverSid = GetAuthenticatedUserSid(httpContextAccessor);
 
+        if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length < 3)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("INVALID_ARGUMENT")
+                .SetMessage("Ein Ablehnungsgrund mit mindestens 3 Zeichen ist erforderlich.")
+                .Build());
+        }
+
+        if (reason.Length > 1000)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("INVALID_ARGUMENT")
+                .SetMessage("Der Ablehnungsgrund darf maximal 1000 Zeichen lang sein.")
+                .Build());
+        }
+
         var existing = await TryGetIdempotentAsync(approverSid, "RejectConsentRequest", idempotencyKey, idempotencyStore, ct);
         if (existing != null)
         {
@@ -398,6 +470,20 @@ public sealed class Mutation
         var roles = principal?.FindAll(ClaimTypes.Role).Select(r => r.Value).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new();
         bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
 
+        var tenantId = TenantId.LegacySingleTenant;
+        if (httpContextAccessor?.HttpContext?.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
+        {
+            tenantId = tid;
+        }
+
+        if (req.TenantId != tenantId && !isPrivilegedAdmin)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("FORBIDDEN")
+                .SetMessage("Mandantenübergreifender Zugriff verboten: Consent-Antrag gehört zu einem anderen Mandanten.")
+                .Build());
+        }
+
         if (!isPrivilegedAdmin)
         {
             var isAuthorized = await ownershipRepository.IsAuthorizedApproverForTableAsync(req.TableIdentifier, approverSid, ct);
@@ -410,12 +496,12 @@ public sealed class Mutation
             }
         }
 
-        var rejected = await approvalRepository.RejectConsentRequestAsync(requestId, approverSid, reason, ct);
+        var rejected = await approvalRepository.RejectConsentRequestAsync(requestId, approverSid, reason.Trim(), ct);
         var payload = new ConsentRequestPayload
         {
             RequestId = rejected.Id,
             Status = rejected.Status,
-            Message = $"Consent request rejected: {reason}"
+            Message = $"Consent request rejected: {reason.Trim()}"
         };
 
         await StoreIdempotentAsync(approverSid, "RejectConsentRequest", idempotencyKey, payload, idempotencyStore, ct);
@@ -440,6 +526,23 @@ public sealed class Mutation
         CancellationToken ct = default)
     {
         var revokerSid = GetAuthenticatedUserSid(httpContextAccessor);
+
+        if (string.IsNullOrWhiteSpace(reason) || reason.Trim().Length < 3)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("INVALID_ARGUMENT")
+                .SetMessage("Ein Widerrufsgrund mit mindestens 3 Zeichen ist erforderlich.")
+                .Build());
+        }
+
+        if (reason.Length > 1000)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("INVALID_ARGUMENT")
+                .SetMessage("Der Widerrufsgrund darf maximal 1000 Zeichen lang sein.")
+                .Build());
+        }
+
         var consent = await consentRepository.GetConsentByIdAsync(consentId, ct);
         if (consent == null)
         {
@@ -452,6 +555,20 @@ public sealed class Mutation
         var principal = httpContextAccessor?.HttpContext?.User;
         var roles = principal?.FindAll(ClaimTypes.Role).Select(r => r.Value).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new();
         bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
+
+        var tenantId = TenantId.LegacySingleTenant;
+        if (httpContextAccessor?.HttpContext?.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
+        {
+            tenantId = tid;
+        }
+
+        if (consent.TenantId != tenantId && !isPrivilegedAdmin)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("FORBIDDEN")
+                .SetMessage("Mandantenübergreifender Zugriff verboten: Consent gehört zu einem anderen Mandanten.")
+                .Build());
+        }
 
         bool isGranteeSelf = consent.GranteeType == GranteeType.User &&
                              consent.GranteeSid.HasValue &&

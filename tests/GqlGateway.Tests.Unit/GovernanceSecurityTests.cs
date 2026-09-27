@@ -54,6 +54,13 @@ public class GovernanceSecurityTests : IDisposable
         return new IsolatedHttpContextAccessor(context);
     }
 
+    private static IHttpContextAccessor CreateAccessorWithTenant(Sid userSid, TenantId tenantId, params string[] roles)
+    {
+        var accessor = CreateAccessor(userSid, roles);
+        accessor.HttpContext!.Items["TenantId"] = tenantId;
+        return accessor;
+    }
+
     [Fact]
     public async Task RevokeConsent_WhenCalledByUnauthorizedUser_ThrowsForbidden()
     {
@@ -617,5 +624,257 @@ public class GovernanceSecurityTests : IDisposable
 
         result.Success.ShouldBeFalse();
         result.ErrorCode.ShouldBe("ITSM_NOT_CONFIGURED");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("abc")]
+    public async Task RequestTableAccess_WithTooShortJustification_ThrowsInvalidArgument(string justification)
+    {
+        var accessor = CreateAccessor(new Sid("S-1-5-21-USER-1"));
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await _mutation.RequestTableAccessAsync("finance", "dbo", "finance_table_1", justification, 7, null, _repository, _repository, accessor);
+        });
+        ex.Errors.ShouldContain(e => e.Code == "INVALID_ARGUMENT");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    [InlineData(366)]
+    public async Task RequestTableAccess_WithInvalidDuration_ThrowsInvalidArgument(int durationDays)
+    {
+        var accessor = CreateAccessor(new Sid("S-1-5-21-USER-1"));
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await _mutation.RequestTableAccessAsync("finance", "dbo", "finance_table_1", "Valid justification here", durationDays, null, _repository, _repository, accessor);
+        });
+        ex.Errors.ShouldContain(e => e.Code == "INVALID_ARGUMENT");
+    }
+
+    [Fact]
+    public async Task ApproveConsentRequest_SelfApproval_ThrowsForbiddenDueToFourEyesPrinciple()
+    {
+        var table = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await _repository.GetTableMetadataAsync(table);
+        meta.ShouldNotBeNull();
+
+        // The requester is also the owner of the table (S-1-5-21-DATAOWNER-1)
+        var ownerAndRequesterSid = new Sid("S-1-5-21-DATAOWNER-1");
+
+        var req = await _repository.CreateConsentRequestAsync(new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = table,
+            RequesterSid = ownerAndRequesterSid,
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = ownerAndRequesterSid.Value,
+            BusinessJustification = "Trying to approve myself",
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7),
+            TenantId = TenantId.LegacySingleTenant
+        });
+
+        // Caller is the same requester
+        var accessor = CreateAccessor(ownerAndRequesterSid);
+
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await _mutation.ApproveConsentRequestAsync(req.Id, null, _repository, _repository, _repository, accessor);
+        });
+
+        ex.Errors.ShouldContain(e => e.Code == "FORBIDDEN" && e.Message.Contains("Funktionstrennung verletzt"));
+    }
+
+    [Fact]
+    public async Task ApproveConsentRequest_CrossTenantAccess_ThrowsForbidden()
+    {
+        var table = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await _repository.GetTableMetadataAsync(table);
+        meta.ShouldNotBeNull();
+
+        var requesterSid = new Sid("S-1-5-21-REQ-1");
+        var approverSid = new Sid("S-1-5-21-DATAOWNER-1");
+
+        // Request belongs to tenant-alpha
+        var req = await _repository.CreateConsentRequestAsync(new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = table,
+            RequesterSid = requesterSid,
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = requesterSid.Value,
+            BusinessJustification = "Tenant alpha request",
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7),
+            TenantId = new TenantId("tenant-alpha")
+        });
+
+        // Approver is authenticated in tenant-beta
+        var accessor = CreateAccessorWithTenant(approverSid, new TenantId("tenant-beta"));
+
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await _mutation.ApproveConsentRequestAsync(req.Id, null, _repository, _repository, _repository, accessor);
+        });
+
+        ex.Errors.ShouldContain(e => e.Code == "FORBIDDEN" && e.Message.Contains("Mandantenübergreifender Zugriff verboten"));
+    }
+
+    [Fact]
+    public async Task RejectConsentRequest_WithShortReason_ThrowsInvalidArgument()
+    {
+        var approverSid = new Sid("S-1-5-21-DATAOWNER-1");
+        var accessor = CreateAccessor(approverSid);
+
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await _mutation.RejectConsentRequestAsync(Guid.NewGuid(), "no", null, _repository, _repository, accessor);
+        });
+
+        ex.Errors.ShouldContain(e => e.Code == "INVALID_ARGUMENT");
+    }
+
+    [Fact]
+    public async Task RejectConsentRequest_CrossTenantAccess_ThrowsForbidden()
+    {
+        var table = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await _repository.GetTableMetadataAsync(table);
+        meta.ShouldNotBeNull();
+
+        var requesterSid = new Sid("S-1-5-21-REQ-2");
+        var approverSid = new Sid("S-1-5-21-DATAOWNER-1");
+
+        var req = await _repository.CreateConsentRequestAsync(new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = table,
+            RequesterSid = requesterSid,
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = requesterSid.Value,
+            BusinessJustification = "Tenant alpha request to reject",
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7),
+            TenantId = new TenantId("tenant-alpha")
+        });
+
+        var accessor = CreateAccessorWithTenant(approverSid, new TenantId("tenant-beta"));
+
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await _mutation.RejectConsentRequestAsync(req.Id, "Valid rejection reason", null, _repository, _repository, accessor);
+        });
+
+        ex.Errors.ShouldContain(e => e.Code == "FORBIDDEN" && e.Message.Contains("Mandantenübergreifender Zugriff verboten"));
+    }
+
+    [Fact]
+    public async Task RevokeConsent_CrossTenantAccess_ThrowsForbidden()
+    {
+        var table = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await _repository.GetTableMetadataAsync(table);
+        meta.ShouldNotBeNull();
+
+        var ownerSid = new Sid("S-1-5-21-DATAOWNER-1");
+        var granteeSid = new Sid("S-1-5-21-GRANTEE-3");
+
+        var consent = await _repository.CreateConsentAsync(new Consent
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = table,
+            Effect = ConsentEffect.Allow,
+            GranteeType = GranteeType.User,
+            GranteeSid = granteeSid,
+            ValidFrom = DateTimeOffset.UtcNow.AddDays(-1),
+            ValidTo = DateTimeOffset.UtcNow.AddDays(30),
+            TenantId = new TenantId("tenant-alpha")
+        });
+
+        var accessor = CreateAccessorWithTenant(ownerSid, new TenantId("tenant-beta"));
+
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await _mutation.RevokeConsentAsync(consent.Id, "Valid revocation reason", _repository, accessor);
+        });
+
+        ex.Errors.ShouldContain(e => e.Code == "FORBIDDEN" && e.Message.Contains("Mandantenübergreifender Zugriff verboten"));
+    }
+
+    [Fact]
+    public async Task Query_GetGdprDataDisclosureReport_ForForeignSubjectWithoutPrivacyRole_ThrowsForbidden()
+    {
+        var query = new Query();
+        var callerSid = new Sid("S-1-5-21-CALLER-1");
+        var foreignSid = "S-1-5-21-FOREIGN-USER";
+        var accessor = CreateAccessor(callerSid); // Standard user, no PrivacyAdmin or GovernanceAdmin
+
+        var lineageService = NSubstitute.Substitute.For<ILineageImpactAnalyzerService>();
+
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await query.GetGdprDataDisclosureReportAsync(
+                domain: "finance",
+                schema: "dbo",
+                tableName: "finance_table_1",
+                subjectSid: foreignSid,
+                timeWindowDays: 365,
+                lineageService: lineageService,
+                httpContextAccessor: accessor);
+        });
+
+        ex.Errors.ShouldContain(e => e.Code == "FORBIDDEN" && e.Message.Contains("DSGVO-Auskunftsberichte für fremde Identitäten erfordern PrivacyAdmin- oder GovernanceAdmin-Rechte."));
+    }
+
+    [Fact]
+    public async Task Query_Unauthenticated_ThrowsUnauthorized()
+    {
+        var query = new Query();
+        var unauthenticatedAccessor = new IsolatedHttpContextAccessor(new DefaultHttpContext()); // No User / not authenticated
+        var lineageService = NSubstitute.Substitute.For<ILineageImpactAnalyzerService>();
+
+        var ex1 = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await query.CalculateConsentRevocationImpactAsync(Guid.NewGuid(), lineageService, unauthenticatedAccessor);
+        });
+        ex1.Errors.ShouldContain(e => e.Code == "UNAUTHORIZED");
+
+        var ex2 = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await query.GetTableConsumersAsync("finance", "dbo", "invoices", 30, lineageService, unauthenticatedAccessor);
+        });
+        ex2.Errors.ShouldContain(e => e.Code == "UNAUTHORIZED");
+
+        var ex3 = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await query.GetGdprDataDisclosureReportAsync("finance", "dbo", "invoices", null, 365, lineageService, unauthenticatedAccessor);
+        });
+        ex3.Errors.ShouldContain(e => e.Code == "UNAUTHORIZED");
+    }
+
+    [Fact]
+    public async Task FinanceAndHrQuery_Unauthenticated_ThrowsUnauthorized()
+    {
+        var unauthenticatedAccessor = new IsolatedHttpContextAccessor(new DefaultHttpContext());
+        var executionService = NSubstitute.Substitute.For<IGatewayExecutionService>();
+
+        var finQuery = new FinanceQuery();
+        var hrQuery = new HrQuery();
+
+        var ex1 = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await finQuery.GetInvoicesAsync(50, 0, executionService, unauthenticatedAccessor);
+        });
+        ex1.Errors.ShouldContain(e => e.Code == "UNAUTHORIZED");
+
+        var ex2 = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await finQuery.GetInvoicesWithItemsAsync(10, executionService, unauthenticatedAccessor);
+        });
+        ex2.Errors.ShouldContain(e => e.Code == "UNAUTHORIZED");
+
+        var ex3 = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await hrQuery.GetEmployeesAsync(50, 0, executionService, unauthenticatedAccessor);
+        });
+        ex3.Errors.ShouldContain(e => e.Code == "UNAUTHORIZED");
     }
 }
