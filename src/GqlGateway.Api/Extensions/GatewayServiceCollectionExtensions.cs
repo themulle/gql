@@ -650,6 +650,11 @@ public static class GatewayServiceCollectionExtensions
                 throw new ValidationException("Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
             }
 
+            if (options.IsAnonymousAccessAllowed)
+            {
+                throw new ValidationException("Sicherheitsverletzung: danger_allow_anonymous_access darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
+            }
+
             var activeBypasses = options.GetAllActiveBypasses();
             var disallowedInProd = activeBypasses
                 .Where(b => b.StartsWith("DANGER:", StringComparison.OrdinalIgnoreCase) ||

@@ -10,6 +10,7 @@ using GqlGateway.Api.Extensions;
 using GqlGateway.Api.Middleware;
 using GqlGateway.Api.Security;
 using GqlGateway.Application.Governance;
+using GqlGateway.Application.Services;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 using GqlGateway.Infrastructure.Security;
@@ -297,6 +298,71 @@ public class SecurityFindingsRemediationTests
 
         // Assert
         Encoding.UTF8.GetString(secretBytes).ShouldBe("itsm-secret-12345");
+    }
+
+    [Fact]
+    public void ValidateSecurityInvariants_InProduction_UntrustedCertificatesAllowed_ThrowsValidationException()
+    {
+        var mockEnv = Substitute.For<IHostEnvironment>();
+        mockEnv.EnvironmentName.Returns("Production");
+
+        var options = new GatewayOptions
+        {
+            Insecure = new InsecureGettingStartedOptions
+            {
+                danger_allow_untrusted_certificates = true
+            }
+        };
+
+        var ex = Should.Throw<ValidationException>(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, mockEnv));
+        ex.Message.ShouldContain("DANGER:danger_allow_untrusted_certificates");
+    }
+
+    [Fact]
+    public void ValidateSecurityInvariants_InProduction_DisableRateLimiting_ThrowsValidationException()
+    {
+        var mockEnv = Substitute.For<IHostEnvironment>();
+        mockEnv.EnvironmentName.Returns("Production");
+
+        var options = new GatewayOptions
+        {
+            Insecure = new InsecureGettingStartedOptions
+            {
+                warn_disable_rate_limiting = true
+            }
+        };
+
+        var ex = Should.Throw<ValidationException>(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, mockEnv));
+        ex.Message.ShouldContain("WARN:warn_disable_rate_limiting");
+    }
+
+    [Fact]
+    public void DeclarativeHttp_IsRestrictedIp_IdentifiesPrivateAndLoopbackIps()
+    {
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("127.0.0.1")).ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("10.1.2.3")).ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("172.16.5.6")).ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("192.168.1.100")).ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("169.254.169.254")).ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("::1")).ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("fc00::1")).ShouldBeTrue();
+
+        // Public IPs should not be restricted
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("8.8.8.8")).ShouldBeFalse();
+        DeclarativeHttpDataSourceExecutor.IsRestrictedIp(System.Net.IPAddress.Parse("93.184.216.34")).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void DeclarativeHttp_IsForbiddenMetadataHost_IdentifiesMetadataHosts()
+    {
+        DeclarativeHttpDataSourceExecutor.IsForbiddenMetadataHost("metadata.google.internal").ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsForbiddenMetadataHost("sub.metadata.google.internal").ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsForbiddenMetadataHost("kubernetes.default.svc").ShouldBeTrue();
+        DeclarativeHttpDataSourceExecutor.IsForbiddenMetadataHost("kubernetes.default.svc.cluster.local").ShouldBeTrue();
+
+        DeclarativeHttpDataSourceExecutor.IsForbiddenMetadataHost("api.corp.com").ShouldBeFalse();
     }
 
     private sealed class TestOptionsMonitor<T>(T currentValue) : IOptionsMonitor<T>
