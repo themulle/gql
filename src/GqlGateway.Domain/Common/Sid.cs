@@ -30,7 +30,10 @@ public static class ClaimsPrincipalExtensions
             ?? principal.FindFirst("oid")?.Value
             ?? principal.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
             ?? principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
-            ?? principal.FindFirst("sub")?.Value;
+            ?? principal.FindFirst("sub")?.Value
+            ?? principal.FindFirst("appid")?.Value
+            ?? principal.FindFirst("client_id")?.Value
+            ?? principal.FindFirst("azp")?.Value;
 
         return string.IsNullOrWhiteSpace(sidStr) ? (Sid?)null : new Sid(sidStr);
     }

@@ -37,9 +37,13 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
         Func<HttpRequestMessage, HttpResponseMessage> handler)
     {
         var requests = new List<HttpRequestMessage>();
+        var lockObj = new object();
         var mockHandler = new DelegatingMockHandler(req =>
         {
-            requests.Add(req);
+            lock (lockObj)
+            {
+                requests.Add(req);
+            }
             return handler(req);
         });
 

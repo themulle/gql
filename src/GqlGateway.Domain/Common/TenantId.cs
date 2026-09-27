@@ -54,5 +54,6 @@ public sealed record CallerSecurityContext(
     IReadOnlyCollection<string> Roles,
     TenantId Tenant,
     bool IsGovernanceAdmin,
-    bool IsClusterAdmin
+    bool IsClusterAdmin,
+    GqlGateway.Domain.Model.SubjectIdentity? Subject = null
 );

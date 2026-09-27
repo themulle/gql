@@ -98,7 +98,7 @@ public sealed class Consent
         {
             if (GranteeSid == null || string.IsNullOrWhiteSpace(GranteeSid.Value.Value))
             {
-                throw new InvalidOperationException($"Consent {Id}: GranteeSid must be specified when GranteeType is User or Group.");
+                throw new InvalidOperationException($"Consent {Id}: GranteeSid must be specified when GranteeType is User, Group or ServicePrincipal.");
             }
         }
     }

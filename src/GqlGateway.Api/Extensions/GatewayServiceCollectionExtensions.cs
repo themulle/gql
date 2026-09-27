@@ -176,6 +176,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IRlsFilterGenerator, RlsFilterGenerator>();
         services.AddSingleton<IRowFilterSqlBuilder, RowFilterSqlBuilder>();
         services.AddSingleton<IConsentResolutionService, ConsentResolutionService>();
+        services.AddSingleton<IIdentitySubjectResolver, IdentitySubjectResolver>();
         services.AddSingleton<IKeyVaultSecretProvider, DefaultEnvironmentSecretProvider>();
         services.AddSingleton<IColumnMaskingProvider, ColumnMaskingProvider>();
         services.AddSingleton<IChunkedQueryExecutor>(sp => new ChunkedQueryExecutor(
@@ -438,6 +439,7 @@ public static class GatewayServiceCollectionExtensions
                 if (environment.IsDevelopment() && gatewayOptions.Authentication.EnableTestAuthHandler)
                 {
                     if (context.Request.Headers.ContainsKey("X-Test-User-Sid") ||
+                        context.Request.Headers.ContainsKey("X-Test-AppId") ||
                         string.IsNullOrWhiteSpace(authHeader))
                     {
                         return TestAuthHandler.SchemeName;

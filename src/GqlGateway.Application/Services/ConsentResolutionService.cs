@@ -132,6 +132,7 @@ public sealed class ConsentResolutionService : IConsentResolutionService
         switch (consent.GranteeType)
         {
             case GranteeType.User:
+            case GranteeType.ServicePrincipal:
                 return consent.GranteeSid.HasValue && consent.GranteeSid.Value == userSid;
 
             case GranteeType.Group:

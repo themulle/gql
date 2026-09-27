@@ -24,7 +24,14 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
 
         if (!headers.TryGetValue("X-Test-User-Sid", out var userSidVal) || string.IsNullOrWhiteSpace(userSidVal))
         {
-            return Task.FromResult(AuthenticateResult.NoResult());
+            if (headers.TryGetValue("X-Test-AppId", out var appIdOnly) && !string.IsNullOrWhiteSpace(appIdOnly))
+            {
+                userSidVal = appIdOnly;
+            }
+            else
+            {
+                return Task.FromResult(AuthenticateResult.NoResult());
+            }
         }
 
         var userSid = userSidVal.ToString();
@@ -40,6 +47,16 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
             new(ClaimTypes.NameIdentifier, userSid),
             new("objectSid", userSid)
         };
+
+        if (headers.TryGetValue("X-Test-AppId", out var appIdHeader) && !string.IsNullOrWhiteSpace(appIdHeader))
+        {
+            claims.Add(new Claim("appid", appIdHeader.ToString().Trim()));
+        }
+
+        if (headers.TryGetValue("X-Test-IdTyp", out var idTypHeader) && !string.IsNullOrWhiteSpace(idTypHeader))
+        {
+            claims.Add(new Claim("idtyp", idTypHeader.ToString().Trim()));
+        }
 
         if (headers.TryGetValue("X-Test-Group-Sids", out var groupSidsVal) && !string.IsNullOrWhiteSpace(groupSidsVal))
         {
