@@ -385,6 +385,26 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         }
     }
 
+    public static void ValidateUrl(Uri uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        var host = uri.Host.TrimEnd('.').ToLowerInvariant();
+        if (IsForbiddenMetadataHost(host))
+        {
+            throw new SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
+        }
+
+        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "169.254.169.254")
+        {
+            throw new SecurityException($"Outbound access to private/loopback/metadata address '{host}' is strictly forbidden.");
+        }
+
+        if (IPAddress.TryParse(host, out var directIp) && IsRestrictedIp(directIp))
+        {
+            throw new SecurityException($"Outbound access to restricted IP address '{directIp}' is strictly forbidden.");
+        }
+    }
+
     public static bool IsForbiddenMetadataHost(string host)
     {
         var h = host.TrimEnd('.').ToLowerInvariant();

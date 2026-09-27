@@ -10,6 +10,7 @@ using GqlGateway.Application.Services;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Options;
 using GqlGateway.GraphQL.Filtering;
+using GqlGateway.GraphQL.Federation;
 using GqlGateway.GraphQL.Types;
 using GqlGateway.Infrastructure.Cache;
 using GqlGateway.Infrastructure.Health;
@@ -583,10 +584,13 @@ public static class GatewayServiceCollectionExtensions
         services.AddHttpClient<FastlyCdnPurgeService>();
         services.AddTransient<ICdnCachePurgeService, CloudflareCdnPurgeService>();
 
+        services.AddFusionFederationServices(gatewayOptions);
+
         var gqlBuilder = services
             .AddGraphQLServer()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CostAndQuotaMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CdnCacheTagMiddleware>()
+            .UseRequest<GqlGateway.GraphQL.Federation.SubgraphResultMaskingMiddleware>()
             .UseDefaultPipeline()
             .AddQueryType<Query>()
             .AddMutationType<Mutation>()

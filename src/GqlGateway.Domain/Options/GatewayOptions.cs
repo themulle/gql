@@ -24,6 +24,7 @@ public sealed class GatewayOptions
     [Required] public DataCatalogOptions Catalog { get; init; } = new();
     [Required] public McpOptions Mcp { get; init; } = new();
     [Required] public LakehouseOptions Lakehouse { get; init; } = new();
+    [Required] public FederationOptions Federation { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
