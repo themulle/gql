@@ -41,9 +41,9 @@ public class GatewayLoadBenchmark : IDisposable
             builder.UseSetting("Gateway:Authentication:EnableTestAuthHandler", "true");
             builder.UseSetting("Gateway:GovernanceDb:Provider", "Sqlite");
             builder.UseSetting("Gateway:GovernanceDb:ConnectionString", "Data Source=:memory:;Mode=Memory;Cache=Shared");
-            builder.UseSetting("Gateway:RateLimiting:PreAuthIpRateLimit:PermitLimit", "1000000");
-            builder.UseSetting("Gateway:RateLimiting:PostAuthSidRateLimit:TokenBucketCapacity", "1000000");
-            builder.UseSetting("Gateway:RateLimiting:PostAuthSidRateLimit:TokensPerSecond", "500000");
+            builder.UseSetting("Gateway:RateLimiting:PreAuthIpRateLimit:PermitLimit", "100000");
+            builder.UseSetting("Gateway:RateLimiting:PostAuthSidRateLimit:TokenBucketCapacity", "100000");
+            builder.UseSetting("Gateway:RateLimiting:PostAuthSidRateLimit:TokensPerSecond", "10000");
         });
 
         var userSid = new Sid("S-1-5-21-9999");
@@ -73,6 +73,7 @@ public class GatewayLoadBenchmark : IDisposable
 
         _client = _factory.CreateClient();
         _client.DefaultRequestHeaders.Add("X-Test-User-Sid", userSid.Value);
+        _client.DefaultRequestHeaders.Add("GraphQL-Preflight", "1");
 
         // Warm up pipeline
         var warmupRes = _client.PostAsJsonAsync("/graphql", _queryObject).GetAwaiter().GetResult();

@@ -26,6 +26,8 @@ public static class GatewayApplicationBuilderExtensions
         });
 
         app.UseForwardedHeaders();
+        app.UseMiddleware<TenantResolutionMiddleware>();
+        app.UseMiddleware<OpenTelemetryTracingMiddleware>();
         app.UseCors();
 
         if (!app.Environment.IsDevelopment())
@@ -237,7 +239,7 @@ public static class GatewayApplicationBuilderExtensions
             }
 
             using var reader = new StreamReader(context.Request.Body);
-            var payload = await reader.ReadToEndAsync();
+            var payload = await reader.ReadToEndAsync(context.RequestAborted);
 
             string? signature = context.Request.Headers["X-OpenMetadata-Signature"].FirstOrDefault() ??
                                 context.Request.Headers["X-OM-Signature"].FirstOrDefault();
@@ -246,6 +248,39 @@ public static class GatewayApplicationBuilderExtensions
             if (!success)
             {
                 return Results.BadRequest(new { error = "Failed to process webhook or invalid signature." });
+            }
+
+            return Results.Ok(new { status = "Processed" });
+        }).AllowAnonymous();
+
+        app.MapPost("/api/webhooks/itsm/status-change", async (
+            HttpContext context,
+            IItsmWebhookHandler webhookHandler) =>
+        {
+            if (context.Request.ContentLength > 2 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Payload size exceeds maximum allowed size (2 MB)." });
+            }
+
+            using var reader = new StreamReader(context.Request.Body);
+            var payload = await reader.ReadToEndAsync(context.RequestAborted);
+
+            string? signature = context.Request.Headers["X-ITSM-Signature"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(signature))
+            {
+                return Results.Unauthorized();
+            }
+
+            if (!context.Request.Headers.TryGetValue("X-ITSM-Timestamp", out var tsHeader) ||
+                !DateTimeOffset.TryParse(tsHeader.FirstOrDefault(), out var timestamp))
+            {
+                return Results.BadRequest(new { error = "Header X-ITSM-Timestamp is required and must be a valid ISO 8601 timestamp." });
+            }
+
+            var success = await webhookHandler.HandleStatusChangeAsync(payload, signature, timestamp, context.RequestAborted);
+            if (!success)
+            {
+                return Results.Unauthorized();
             }
 
             return Results.Ok(new { status = "Processed" });

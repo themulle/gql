@@ -1,0 +1,12 @@
+namespace GqlGateway.Application.Interfaces;
+
+using System.Collections.Generic;
+using GqlGateway.Domain.Model;
+
+public interface ILineageGraphStore
+{
+    LineageNode? GetNode(string nodeId);
+    bool ContainsNode(string nodeId);
+    void UpdateGraph(IEnumerable<LineageNode> nodes);
+    int Count { get; }
+}

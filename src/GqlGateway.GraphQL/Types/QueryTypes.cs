@@ -162,6 +162,42 @@ public sealed class Query
                 };
             }).ToList();
     }
+
+    public async Task<ConsentRevocationImpactReport> CalculateConsentRevocationImpactAsync(
+        Guid consentId,
+        [Service] ILineageImpactAnalyzerService lineageService,
+        [Service] IHttpContextAccessor httpContextAccessor,
+        CancellationToken ct = default)
+    {
+        var httpContext = httpContextAccessor?.HttpContext;
+        var principal = httpContext?.User ?? new ClaimsPrincipal();
+        var userSid = principal.GetUserSid() ?? new Sid("S-1-5-21-ANONYMOUS");
+        var groupSids = principal.GetGroupSids().ToList();
+        var roles = principal.GetUserRoles().ToList();
+
+        var tenantId = TenantId.LegacySingleTenant;
+        if (httpContext?.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
+        {
+            tenantId = tid;
+        }
+
+        bool isGovAdmin = roles.Contains("GovernanceAdmin", StringComparer.OrdinalIgnoreCase);
+        bool isClusterAdmin = roles.Contains("ClusterAdmin", StringComparer.OrdinalIgnoreCase);
+
+        var callerContext = new CallerSecurityContext(
+            userSid,
+            groupSids,
+            roles,
+            tenantId,
+            isGovAdmin,
+            isClusterAdmin);
+
+        return await lineageService.CalculateConsentRevocationImpactAsync(
+            tenantId,
+            consentId,
+            callerContext,
+            ct);
+    }
 }
 
 public sealed class FinanceQuery

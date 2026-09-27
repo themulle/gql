@@ -36,6 +36,10 @@ public interface IConsentApprovalRepository
     Task<IReadOnlyList<ConsentRequest>> GetPendingRequestsForApproverAsync(Sid approverSid, CancellationToken ct = default);
     Task<ConsentRequest> ApproveConsentRequestStepAsync(Guid requestId, Sid approverSid, CancellationToken ct = default);
     Task<ConsentRequest> RejectConsentRequestAsync(Guid requestId, Sid approverSid, string reason, CancellationToken ct = default);
+    Task<ConsentRequest?> GetConsentRequestByTicketIdAsync(string ticketId, CancellationToken ct = default);
+    Task ActivateConsentAsync(Guid requestId, CancellationToken ct = default);
+    Task DeleteConsentRequestAsync(Guid requestId, CancellationToken ct = default);
+    Task UpdateConsentRequestTicketIdAsync(Guid requestId, string ticketId, CancellationToken ct = default);
 }
 
 public interface IDataOwnershipRepository

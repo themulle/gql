@@ -1,4 +1,6 @@
 using System.ComponentModel.DataAnnotations;
+using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Model;
 
 namespace GqlGateway.Domain.Options;
 
@@ -18,6 +20,7 @@ public sealed class GatewayOptions
     [Required] public OpenMetadataOptions OpenMetadata { get; init; } = new();
     [Required] public PluginsOptions Plugins { get; init; } = new();
     [Required] public SqlDataSourceOptions DataSources { get; init; } = new();
+    [Required] public ItsmOptions Itsm { get; init; } = new();
 }
 
 public sealed class PluginsOptions
@@ -175,8 +178,8 @@ public sealed class PostAuthSidRateLimitOptions
 public sealed class GraphQLOptions
 {
     public string EndpointPath { get; init; } = "/graphql";
-    [Range(1, 25)] public int MaxAllowedExecutionDepth { get; init; } = 10;
-    [Range(100, 10000)] public int MaxAllowedComplexity { get; init; } = 1500;
+    [Range(1, 25)] public int MaxAllowedExecutionDepth { get; init; } = 6;
+    [Range(100, 10000)] public int MaxAllowedComplexity { get; init; } = 500;
     public bool EnableIntrospection { get; init; }
     public bool PersistedQueriesOnly { get; init; }
     public bool EnableBananaCakePop { get; init; }
@@ -232,4 +235,23 @@ public sealed class DataSourceConnectionOptions
     public string ConnectionString { get; init; } = string.Empty;
     [Range(1, 300)] public int CommandTimeoutSeconds { get; init; } = 30;
 }
+
+public sealed class ItsmOptions
+{
+    public bool Enabled { get; init; }
+    public ItsmSystemType DefaultSystem { get; init; } = ItsmSystemType.ServiceNow;
+    public string ServiceNowBaseUrl { get; init; } = string.Empty;
+    public string JiraBaseUrl { get; init; } = string.Empty;
+    public Dictionary<string, string> InstanceToTenantMap { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public TenantId GetTenantForInstance(string instanceId)
+    {
+        if (InstanceToTenantMap.TryGetValue(instanceId, out var tenantStr) && !string.IsNullOrWhiteSpace(tenantStr))
+        {
+            return new TenantId(tenantStr);
+        }
+        return TenantId.LegacySingleTenant;
+    }
+}
+
 

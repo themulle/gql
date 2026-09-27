@@ -14,6 +14,12 @@ public static class BenchmarkRunnerApp
         Console.WriteLine("================================================================================");
         Console.WriteLine();
 
+        if (args.Length > 0 && args[0].Equals("sla", StringComparison.OrdinalIgnoreCase))
+        {
+            await SlaValidationBenchmark.RunAllSlaChecksAsync();
+            return;
+        }
+
         // 0. Full Scale Enterprise Spike (50,000 tables, 250,000 columns, 5,000 users)
         var scaleBenchmark = new ScaleCatalogBenchmark();
         scaleBenchmark.ExecuteFullScaleSpike();
@@ -29,6 +35,9 @@ public static class BenchmarkRunnerApp
 
         // 4. End-to-End Concurrent WebHost Load & Latency Benchmark
         await RunGatewayLoadBenchmarkAsync();
+
+        // 5. Explicit SLA Checks (Casbin, Lineage, Complexity)
+        await SlaValidationBenchmark.RunAllSlaChecksAsync();
 
         Console.WriteLine("================================================================================");
         Console.WriteLine(" All Performance Benchmarks Completed Successfully.");

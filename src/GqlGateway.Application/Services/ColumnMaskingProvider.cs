@@ -164,7 +164,12 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
             return new string('*', text.Length);
         }
 
-        return $"{text[..2]}{new string('*', text.Length - 4)}{text[^2..]}";
+        return string.Create(text.Length, text, static (span, src) =>
+        {
+            src.AsSpan(0, 2).CopyTo(span);
+            span.Slice(2, span.Length - 4).Fill('*');
+            src.AsSpan(src.Length - 2).CopyTo(span[^2..]);
+        });
     }
 
     private static string MaskEmail(string email)
@@ -269,11 +274,12 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
             return new string('*', phone.Length);
         }
 
-        if (phone.Length <= 8)
+        int unmasked = phone.Length <= 8 ? 1 : 3;
+        return string.Create(phone.Length, (phone, unmasked), static (span, state) =>
         {
-            return $"{phone[..1]}{new string('*', phone.Length - 2)}{phone[^1..]}";
-        }
-
-        return $"{phone[..3]}{new string('*', phone.Length - 6)}{phone[^3..]}";
+            state.phone.AsSpan(0, state.unmasked).CopyTo(span);
+            span.Slice(state.unmasked, span.Length - 2 * state.unmasked).Fill('*');
+            state.phone.AsSpan(span.Length - state.unmasked).CopyTo(span[^state.unmasked..]);
+        });
     }
 }

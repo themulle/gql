@@ -404,8 +404,8 @@ public partial class SqliteGovernanceRepository
         try
         {
             using var cmd = _connection.CreateCommand();
-            cmd.CommandText = @"INSERT INTO CONSENT_REQUESTS (id, table_id, requester_sid, requested_grantee_type, requested_grantee_ref, business_justification, status, requested_at, requested_valid_to)
-                                VALUES (@id, @tid, @req, @type, @ref, @just, @stat, @at, @to)";
+            cmd.CommandText = @"INSERT INTO CONSENT_REQUESTS (id, table_id, requester_sid, requested_grantee_type, requested_grantee_ref, business_justification, status, requested_at, requested_valid_to, itsm_ticket_id, tenant_id)
+                                VALUES (@id, @tid, @req, @type, @ref, @just, @stat, @at, @to, @ticketId, @tenantId)";
             cmd.Parameters.AddWithValue("@id", request.Id.ToString());
             cmd.Parameters.AddWithValue("@tid", request.TableId.ToString());
             cmd.Parameters.AddWithValue("@req", request.RequesterSid.Value);
@@ -415,6 +415,8 @@ public partial class SqliteGovernanceRepository
             cmd.Parameters.AddWithValue("@stat", request.Status);
             cmd.Parameters.AddWithValue("@at", request.RequestedAt.ToString("O"));
             cmd.Parameters.AddWithValue("@to", request.RequestedValidTo.ToString("O"));
+            cmd.Parameters.AddWithValue("@ticketId", (object?)request.ItsmTicketId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@tenantId", request.TenantId.Value);
 
             await cmd.ExecuteNonQueryAsync(ct);
             return request;
@@ -433,7 +435,8 @@ public partial class SqliteGovernanceRepository
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"SELECT r.id, r.table_id, r.requester_sid, r.requested_grantee_type, r.requested_grantee_ref,
                                        r.business_justification, r.status, r.requested_at, r.requested_valid_to,
-                                       COALESCE(t.source_name, p.domain, 'default'), t.schema_name, t.table_name
+                                       COALESCE(t.source_name, p.domain, 'default'), t.schema_name, t.table_name,
+                                       r.itsm_ticket_id, r.tenant_id
                                 FROM CONSENT_REQUESTS r
                                 JOIN TABLES t ON r.table_id = t.id
                                 LEFT JOIN POLICY_EPOCHS p ON t.id = p.table_id
@@ -454,10 +457,166 @@ public partial class SqliteGovernanceRepository
                     Status = reader.GetString(6),
                     RequestedAt = DateTimeOffset.Parse(reader.GetString(7)),
                     RequestedValidTo = DateTimeOffset.Parse(reader.GetString(8)),
-                    TableIdentifier = new TableIdentifier(reader.GetString(9), reader.GetString(10), reader.GetString(11))
+                    TableIdentifier = new TableIdentifier(reader.GetString(9), reader.GetString(10), reader.GetString(11)),
+                    ItsmTicketId = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    TenantId = reader.IsDBNull(13) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(13))
                 };
             }
             return null;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task<ConsentRequest?> GetConsentRequestByTicketIdAsync(string ticketId, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"SELECT r.id, r.table_id, r.requester_sid, r.requested_grantee_type, r.requested_grantee_ref,
+                                       r.business_justification, r.status, r.requested_at, r.requested_valid_to,
+                                       COALESCE(t.source_name, p.domain, 'default'), t.schema_name, t.table_name,
+                                       r.itsm_ticket_id, r.tenant_id
+                                FROM CONSENT_REQUESTS r
+                                JOIN TABLES t ON r.table_id = t.id
+                                LEFT JOIN POLICY_EPOCHS p ON t.id = p.table_id
+                                WHERE r.itsm_ticket_id = @ticketId";
+            cmd.Parameters.AddWithValue("@ticketId", ticketId);
+
+            using var reader = await cmd.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                return new ConsentRequest
+                {
+                    Id = Guid.Parse(reader.GetString(0)),
+                    TableId = Guid.Parse(reader.GetString(1)),
+                    RequesterSid = new Sid(reader.GetString(2)),
+                    RequestedGranteeType = Enum.Parse<GranteeType>(reader.GetString(3), true),
+                    RequestedGranteeRef = reader.GetString(4),
+                    BusinessJustification = reader.GetString(5),
+                    Status = reader.GetString(6),
+                    RequestedAt = DateTimeOffset.Parse(reader.GetString(7)),
+                    RequestedValidTo = DateTimeOffset.Parse(reader.GetString(8)),
+                    TableIdentifier = new TableIdentifier(reader.GetString(9), reader.GetString(10), reader.GetString(11)),
+                    ItsmTicketId = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    TenantId = reader.IsDBNull(13) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(13))
+                };
+            }
+            return null;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task ActivateConsentAsync(Guid requestId, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            ConsentRequest? req = null;
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = @"SELECT r.id, r.table_id, r.requester_sid, r.requested_grantee_type, r.requested_grantee_ref,
+                                           r.business_justification, r.status, r.requested_at, r.requested_valid_to,
+                                           COALESCE(t.source_name, p.domain, 'default'), t.schema_name, t.table_name
+                                    FROM CONSENT_REQUESTS r
+                                    JOIN TABLES t ON r.table_id = t.id
+                                    LEFT JOIN POLICY_EPOCHS p ON t.id = p.table_id
+                                    WHERE r.id = @id";
+                cmd.Parameters.AddWithValue("@id", requestId.ToString());
+
+                using var reader = await cmd.ExecuteReaderAsync(ct);
+                if (await reader.ReadAsync(ct))
+                {
+                    req = new ConsentRequest
+                    {
+                        Id = Guid.Parse(reader.GetString(0)),
+                        TableId = Guid.Parse(reader.GetString(1)),
+                        RequesterSid = new Sid(reader.GetString(2)),
+                        RequestedGranteeType = Enum.Parse<GranteeType>(reader.GetString(3), true),
+                        RequestedGranteeRef = reader.GetString(4),
+                        BusinessJustification = reader.GetString(5),
+                        Status = reader.GetString(6),
+                        RequestedAt = DateTimeOffset.Parse(reader.GetString(7)),
+                        RequestedValidTo = DateTimeOffset.Parse(reader.GetString(8)),
+                        TableIdentifier = new TableIdentifier(reader.GetString(9), reader.GetString(10), reader.GetString(11))
+                    };
+                }
+            }
+
+            if (req == null) return;
+
+            using var tx = _connection.BeginTransaction();
+
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = "UPDATE CONSENT_REQUESTS SET status = 'APPROVED' WHERE id = @id";
+                cmd.Parameters.AddWithValue("@id", requestId.ToString());
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            var isRole = req.RequestedGranteeType == GranteeType.Role;
+            var consentId = Guid.NewGuid();
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = @"INSERT INTO CONSENTS (id, table_id, consent_request_id, effect, grantee_type, grantee_sid, role_id, role_name, valid_from, valid_to, is_revoked)
+                                    VALUES (@id, @tid, @reqId, 'Allow', @type, @sid, @roleId, @roleName, @from, @to, 0)";
+                cmd.Parameters.AddWithValue("@id", consentId.ToString());
+                cmd.Parameters.AddWithValue("@tid", req.TableId.ToString());
+                cmd.Parameters.AddWithValue("@reqId", req.Id.ToString());
+                cmd.Parameters.AddWithValue("@type", req.RequestedGranteeType.ToString());
+                cmd.Parameters.AddWithValue("@sid", isRole ? DBNull.Value : (object)req.RequestedGranteeRef);
+                cmd.Parameters.AddWithValue("@roleId", DBNull.Value);
+                cmd.Parameters.AddWithValue("@roleName", isRole ? (object)req.RequestedGranteeRef : DBNull.Value);
+                cmd.Parameters.AddWithValue("@from", DateTimeOffset.UtcNow.ToString("O"));
+                cmd.Parameters.AddWithValue("@to", req.RequestedValidTo.ToString("O"));
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            await IncrementTableEpochInternalAsync(req.TableIdentifier, tx, ct);
+            await tx.CommitAsync(ct);
+
+            await _epochValidationService.InvalidateEpochAsync(req.TableIdentifier, ct);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task DeleteConsentRequestAsync(Guid requestId, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "DELETE FROM CONSENT_REQUESTS WHERE id = @id";
+            cmd.Parameters.AddWithValue("@id", requestId.ToString());
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task UpdateConsentRequestTicketIdAsync(Guid requestId, string ticketId, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = "UPDATE CONSENT_REQUESTS SET itsm_ticket_id = @ticketId WHERE id = @id";
+            cmd.Parameters.AddWithValue("@id", requestId.ToString());
+            cmd.Parameters.AddWithValue("@ticketId", ticketId);
+            await cmd.ExecuteNonQueryAsync(ct);
         }
         finally
         {
@@ -636,7 +795,8 @@ public partial class SqliteGovernanceRepository
         if (req == null) throw new InvalidOperationException($"Request {requestId} not found.");
 
         if (!string.Equals(req.Status, "PENDING", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(req.Status, "PENDING_SECOND_APPROVAL", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(req.Status, "PENDING_SECOND_APPROVAL", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(req.Status, "PENDING_EXTERNAL_APPROVAL", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException($"Request {requestId} is in status '{req.Status}' and cannot be rejected.");
         }
@@ -655,12 +815,15 @@ public partial class SqliteGovernanceRepository
             }
 
             if (!string.Equals(currentStatus, "PENDING", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(currentStatus, "PENDING_SECOND_APPROVAL", StringComparison.OrdinalIgnoreCase))
+                !string.Equals(currentStatus, "PENDING_SECOND_APPROVAL", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(currentStatus, "PENDING_EXTERNAL_APPROVAL", StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException($"Request {requestId} is in status '{currentStatus}' and cannot be rejected.");
             }
 
-            bool isAuthorized = await IsAuthorizedApproverForTableInternalAsync(req.TableIdentifier, approverSid, ct);
+            bool isAuthorized = string.Equals(approverSid.Value, "ITSM_SYSTEM", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(currentStatus, "PENDING_EXTERNAL_APPROVAL", StringComparison.OrdinalIgnoreCase) ||
+                                await IsAuthorizedApproverForTableInternalAsync(req.TableIdentifier, approverSid, ct);
             if (!isAuthorized)
             {
                 throw new UnauthorizedAccessException($"Benutzer '{approverSid}' ist weder Data Owner noch delegierter Genehmiger für Tabelle '{req.TableIdentifier}'.");

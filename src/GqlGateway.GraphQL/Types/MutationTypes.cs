@@ -5,10 +5,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
+using GqlGateway.Application.Workflows;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
+using GqlGateway.Domain.Options;
 using HotChocolate;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 
 namespace GqlGateway.GraphQL.Types;
 
@@ -26,6 +29,7 @@ public sealed class ConsentRequestPayload
     public Guid RequestId { get; init; }
     public string Status { get; init; } = string.Empty;
     public string Message { get; init; } = string.Empty;
+    public ItsmTicketReference? ItsmTicketReference { get; init; }
 }
 
 public sealed class Mutation
@@ -90,7 +94,7 @@ public sealed class Mutation
         [Service] IHttpContextAccessor httpContextAccessor,
         [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
-        => RequestTableAccessAsync(domain, schema, tableName, justification, durationDays, idempotencyKey, repository, repository, httpContextAccessor, idempotencyStore, ct);
+        => RequestTableAccessAsync(domain, schema, tableName, justification, durationDays, idempotencyKey, repository, repository, httpContextAccessor, idempotencyStore, null, null, ct);
 
     public async Task<ConsentRequestPayload> RequestTableAccessAsync(
         string domain,
@@ -103,6 +107,8 @@ public sealed class Mutation
         [Service] IConsentApprovalRepository approvalRepository = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         [Service] IIdempotencyStore idempotencyStore = default!,
+        [Service] ItsmWorkflowDispatcher? itsmDispatcher = default!,
+        [Service] IOptions<GatewayOptions>? gatewayOptions = default!,
         CancellationToken ct = default)
     {
         var userSid = GetAuthenticatedUserSid(httpContextAccessor);
@@ -123,6 +129,14 @@ public sealed class Mutation
                 .Build());
         }
 
+        var tenantId = TenantId.LegacySingleTenant;
+        if (httpContextAccessor?.HttpContext?.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
+        {
+            tenantId = tid;
+        }
+
+        bool isItsmEnabled = itsmDispatcher != null && (gatewayOptions?.Value.Itsm.Enabled == true);
+
         var request = new ConsentRequest
         {
             TableId = meta.Table.Id,
@@ -131,19 +145,84 @@ public sealed class Mutation
             RequestedGranteeType = GranteeType.User,
             RequestedGranteeRef = userSid.Value,
             BusinessJustification = justification,
-            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(Math.Clamp(durationDays, 1, 365))
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(Math.Clamp(durationDays, 1, 365)),
+            Status = isItsmEnabled ? "PENDING_EXTERNAL_APPROVAL" : "PENDING",
+            TenantId = tenantId
         };
 
         var created = await approvalRepository.CreateConsentRequestAsync(request, ct);
-        var payload = new ConsentRequestPayload
-        {
-            RequestId = created.Id,
-            Status = created.Status,
-            Message = "Consent request submitted successfully."
-        };
 
-        await StoreIdempotentAsync(userSid, "RequestTableAccess", idempotencyKey, payload, idempotencyStore, ct);
-        return payload;
+        if (isItsmEnabled)
+        {
+            ItsmTicketResult? ticketResult = null;
+            try
+            {
+                var itsmRequest = new ItsmTicketRequest(
+                    tenantId,
+                    userSid,
+                    tableId,
+                    justification,
+                    Math.Clamp(durationDays, 1, 365),
+                    null,
+                    null);
+
+                var preferredSystem = gatewayOptions?.Value.Itsm.DefaultSystem ?? ItsmSystemType.ServiceNow;
+                ticketResult = await itsmDispatcher!.DispatchTicketRequestAsync(itsmRequest, preferredSystem, ct);
+            }
+            catch (Exception ex)
+            {
+                await approvalRepository.DeleteConsentRequestAsync(created.Id, ct);
+                throw new GraphQLException(ErrorBuilder.New()
+                    .SetCode("ITSM_UNAVAILABLE")
+                    .SetMessage($"ITSM system unavailable: {ex.Message}")
+                    .Build());
+            }
+
+            if (ticketResult == null || !ticketResult.Success)
+            {
+                await approvalRepository.DeleteConsentRequestAsync(created.Id, ct);
+                throw new GraphQLException(ErrorBuilder.New()
+                    .SetCode(ticketResult?.ErrorCode ?? "ITSM_UNAVAILABLE")
+                    .SetMessage(ticketResult?.ErrorMessage ?? "Failed to create external ITSM ticket.")
+                    .Build());
+            }
+
+            try
+            {
+                await approvalRepository.UpdateConsentRequestTicketIdAsync(created.Id, ticketResult.TicketReference!.TicketId, ct);
+            }
+            catch
+            {
+                await approvalRepository.DeleteConsentRequestAsync(created.Id, ct);
+                throw new GraphQLException(ErrorBuilder.New()
+                    .SetCode("ITSM_UNAVAILABLE")
+                    .SetMessage("Failed to record ITSM ticket reference.")
+                    .Build());
+            }
+
+            var payload = new ConsentRequestPayload
+            {
+                RequestId = created.Id,
+                Status = "PENDING_EXTERNAL_APPROVAL",
+                Message = "Consent request submitted to ITSM for external approval.",
+                ItsmTicketReference = ticketResult.TicketReference
+            };
+
+            await StoreIdempotentAsync(userSid, "RequestTableAccess", idempotencyKey, payload, idempotencyStore, ct);
+            return payload;
+        }
+        else
+        {
+            var payload = new ConsentRequestPayload
+            {
+                RequestId = created.Id,
+                Status = created.Status,
+                Message = "Consent request submitted successfully."
+            };
+
+            await StoreIdempotentAsync(userSid, "RequestTableAccess", idempotencyKey, payload, idempotencyStore, ct);
+            return payload;
+        }
     }
 
     [GraphQLIgnore]

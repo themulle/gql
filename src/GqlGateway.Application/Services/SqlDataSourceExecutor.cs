@@ -81,7 +81,8 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         var metadata = context.Metadata;
         var dialect = metadata.Dialect;
 
-        await using var connection = await _connectionFactory!.CreateOpenConnectionAsync(connOptions, ct).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(_connectionFactory);
+        await using var connection = await _connectionFactory.CreateOpenConnectionAsync(connOptions, ct).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandTimeout = Math.Max(1, connOptions.CommandTimeoutSeconds);
 
@@ -90,23 +91,31 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
             ? context.RequestedFields
             : metadata.Columns.Select(c => c.ColumnName).ToList();
 
-        if (columnsToSelect.Count == 0)
-        {
-            columnsToSelect = metadata.Columns.Select(c => c.ColumnName).ToList();
-        }
-
         var selectClause = string.Join(", ", columnsToSelect.Select(c => dialect.QuoteIdentifier(c)));
         var fromTable = dialect.FormatTableIdentifier(metadata.Identifier);
 
-        // 2. WHERE Clause: Push down RLS predicate + any applicable equality arguments
+        // 2. WHERE Clause: Push down RLS predicate + Tenant isolation + any applicable equality arguments
         var whereParts = new List<string>();
+        var paramIndex = 0;
+
+        // Stufe 1: Applikationsseitiger erzwungener Tenant-Filter (Defense in Depth)
+        var tenantVal = context.Tenant?.Value ?? context.Principal.FindFirst("tenant")?.Value ?? TenantId.LegacySingleTenant.Value;
+        var hasTenantCol = metadata.Columns.Any(c => string.Equals(c.ColumnName, "tenant_id", StringComparison.OrdinalIgnoreCase));
+        if (hasTenantCol)
+        {
+            var pTenant = $"@p_tenant_{paramIndex++}";
+            whereParts.Add($"{dialect.QuoteIdentifier("tenant_id")} = {pTenant}");
+            var tp = command.CreateParameter();
+            tp.ParameterName = pTenant;
+            tp.Value = tenantVal;
+            command.Parameters.Add(tp);
+        }
 
         if (!string.IsNullOrWhiteSpace(context.AccessDecision.CombinedRowFilterSql))
         {
             whereParts.Add($"({context.AccessDecision.CombinedRowFilterSql})");
         }
 
-        int paramIndex = 0;
         foreach (var (argKey, argVal) in context.Arguments)
         {
             if (string.Equals(argKey, "limit", StringComparison.OrdinalIgnoreCase) ||
@@ -183,29 +192,71 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         command.CommandText = sqlBuilder.ToString();
         _logger?.LogDebug("Executing SQL Backend query: {Sql}", command.CommandText);
 
-        await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess | CommandBehavior.SingleResult, ct).ConfigureAwait(false);
-
-        int fieldCount = reader.FieldCount;
-        var columnNames = new string[fieldCount];
-        for (int i = 0; i < fieldCount; i++)
+        // Stufe 2: Native PostgreSQL Transaktions-Scoped Session RLS (SET LOCAL app.tenant_id = @p)
+        DbTransaction? tx = null;
+        try
         {
-            columnNames[i] = reader.GetName(i);
-        }
+            if (dialect == DatabaseDialect.PostgreSql ||
+                string.Equals(connOptions.Provider, "PostgreSql", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(connOptions.Provider, "postgres", StringComparison.OrdinalIgnoreCase))
+            {
+                tx = await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
+                command.Transaction = tx;
 
-        var results = new List<IReadOnlyDictionary<string, object?>>(Math.Min(Math.Max(context.Limit, 16), 1024));
+                await using var setCmd = connection.CreateCommand();
+                setCmd.Transaction = tx;
+                setCmd.CommandText = "SELECT set_config('app.tenant_id', @p_tenant, true);";
+                var pTenant = setCmd.CreateParameter();
+                pTenant.ParameterName = "@p_tenant";
+                pTenant.Value = tenantVal;
+                setCmd.Parameters.Add(pTenant);
+                await setCmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
 
-        while (await reader.ReadAsync(ct).ConfigureAwait(false))
-        {
-            var row = new Dictionary<string, object?>(fieldCount, StringComparer.OrdinalIgnoreCase);
+            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess | CommandBehavior.SingleResult, ct).ConfigureAwait(false);
+
+            int fieldCount = reader.FieldCount;
+            var columnNames = new string[fieldCount];
             for (int i = 0; i < fieldCount; i++)
             {
-                var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                row[columnNames[i]] = value;
+                columnNames[i] = reader.GetName(i);
             }
-            results.Add(row);
-        }
 
-        return results;
+            var results = new List<IReadOnlyDictionary<string, object?>>(Math.Min(Math.Max(context.Limit, 16), 1024));
+
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                var row = new Dictionary<string, object?>(fieldCount, StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < fieldCount; i++)
+                {
+                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                    row[columnNames[i]] = value;
+                }
+                results.Add(row);
+            }
+
+            if (tx != null)
+            {
+                await tx.CommitAsync(ct).ConfigureAwait(false);
+            }
+
+            return results;
+        }
+        catch
+        {
+            if (tx != null)
+            {
+                await tx.RollbackAsync(ct).ConfigureAwait(false);
+            }
+            throw;
+        }
+        finally
+        {
+            if (tx != null)
+            {
+                await tx.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
     private static IReadOnlyList<IReadOnlyDictionary<string, object?>> GenerateSyntheticRows(DataSourceExecutionContext context)

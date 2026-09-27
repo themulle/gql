@@ -19,7 +19,18 @@ using GqlGateway.Infrastructure.RateLimiting;
 using GqlGateway.Infrastructure.Security;
 using GqlGateway.Api.Security;
 using GqlGateway.Application.Plugins;
+using GqlGateway.Application.Governance;
+using GqlGateway.Application.Lineage;
+using GqlGateway.Application.Workflows;
+using GqlGateway.Infrastructure.Itsm;
+using GqlGateway.Infrastructure.Lineage;
 using GqlGateway.Infrastructure.Plugins;
+using GqlGateway.Infrastructure.Diagnostics;
+using GqlGateway.Infrastructure.OpenJev;
+using System.Net.Http;
+using Microsoft.Extensions.Logging;
+using OpenTelemetry.Trace;
+using OpenTelemetry.Metrics;
 using StackExchange.Redis;
 using HotChocolate.Execution.Configuration;
 using Microsoft.AspNetCore.Authentication;
@@ -181,6 +192,45 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IDataSourceExecutor, DeclarativeHttpDataSourceExecutor>();
         services.AddSingleton<IDataSourceExecutor, PluginHttpDataSourceExecutor>();
 
+        // Casbin ABAC Engine
+        services.AddSingleton<IPolicyEnforcementService, CasbinEnforcementService>();
+
+        // ITSM Connectors & Webhooks
+        services.AddHttpClient<ServiceNowClient>((sp, client) =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.Itsm;
+            if (!string.IsNullOrWhiteSpace(opts.ServiceNowBaseUrl))
+            {
+                client.BaseAddress = new Uri(opts.ServiceNowBaseUrl);
+            }
+        });
+        services.AddHttpClient<JiraClient>((sp, client) =>
+        {
+            var opts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.Itsm;
+            if (!string.IsNullOrWhiteSpace(opts.JiraBaseUrl))
+            {
+                client.BaseAddress = new Uri(opts.JiraBaseUrl);
+            }
+        });
+        services.AddScoped<IItsmWorkflowClient>(sp => sp.GetRequiredService<ServiceNowClient>());
+        services.AddScoped<IItsmWorkflowClient>(sp => sp.GetRequiredService<JiraClient>());
+        services.AddScoped<ItsmWorkflowDispatcher>();
+        services.AddScoped<IItsmWebhookHandler, ItsmWebhookHandler>();
+
+        // Lineage Graph Store & Impact Analyzer
+        services.AddSingleton<ILineageGraphStore, LineageGraphStore>();
+        services.AddScoped<ILineageImpactAnalyzerService, LineageImpactAnalyzerService>();
+
+        // AI Assisted Governance (OpenJEV & Triage)
+        services.AddHttpClient("OpenJev");
+        services.AddSingleton<IOpenJevClient>(sp =>
+        {
+            var factory = sp.GetRequiredService<IHttpClientFactory>();
+            var logger = sp.GetRequiredService<ILogger<OpenJevClient>>();
+            return new OpenJevClient(logger, factory.CreateClient("OpenJev"));
+        });
+        services.AddScoped<IJustificationTriageService, JustificationTriageService>();
+
         services.AddScoped<GatewayExecutionService>(sp => new GatewayExecutionService(
             sp.GetRequiredService<ITableMetadataRepository>(),
             sp.GetRequiredService<IConsentRepository>(),
@@ -231,6 +281,19 @@ public static class GatewayServiceCollectionExtensions
                 }
             });
         });
+
+        // OpenTelemetry Tracing & Metrics with OTLP Exporter
+        services.AddOpenTelemetry()
+            .WithTracing(tracing =>
+            {
+                tracing.AddSource(GatewayDiagnostics.ActivitySourceName);
+                tracing.AddOtlpExporter();
+            })
+            .WithMetrics(metrics =>
+            {
+                metrics.AddMeter(GatewayDiagnostics.MeterName);
+                metrics.AddOtlpExporter();
+            });
 
         return services;
     }
@@ -416,17 +479,25 @@ public static class GatewayServiceCollectionExtensions
         this IServiceCollection services,
         GatewayOptions gatewayOptions)
     {
+        var maxDepth = gatewayOptions.GraphQL.MaxAllowedExecutionDepth;
+        var maxCost = gatewayOptions.GraphQL.MaxAllowedComplexity;
+
         var gqlBuilder = services
             .AddGraphQLServer()
             .AddQueryType<Query>()
             .AddMutationType<Mutation>()
             .AddTypeExtension<InvoiceRecordExtensions>()
             .AddErrorFilter<ErrorSanitizingFilter>()
-            .AddMaxExecutionDepthRule(gatewayOptions.GraphQL.MaxAllowedExecutionDepth)
+            .AddMaxExecutionDepthRule(maxDepth)
+            .AddValidationRule<GqlGateway.GraphQL.Interceptors.QueryCostAnalyzerRule>((sp, _) =>
+                new GqlGateway.GraphQL.Interceptors.QueryCostAnalyzerRule(
+                    maxAllowedCost: maxCost,
+                    maxResponseRows: gatewayOptions.GraphQL.MaxResponseRows,
+                    onQueryTooComplex: () => GatewayDiagnostics.QueryTooComplexCounter.Add(1)))
             .ModifyCostOptions(opt =>
             {
-                opt.MaxFieldCost = gatewayOptions.GraphQL.MaxAllowedComplexity;
-                opt.MaxTypeCost = gatewayOptions.GraphQL.MaxAllowedComplexity;
+                opt.MaxFieldCost = maxCost;
+                opt.MaxTypeCost = maxCost;
                 opt.EnforceCostLimits = true;
             })
             .ModifyRequestOptions(opt =>

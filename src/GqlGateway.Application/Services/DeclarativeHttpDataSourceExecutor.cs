@@ -328,11 +328,6 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         return fullUrl;
     }
 
-    internal void ValidateDestinationUrlSync(string fullUrl)
-    {
-        ValidateDestinationUrl(fullUrl, CancellationToken.None).GetAwaiter().GetResult();
-    }
-
     internal async Task ValidateDestinationUrl(string fullUrl, CancellationToken ct = default)
     {
         if (!Uri.TryCreate(fullUrl, UriKind.Absolute, out var uri))
@@ -549,7 +544,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Secret reference '{SecretRef}' could not be resolved by provider. Using literal value as fallback.", secretRefOrValue);
+                _logger.LogDebug(ex, "Secret reference could not be resolved by provider. Using literal value as fallback.");
             }
         }
         return secretRefOrValue;

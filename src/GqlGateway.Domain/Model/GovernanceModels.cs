@@ -55,9 +55,11 @@ public sealed class ConsentRequest
     public GranteeType RequestedGranteeType { get; init; } = GranteeType.User;
     public string RequestedGranteeRef { get; init; } = string.Empty;
     public string BusinessJustification { get; init; } = string.Empty;
-    public string Status { get; set; } = "PENDING"; // PENDING, APPROVED, REJECTED, EXPIRED, ESCALATED
+    public string Status { get; set; } = "PENDING"; // PENDING, APPROVED, REJECTED, EXPIRED, ESCALATED, PENDING_EXTERNAL_APPROVAL
     public DateTimeOffset RequestedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset RequestedValidTo { get; init; }
+    public string? ItsmTicketId { get; set; }
+    public TenantId TenantId { get; set; } = TenantId.LegacySingleTenant;
     public List<ApprovalStep> ApprovalSteps { get; init; } = new();
 }
 

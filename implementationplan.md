@@ -1,8 +1,9 @@
 # Implementierungsplan: C# GraphQL Enterprise Gateway mit Data-Owner-Consent
 
 **Status:** Bereit zur Ausführung (Master Execution Plan)  
-**Referenz-Dokumente:** [requirements.md](file:///c:/Users/themu/Documents/github/gql/requirements.md) (v2), [gatewayconfig.md](file:///c:/Users/themu/Documents/github/gql/gatewayconfig.md)  
-**Entwicklungsansatz:** Test-Driven Development (TDD), Clean Architecture, Zero-Dependency Local Setup (In-Memory Mocks)
+**Referenz-Dokumente:** [requirements.md](file:///c:/Users/themu/Documents/github/gql/requirements.md) (v2), [gatewayconfig.md](file:///c:/Users/themu/Documents/github/gql/gatewayconfig.md), [implementierungsplan_erweiterung.md](file:///c:/Users/themu/Documents/github/gql/implementierungsplan_erweiterung.md) (Roadmap v2 Master Extension)  
+**Entwicklungsansatz:** Test-Driven Development (TDD), Clean Architecture mit Augenmaß, Zero-Trust, Defense-in-Depth, Zero-Dependency Local Setup (In-Memory Mocks)  
+**Hinweis zu Roadmap v2:** Die architektonischen Erweiterungen (Casbin ABAC, ServiceNow/Jira 4-Augen ITSM-Workflow, OpenJev Triage ohne Auto-Grant, zyklensichere Lineage, OTel PII-Allow-List, dynamische Query Defense, zweistufige PostgreSQL RLS Multi-Tenancy sowie das umfassende 4-Skill-Review) sind verbindlich in [implementierungsplan_erweiterung.md](file:///c:/Users/themu/Documents/github/gql/implementierungsplan_erweiterung.md) spezifiziert.
 
 ---
 

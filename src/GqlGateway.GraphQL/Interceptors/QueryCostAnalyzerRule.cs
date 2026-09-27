@@ -1,0 +1,168 @@
+namespace GqlGateway.GraphQL.Interceptors;
+
+using System;
+using System.Linq;
+using HotChocolate;
+using HotChocolate.Language;
+using HotChocolate.Types;
+using HotChocolate.Validation;
+
+public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
+{
+    private readonly int _maxAllowedCost;
+    private readonly int _defaultListMultiplier;
+    private readonly int _maxResponseRows;
+    private readonly Action? _onQueryTooComplex;
+
+    public QueryCostAnalyzerRule(
+        int maxAllowedCost = 250,
+        int defaultListMultiplier = 10,
+        int maxResponseRows = 1000,
+        Action? onQueryTooComplex = null)
+    {
+        _maxAllowedCost = maxAllowedCost;
+        _defaultListMultiplier = defaultListMultiplier;
+        _maxResponseRows = maxResponseRows;
+        _onQueryTooComplex = onQueryTooComplex;
+    }
+
+    public bool IsCacheable => true;
+    public ushort Priority => 10;
+
+    public void Validate(IDocumentValidatorContext context, DocumentNode document)
+    {
+        foreach (var def in document.Definitions)
+        {
+            if (def is OperationDefinitionNode operation)
+            {
+                var rootType = operation.Operation switch
+                {
+                    OperationType.Mutation => context.Schema.MutationType,
+                    OperationType.Subscription => context.Schema.SubscriptionType,
+                    _ => context.Schema.QueryType
+                };
+
+                int totalCost = CalculateSelectionSetCost(operation.SelectionSet, rootType);
+                if (totalCost > _maxAllowedCost)
+                {
+                    _onQueryTooComplex?.Invoke();
+                    context.ReportError(
+                        ErrorBuilder.New()
+                            .SetMessage($"Die Abfrage überschreitet das Komplexitätsbudget von {_maxAllowedCost} (berechnete Kosten: {totalCost}).")
+                            .SetCode("QUERY_TOO_COMPLEX")
+                            .SetExtension("calculatedCost", totalCost)
+                            .SetExtension("maxAllowedCost", _maxAllowedCost)
+                            .Build());
+                }
+            }
+        }
+    }
+
+    private int CalculateSelectionSetCost(SelectionSetNode? selectionSet, ObjectType? currentType)
+    {
+        if (selectionSet == null || selectionSet.Selections.Count == 0)
+        {
+            return 0;
+        }
+
+        int cost = 0;
+        foreach (var selection in selectionSet.Selections)
+        {
+            if (selection is FieldNode field)
+            {
+                if (field.Name.Value.StartsWith("__", StringComparison.Ordinal))
+                {
+                    cost += 1;
+                    continue;
+                }
+
+                IOutputField? fieldDef = null;
+                currentType?.Fields.TryGetField(field.Name.Value, out fieldDef);
+
+                bool isList = false;
+                ObjectType? nextType = null;
+
+                if (fieldDef != null)
+                {
+                    isList = fieldDef.Type.IsListType();
+                    var named = fieldDef.Type.NamedType();
+                    if (named is ObjectType ot)
+                    {
+                        nextType = ot;
+                    }
+                }
+                else
+                {
+                    isList = field.Arguments.Any(a =>
+                        string.Equals(a.Name.Value, "first", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(a.Name.Value, "last", StringComparison.OrdinalIgnoreCase));
+                }
+
+                bool acceptsPagination = fieldDef?.Arguments.Any(a =>
+                    string.Equals(a.Name, "first", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(a.Name, "last", StringComparison.OrdinalIgnoreCase)) ?? false;
+
+                if (isList && acceptsPagination)
+                {
+                    int requestedLimit = -1;
+                    foreach (var arg in field.Arguments)
+                    {
+                        if (string.Equals(arg.Name.Value, "first", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(arg.Name.Value, "last", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(arg.Name.Value, "limit", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(arg.Name.Value, "take", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (arg.Value is IntValueNode intVal && int.TryParse(intVal.Value, out var parsed))
+                            {
+                                requestedLimit = parsed;
+                                break;
+                            }
+                        }
+                    }
+
+                    int effectiveRows = requestedLimit > 0
+                        ? Math.Min(requestedLimit, _maxResponseRows)
+                        : _maxResponseRows;
+
+                    cost += _defaultListMultiplier * effectiveRows;
+
+                    if (field.SelectionSet != null)
+                    {
+                        int maskingCost = 0;
+                        foreach (var childSel in field.SelectionSet.Selections)
+                        {
+                            if (childSel is FieldNode childField && IsMaskedCandidate(childField.Name.Value))
+                            {
+                                maskingCost += 3;
+                            }
+                        }
+
+                        cost += maskingCost;
+                        cost += CalculateSelectionSetCost(field.SelectionSet, nextType);
+                    }
+                }
+                else
+                {
+                    // Non-paginated entity, scalar, or unpaginated relation list
+                    cost += isList ? 5 : 1;
+                    if (field.SelectionSet != null)
+                    {
+                        cost += CalculateSelectionSetCost(field.SelectionSet, nextType);
+                    }
+                }
+            }
+        }
+
+        return cost;
+    }
+
+    private static bool IsMaskedCandidate(string fieldName)
+    {
+        return fieldName.Contains("email", StringComparison.OrdinalIgnoreCase) ||
+               fieldName.Contains("iban", StringComparison.OrdinalIgnoreCase) ||
+               fieldName.Contains("salary", StringComparison.OrdinalIgnoreCase) ||
+               fieldName.Contains("ssn", StringComparison.OrdinalIgnoreCase) ||
+               fieldName.Contains("creditcard", StringComparison.OrdinalIgnoreCase) ||
+               fieldName.Contains("mask", StringComparison.OrdinalIgnoreCase);
+    }
+}

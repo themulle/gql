@@ -51,13 +51,21 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
     private static readonly Prometheus.Counter CacheMisses = Prometheus.Metrics.CreateCounter(
         "gqlgateway_consent_cache_misses_total", "Number of ConsentCache misses");
 
+    public Task<TableAccessDecision?> GetCachedDecisionAsync(
+        Sid userSid,
+        TableIdentifier table,
+        string? contextHash = null,
+        CancellationToken ct = default)
+        => GetCachedDecisionAsync(TenantId.LegacySingleTenant, userSid, table, contextHash, ct);
+
     public async Task<TableAccessDecision?> GetCachedDecisionAsync(
+        TenantId tenant,
         Sid userSid,
         TableIdentifier table,
         string? contextHash = null,
         CancellationToken ct = default)
     {
-        var cacheKey = BuildCacheKey(userSid, table, contextHash);
+        var cacheKey = BuildCacheKey(tenant, userSid, table, contextHash);
         if (!_memoryCache.TryGetValue(cacheKey, out CacheEntryEnvelope? envelope) || envelope == null)
         {
             CacheMisses.Inc();
@@ -79,7 +87,17 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         return envelope.Decision;
     }
 
+    public Task SetCachedDecisionAsync(
+        Sid userSid,
+        TableIdentifier table,
+        TableAccessDecision decision,
+        TimeSpan ttl,
+        string? contextHash = null,
+        CancellationToken ct = default)
+        => SetCachedDecisionAsync(TenantId.LegacySingleTenant, userSid, table, decision, ttl, contextHash, ct);
+
     public async Task SetCachedDecisionAsync(
+        TenantId tenant,
         Sid userSid,
         TableIdentifier table,
         TableAccessDecision decision,
@@ -87,7 +105,7 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         string? contextHash = null,
         CancellationToken ct = default)
     {
-        var cacheKey = BuildCacheKey(userSid, table, contextHash);
+        var cacheKey = BuildCacheKey(tenant, userSid, table, contextHash);
         var currentEpoch = await _epochValidationService.GetCurrentEpochAsync(table, ct);
         var envelope = new CacheEntryEnvelope(decision, currentEpoch);
 
@@ -120,25 +138,19 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
             }
         });
 
-        lock (_syncLock)
-        {
-            var keys = _tableCacheKeys.GetOrAdd(tableKey, _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
-            keys.TryAdd(cacheKey, 0);
-            _memoryCache.Set(cacheKey, envelope, cacheEntryOptions);
-        }
+        var keys = _tableCacheKeys.GetOrAdd(tableKey, _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
+        keys.TryAdd(cacheKey, 0);
+        _memoryCache.Set(cacheKey, envelope, cacheEntryOptions);
     }
 
     public Task EvictTableDecisionsAsync(TableIdentifier table, CancellationToken ct = default)
     {
         var tableKey = NormalizeTableKey(table);
-        lock (_syncLock)
+        if (_tableCacheKeys.TryRemove(tableKey, out var keys))
         {
-            if (_tableCacheKeys.TryRemove(tableKey, out var keys))
+            foreach (var key in keys.Keys)
             {
-                foreach (var key in keys.Keys)
-                {
-                    _memoryCache.Remove(key);
-                }
+                _memoryCache.Remove(key);
             }
         }
         return Task.CompletedTask;
@@ -186,8 +198,8 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
 
 
-    private static string BuildCacheKey(Sid userSid, TableIdentifier table, string? contextHash = null) =>
-        $"consent:{userSid.Value.ToUpperInvariant()}:{(string.IsNullOrWhiteSpace(contextHash) ? "default" : contextHash)}:{table.Domain.ToLowerInvariant()}:{table.Schema.ToLowerInvariant()}:{table.TableName.ToLowerInvariant()}";
+    private static string BuildCacheKey(TenantId tenant, Sid userSid, TableIdentifier table, string? contextHash = null) =>
+        $"{tenant.Value}:consent:{userSid.Value.ToUpperInvariant()}:{(string.IsNullOrWhiteSpace(contextHash) ? "default" : contextHash)}:{table.Domain.ToLowerInvariant()}:{table.Schema.ToLowerInvariant()}:{table.TableName.ToLowerInvariant()}";
 
     public void Dispose()
     {

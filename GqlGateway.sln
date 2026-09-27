@@ -27,6 +27,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GqlGateway.Benchmarks", "benchmarks\GqlGateway.Benchmarks\GqlGateway.Benchmarks.csproj", "{04E22E7C-2979-4367-A09D-AF7FC9885413}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{07C2787E-EAC7-C090-1BA3-A61EC2A24D84}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "casbin-policy-lint", "tools\casbin-policy-lint\casbin-policy-lint.csproj", "{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -145,6 +149,18 @@ Global
 		{04E22E7C-2979-4367-A09D-AF7FC9885413}.Release|x64.Build.0 = Release|Any CPU
 		{04E22E7C-2979-4367-A09D-AF7FC9885413}.Release|x86.ActiveCfg = Release|Any CPU
 		{04E22E7C-2979-4367-A09D-AF7FC9885413}.Release|x86.Build.0 = Release|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Debug|x64.Build.0 = Debug|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Debug|x86.Build.0 = Debug|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Release|x64.ActiveCfg = Release|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Release|x64.Build.0 = Release|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Release|x86.ActiveCfg = Release|Any CPU
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -159,5 +175,6 @@ Global
 		{CDE2AEB5-2FD5-4B79-B299-8151A5ECBADA} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{2F48168C-0D01-4286-BAB3-78A7AAFFE0D2} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{04E22E7C-2979-4367-A09D-AF7FC9885413} = {66320409-64EC-F7C5-3DEF-65E7510DAAD1}
+		{A26D3E03-9A2A-4F8E-86CD-CC5FAC007266} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal

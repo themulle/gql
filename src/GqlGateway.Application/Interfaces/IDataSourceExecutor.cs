@@ -23,5 +23,6 @@ public sealed record DataSourceExecutionContext(
     IReadOnlyList<string> RequestedFields,
     IReadOnlyDictionary<string, string[]>? RequestHeaders = null,
     int Limit = 1000,
-    int Offset = 0
+    int Offset = 0,
+    TenantId? Tenant = null
 );

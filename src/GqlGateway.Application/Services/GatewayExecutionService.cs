@@ -197,6 +197,16 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             effectiveRequestedFields = authorizedColumns;
         }
 
+        var tenantId = TenantId.LegacySingleTenant;
+        if (principal.FindFirst("tenant")?.Value is { Length: > 0 } tVal && TenantId.TryParse(tVal, out var parsedFromClaim))
+        {
+            tenantId = parsedFromClaim;
+        }
+        else if (requestHeaders != null && requestHeaders.TryGetValue("X-Tenant-ID", out var tHeaders) && tHeaders.Length > 0 && TenantId.TryParse(tHeaders[0], out var parsedFromHeader))
+        {
+            tenantId = parsedFromHeader;
+        }
+
         var execContext = new DataSourceExecutionContext(
             SourceName: metadata.Table.SourceName,
             Metadata: metadata,
@@ -206,7 +216,8 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             RequestedFields: effectiveRequestedFields,
             RequestHeaders: requestHeaders,
             Limit: rowLimit,
-            Offset: after ?? 0
+            Offset: after ?? 0,
+            Tenant: tenantId
         );
 
         var rawRows = await executor.ExecuteAsync(execContext, ct);

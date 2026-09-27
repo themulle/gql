@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using GqlGateway.Application.Interfaces;
 using Microsoft.Extensions.Configuration;
@@ -18,14 +21,11 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
 
     public byte[] GetSecretBytes(string secretRef)
     {
-        if (string.IsNullOrWhiteSpace(secretRef))
-        {
-            throw new ArgumentException("Secret reference cannot be empty.", nameof(secretRef));
-        }
+        ArgumentException.ThrowIfNullOrWhiteSpace(secretRef);
 
         var candidates = new List<string> { secretRef };
 
-        // 1. If secretRef is a URI (e.g. https://my-vault.vault.azure.net/secrets/hmac-key or /v1)
+        // 1. If secretRef is a URI (e.g. https://my-vault.vault.azure.net/secrets/itsm-webhook-secret)
         if (Uri.TryCreate(secretRef, UriKind.Absolute, out var uri))
         {
             var segments = uri.Segments
@@ -42,13 +42,28 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
             }
         }
 
-        // 2. Standard aliases
-        candidates.Add("HMAC_SECRET");
-        candidates.Add("HMAC_SECRET_KEY");
-        candidates.Add("Gateway:DataMasking:HmacSecret");
-        candidates.Add("Gateway__DataMasking__HmacSecret");
+        // 2. Namespaced aliases strictly derived from the requested secretRef
+        var cleanRef = secretRef.Replace(":", "__").Replace("-", "_").ToUpperInvariant();
+        candidates.Add(cleanRef);
+        candidates.Add(secretRef.Replace("-", "_"));
+        candidates.Add(secretRef.Replace("-", ":"));
 
-        foreach (var key in candidates)
+        // Dedicated namespaced candidate for itsm
+        if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) || secretRef.Contains("itsm", StringComparison.OrdinalIgnoreCase))
+        {
+            candidates.Add("ITSM__WEBHOOK_SECRET");
+            candidates.Add("ITSM_WEBHOOK_SECRET");
+            candidates.Add("Gateway:Itsm:WebhookSecret");
+        }
+        else if (secretRef.Contains("hmac", StringComparison.OrdinalIgnoreCase))
+        {
+            candidates.Add("HMAC_SECRET");
+            candidates.Add("HMAC_SECRET_KEY");
+            candidates.Add("Gateway:DataMasking:HmacSecret");
+            candidates.Add("Gateway__DataMasking__HmacSecret");
+        }
+
+        foreach (var key in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var secretVal = _configuration[key];
             if (!string.IsNullOrWhiteSpace(secretVal))

@@ -168,7 +168,9 @@ public partial class SqliteGovernanceRepository
                 business_justification TEXT NOT NULL,
                 status TEXT NOT NULL,
                 requested_at TEXT NOT NULL,
-                requested_valid_to TEXT NOT NULL
+                requested_valid_to TEXT NOT NULL,
+                itsm_ticket_id TEXT,
+                tenant_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS APPROVAL_STEPS (
@@ -213,6 +215,7 @@ public partial class SqliteGovernanceRepository
 
         EnsureConsentRowFilterColumns();
         EnsureTableColumns();
+        EnsureConsentRequestColumns();
 
         using (var lastHashCmd = _connection.CreateCommand())
         {
@@ -221,6 +224,36 @@ public partial class SqliteGovernanceRepository
             if (res != null && res != DBNull.Value && !string.IsNullOrWhiteSpace(res.ToString()))
             {
                 _lastAuditHash = res.ToString()!;
+            }
+        }
+    }
+
+    private void EnsureConsentRequestColumns()
+    {
+        var existingCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA table_info(CONSENT_REQUESTS);";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                existingCols.Add(reader.GetString(1));
+            }
+        }
+
+        string[] requiredCols = {
+            "itsm_ticket_id TEXT",
+            "tenant_id TEXT"
+        };
+
+        foreach (var colDef in requiredCols)
+        {
+            var colName = colDef.Split(' ')[0];
+            if (!existingCols.Contains(colName))
+            {
+                using var alterCmd = _connection.CreateCommand();
+                alterCmd.CommandText = $"ALTER TABLE CONSENT_REQUESTS ADD COLUMN {colDef};";
+                alterCmd.ExecuteNonQuery();
             }
         }
     }
