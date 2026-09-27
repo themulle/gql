@@ -1,7 +1,7 @@
 # Konfigurationsspezifikation: C# GraphQL Enterprise Gateway
 
 **Status:** Normative Dokumentation  
-**Referenz-Dokumente:** [requirements.md](file:///c:/Users/themu/Documents/github/gql/requirements.md) (v2), [implementationplan.md](file:///c:/Users/themu/Documents/github/gql/implementationplan.md)  
+**Referenz-Dokumente:** [README.md](file:///root/gql/README.md), [gatewayconfig.md](file:///root/gql/gatewayconfig.md)  
 **Muster:** ASP.NET Core Strongly-Typed Options Pattern mit `ValidateDataAnnotations()` & `ValidateOnStart()`
 
 ---

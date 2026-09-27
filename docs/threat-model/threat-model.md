@@ -1,7 +1,7 @@
 # STRIDE Threat Model (DOK-07): C# GraphQL Enterprise Gateway
 
 **Dokumenten-Status:** Freigegeben / Normativ  
-**Referenzen:** [requirements.md](file:///root/gql/requirements.md), [gatewayconfig.md](file:///root/gql/gatewayconfig.md)
+**Referenzen:** [README.md](file:///root/gql/README.md), [gatewayconfig.md](file:///root/gql/gatewayconfig.md)
 
 ---
 
