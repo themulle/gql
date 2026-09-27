@@ -346,8 +346,34 @@ public static class GatewayApplicationBuilderExtensions
             var serviceRoot = $"{context.Request.Scheme}://{context.Request.Host}/odata/v4";
             var tableId = new TableIdentifier(domain, schema, tableName);
 
-            int? top = context.Request.Query.TryGetValue("$top", out var topVal) && int.TryParse(topVal, out var t) ? t : null;
-            int? skip = context.Request.Query.TryGetValue("$skip", out var skipVal) && int.TryParse(skipVal, out var s) ? s : null;
+            int? top = null;
+            if (context.Request.Query.TryGetValue("$top", out var topVal))
+            {
+                if (!int.TryParse(topVal, out var t) || t < 0)
+                {
+                    return Results.Json(
+                        new { error = new { code = "InvalidQueryOption", message = "The query parameter '$top' must be a non-negative integer." } },
+                        statusCode: StatusCodes.Status400BadRequest,
+                        contentType: "application/json;odata.metadata=minimal;charset=utf-8"
+                    );
+                }
+                top = t;
+            }
+
+            int? skip = null;
+            if (context.Request.Query.TryGetValue("$skip", out var skipVal))
+            {
+                if (!int.TryParse(skipVal, out var s) || s < 0)
+                {
+                    return Results.Json(
+                        new { error = new { code = "InvalidQueryOption", message = "The query parameter '$skip' must be a non-negative integer." } },
+                        statusCode: StatusCodes.Status400BadRequest,
+                        contentType: "application/json;odata.metadata=minimal;charset=utf-8"
+                    );
+                }
+                skip = s;
+            }
+
             string? select = context.Request.Query["$select"].FirstOrDefault();
             bool includeCount = context.Request.Query.TryGetValue("$count", out var countVal) && bool.TryParse(countVal, out var c) && c;
 

@@ -40,13 +40,13 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
             ? userNameVal.ToString()
             : $"CORP\\{userSid}";
 
-        var claims = new List<Claim>
-        {
+        List<Claim> claims =
+        [
             new(ClaimTypes.PrimarySid, userSid),
             new(ClaimTypes.Name, userName),
             new(ClaimTypes.NameIdentifier, userSid),
             new("objectSid", userSid)
-        };
+        ];
 
         if (headers.TryGetValue("X-Test-AppId", out var appIdHeader) && !string.IsNullOrWhiteSpace(appIdHeader))
         {

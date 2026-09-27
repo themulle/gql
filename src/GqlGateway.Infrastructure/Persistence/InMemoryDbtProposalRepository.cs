@@ -16,13 +16,15 @@ public sealed class InMemoryDbtProposalRepository : IDbtProposalRepository
 
     public Task<DbtMetadataProposal> AddProposalAsync(DbtMetadataProposal proposal, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(proposal);
         _proposals[proposal.Id] = proposal;
         return Task.FromResult(proposal);
     }
 
     public Task<IReadOnlyList<DbtMetadataProposal>> GetPendingProposalsAsync(TableIdentifier? table = null, CancellationToken ct = default)
     {
-        var query = _proposals.Values.Where(p => p.Status == DbtProposalStatus.PendingReview);
+        var snapshot = _proposals.Values.ToArray();
+        var query = snapshot.Where(p => p.Status == DbtProposalStatus.PendingReview);
         if (table.HasValue)
         {
             query = query.Where(p => p.Table == table.Value);
@@ -38,6 +40,8 @@ public sealed class InMemoryDbtProposalRepository : IDbtProposalRepository
 
     public Task<DbtMetadataProposal> UpdateProposalStatusAsync(Guid proposalId, DbtProposalStatus status, string reviewedBy, CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reviewedBy);
+
         if (!_proposals.TryGetValue(proposalId, out var existing))
         {
             throw new KeyNotFoundException($"Dbt proposal with ID '{proposalId}' not found.");
@@ -50,7 +54,7 @@ public sealed class InMemoryDbtProposalRepository : IDbtProposalRepository
             ReviewedBy = reviewedBy
         };
 
-        _proposals[proposalId] = updated;
+        _proposals.AddOrUpdate(proposalId, updated, (_, _) => updated);
         return Task.FromResult(updated);
     }
 }

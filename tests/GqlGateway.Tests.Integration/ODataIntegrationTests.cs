@@ -118,4 +118,20 @@ public class ODataIntegrationTests : IClassFixture<WebApplicationFactory<Program
         body.ShouldContain("$metadata#finance_dbo_finance_table_1");
         body.ShouldContain("value");
     }
+
+    [Theory]
+    [InlineData("?$top=-1", "InvalidQueryOption")]
+    [InlineData("?$top=notanumber", "InvalidQueryOption")]
+    [InlineData("?$skip=-5", "InvalidQueryOption")]
+    public async Task ODataEntitySet_WithInvalidQueryOptions_Returns400BadRequest(string queryString, string expectedErrorCode)
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-ODATA-ANALYST");
+
+        var response = await client.GetAsync($"/odata/v4/finance/dbo/finance_table_1{queryString}");
+        response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+
+        var body = await response.Content.ReadAsStringAsync();
+        body.ShouldContain(expectedErrorCode);
+    }
 }
