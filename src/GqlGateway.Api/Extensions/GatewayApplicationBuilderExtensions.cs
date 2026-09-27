@@ -2,6 +2,7 @@ using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
 using GqlGateway.Application.Dbt.Interfaces;
+using GqlGateway.Extensions.OData;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 using System.Security.Claims;
@@ -315,6 +316,56 @@ public static class GatewayApplicationBuilderExtensions
         {
             var yaml = await exposurePublisher.GenerateExposuresYamlAsync(context.RequestAborted);
             return Results.Content(yaml, "text/yaml; charset=utf-8");
+        }).RequireAuthorization();
+
+        // OData v4 / Power BI & Excel Direct Adapter Endpoints
+        app.MapGet("/odata/v4", async (
+            IODataHandler odataHandler,
+            HttpContext context) =>
+        {
+            var serviceRoot = $"{context.Request.Scheme}://{context.Request.Host}/odata/v4";
+            var doc = await odataHandler.GetServiceDocumentAsync(serviceRoot, context.RequestAborted);
+            return Results.Json(doc, contentType: "application/json;odata.metadata=minimal;charset=utf-8");
+        }).RequireAuthorization();
+
+        app.MapGet("/odata/v4/$metadata", async (
+            IODataHandler odataHandler,
+            HttpContext context) =>
+        {
+            var xml = await odataHandler.GetMetadataCsdlAsync(context.RequestAborted);
+            return Results.Content(xml, "application/xml;charset=utf-8");
+        }).RequireAuthorization();
+
+        app.MapGet("/odata/v4/{domain}/{schema}/{tableName}", async (
+            string domain,
+            string schema,
+            string tableName,
+            IODataHandler odataHandler,
+            HttpContext context) =>
+        {
+            var serviceRoot = $"{context.Request.Scheme}://{context.Request.Host}/odata/v4";
+            var tableId = new TableIdentifier(domain, schema, tableName);
+
+            int? top = context.Request.Query.TryGetValue("$top", out var topVal) && int.TryParse(topVal, out var t) ? t : null;
+            int? skip = context.Request.Query.TryGetValue("$skip", out var skipVal) && int.TryParse(skipVal, out var s) ? s : null;
+            string? select = context.Request.Query["$select"].FirstOrDefault();
+            bool includeCount = context.Request.Query.TryGetValue("$count", out var countVal) && bool.TryParse(countVal, out var c) && c;
+
+            var headers = context.Request.Headers.ToDictionary(h => h.Key, h => h.Value.Select(v => v ?? string.Empty).ToArray());
+
+            var result = await odataHandler.ExecuteEntitySetQueryAsync(
+                principal: context.User,
+                serviceRootUrl: serviceRoot,
+                table: tableId,
+                top: top,
+                skip: skip,
+                select: select,
+                includeCount: includeCount,
+                headers: headers,
+                ct: context.RequestAborted
+            );
+
+            return Results.Json(result.Payload, statusCode: result.StatusCode, contentType: "application/json;odata.metadata=minimal;charset=utf-8");
         }).RequireAuthorization();
 
         return app;
