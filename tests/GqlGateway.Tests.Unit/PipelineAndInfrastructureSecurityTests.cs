@@ -273,7 +273,7 @@ public class PipelineAndInfrastructureSecurityTests
         var eqFilter = new ObjectValueNode(
             new ObjectFieldNode("notes", new ObjectValueNode(new ObjectFieldNode("eq", NullValueNode.Default)))
         );
-        var (sqlEq, pEq) = provider.TranslateObjectValue(eqFilter, metadata, DatabaseDialect.SqlServer);
+        var (sqlEq, pEq) = provider.TranslateObjectValue(eqFilter, metadata, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(metadata));
         sqlEq.ShouldBe("[notes] IS NULL");
         pEq.ShouldBeEmpty();
 
@@ -281,7 +281,7 @@ public class PipelineAndInfrastructureSecurityTests
         var neqFilter = new ObjectValueNode(
             new ObjectFieldNode("notes", new ObjectValueNode(new ObjectFieldNode("neq", NullValueNode.Default)))
         );
-        var (sqlNeq, pNeq) = provider.TranslateObjectValue(neqFilter, metadata, DatabaseDialect.SqlServer);
+        var (sqlNeq, pNeq) = provider.TranslateObjectValue(neqFilter, metadata, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(metadata));
         sqlNeq.ShouldBe("[notes] IS NOT NULL");
         pNeq.ShouldBeEmpty();
     }

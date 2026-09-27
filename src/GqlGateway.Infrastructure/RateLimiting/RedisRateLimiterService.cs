@@ -97,14 +97,23 @@ public sealed class RedisRateLimiterService : IRateLimiterService
 
                 return new RateLimitResult(count <= options.PermitLimit, retryAfter);
             }
+
+            _logger.LogWarning("Redis rate limiting returned unexpected result for IP {Ip}. Falling back to in-memory limiter.", ip);
+            return await _inMemoryFallback.CheckPreAuthIpAsync(ip, options, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Redis rate limiting failed for IP {Ip}. Falling back to local in-memory rate limiter.", ip);
-            return await _inMemoryFallback.CheckPreAuthIpAsync(ip, options, ct).ConfigureAwait(false);
+            try
+            {
+                return await _inMemoryFallback.CheckPreAuthIpAsync(ip, options, ct).ConfigureAwait(false);
+            }
+            catch (Exception fallbackEx)
+            {
+                _logger.LogError(fallbackEx, "In-memory rate limiting fallback failed for IP {Ip}. Failing closed.", ip);
+                return new RateLimitResult(false, 60);
+            }
         }
-
-        return new RateLimitResult(true, 0);
     }
 
     public async Task<RateLimitResult> CheckPostAuthSidAsync(string sid, PostAuthSidRateLimitOptions options, CancellationToken ct = default)
@@ -138,13 +147,22 @@ public sealed class RedisRateLimiterService : IRateLimiterService
 
                 return new RateLimitResult(allowed, waitSeconds);
             }
+
+            _logger.LogWarning("Redis post-auth rate limiting returned unexpected result for SID {Sid}. Falling back to in-memory limiter.", sid);
+            return await _inMemoryFallback.CheckPostAuthSidAsync(sid, options, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Redis post-auth rate limiting failed for SID {Sid}. Falling back to local in-memory token bucket.", sid);
-            return await _inMemoryFallback.CheckPostAuthSidAsync(sid, options, ct).ConfigureAwait(false);
+            try
+            {
+                return await _inMemoryFallback.CheckPostAuthSidAsync(sid, options, ct).ConfigureAwait(false);
+            }
+            catch (Exception fallbackEx)
+            {
+                _logger.LogError(fallbackEx, "In-memory rate limiting fallback failed for SID {Sid}. Failing closed.", sid);
+                return new RateLimitResult(false, 60);
+            }
         }
-
-        return new RateLimitResult(true, 0);
     }
 }

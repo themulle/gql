@@ -109,12 +109,12 @@ public sealed class ItsmWebhookHandler(
 
         // 4. Strikte Tenant-Bindungsprüfung
         var expectedTenant = _itsmOptions.GetTenantForInstance(payload.InstanceId);
-        if (request.TenantId != expectedTenant)
+        if (expectedTenant == null || request.TenantId != expectedTenant.Value)
         {
             GatewayDiagnostics.CrossTenantMismatchCounter.Add(1);
             logger.LogError(
                 "CROSS_TENANT_WEBHOOK_MISMATCH: Ticket {TicketId} gehört zu Tenant {ReqTenant}, Callback kam von {CbTenant}",
-                payload.TicketId, request.TenantId, expectedTenant);
+                payload.TicketId, request.TenantId, expectedTenant?.Value ?? "UNKNOWN_INSTANCE");
             return false; // Streng verweigern!
         }
 

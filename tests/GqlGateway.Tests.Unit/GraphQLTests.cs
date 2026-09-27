@@ -51,7 +51,7 @@ public class GraphQLTests
             ))
         );
 
-        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer);
+        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(meta));
 
         sql.ShouldBe("[amount] >= @p1");
         parameters.Count.ShouldBe(1);
@@ -68,7 +68,7 @@ public class GraphQLTests
             ))
         );
 
-        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.PostgreSql);
+        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.PostgreSql, SqlFilterProvider.UnrestrictedAccess(meta));
 
         sql.ShouldBe("\"status\" = $1");
         parameters.Count.ShouldBe(1);
@@ -85,7 +85,7 @@ public class GraphQLTests
             ))
         );
 
-        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.Oracle);
+        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.Oracle, SqlFilterProvider.UnrestrictedAccess(meta));
 
         sql.ShouldBe("\"status\" = :p1");
         parameters.Count.ShouldBe(1);
@@ -111,7 +111,7 @@ public class GraphQLTests
             ))
         );
 
-        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer);
+        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(meta));
 
         sql.ShouldContain("OR");
         sql.ShouldContain("[status] = @p1");
@@ -132,7 +132,7 @@ public class GraphQLTests
 
         Should.Throw<InvalidOperationException>(() =>
         {
-            _filterProvider.TranslateObjectValue(maliciousFilter, meta, DatabaseDialect.SqlServer);
+            _filterProvider.TranslateObjectValue(maliciousFilter, meta, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(meta));
         });
     }
 
@@ -172,7 +172,7 @@ public class GraphQLTests
             ))
         );
 
-        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer);
+        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(meta));
 
         sql.ShouldBe("[status] IN (@p1, @p2)");
         parameters.Count.ShouldBe(2);
@@ -194,7 +194,7 @@ public class GraphQLTests
         );
 
         var providerWithSmallChunk = new SqlFilterProvider(maxInClauseSize: 2);
-        var (sql, parameters) = providerWithSmallChunk.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer);
+        var (sql, parameters) = providerWithSmallChunk.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(meta));
 
         sql.ShouldBe("(([id] IN (@p1, @p2)) OR ([id] IN (@p3, @p4)) OR ([id] IN (@p5)))");
         parameters.Count.ShouldBe(5);
@@ -212,7 +212,7 @@ public class GraphQLTests
             ))
         );
 
-        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer);
+        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(meta));
 
         sql.ShouldBe("[customer] LIKE @p1 ESCAPE '\\'");
         parameters.Count.ShouldBe(1);
@@ -229,7 +229,7 @@ public class GraphQLTests
             ))
         );
 
-        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer);
+        var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer, SqlFilterProvider.UnrestrictedAccess(meta));
 
         sql.ShouldBe("[customer] LIKE @p1 ESCAPE '\\'");
         parameters.Count.ShouldBe(1);
@@ -320,6 +320,22 @@ public class GraphQLTests
         var (sql, parameters) = _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer, colAccessClear);
         sql.ShouldBe("[amount] >= @p1");
         parameters["p1"].ShouldBe(100L);
+    }
+
+    [Fact]
+    public void SqlFilterProvider_WhenColumnAccessIsNull_ThrowsArgumentNullExceptionFailClosed()
+    {
+        var meta = CreateSampleMetadata();
+        var filterNode = new ObjectValueNode(
+            new ObjectFieldNode("amount", new ObjectValueNode(
+                new ObjectFieldNode("gte", new IntValueNode(100))
+            ))
+        );
+
+        Should.Throw<ArgumentNullException>(() =>
+        {
+            _filterProvider.TranslateObjectValue(filterNode, meta, DatabaseDialect.SqlServer, null!);
+        });
     }
 }
 

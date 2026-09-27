@@ -24,12 +24,19 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
         public int Value = 1;
     }
 
+    public static IReadOnlyDictionary<string, ColumnAccessLevel> UnrestrictedAccess(TableMetadata metadata)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        return metadata.Columns.ToDictionary(c => c.ColumnName, _ => ColumnAccessLevel.Clear, StringComparer.OrdinalIgnoreCase);
+    }
+
     public (string SqlWhereClause, IReadOnlyDictionary<string, object?> Parameters) TranslateFilterAst(
         FieldNode filterAst,
         TableMetadata metadata,
         DatabaseDialect dialect,
-        IReadOnlyDictionary<string, ColumnAccessLevel>? columnAccess = null)
+        IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess)
     {
+        ArgumentNullException.ThrowIfNull(columnAccess);
         var parameters = new Dictionary<string, object?>();
         var counter = new Counter();
 
@@ -41,8 +48,9 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
         IValueNode filterValueNode,
         TableMetadata metadata,
         DatabaseDialect dialect,
-        IReadOnlyDictionary<string, ColumnAccessLevel>? columnAccess = null)
+        IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess)
     {
+        ArgumentNullException.ThrowIfNull(columnAccess);
         var parameters = new Dictionary<string, object?>();
         var counter = new Counter();
 
@@ -56,7 +64,7 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
         DatabaseDialect dialect,
         Dictionary<string, object?> parameters,
         Counter counter,
-        IReadOnlyDictionary<string, ColumnAccessLevel>? columnAccess)
+        IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess)
     {
         var whereArg = fieldNode.Arguments.FirstOrDefault(a => string.Equals(a.Name.Value, "where", StringComparison.OrdinalIgnoreCase));
         if (whereArg == null || whereArg.Value is NullValueNode)
@@ -73,7 +81,7 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
         DatabaseDialect dialect,
         Dictionary<string, object?> parameters,
         Counter counter,
-        IReadOnlyDictionary<string, ColumnAccessLevel>? columnAccess)
+        IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess)
     {
         if (valueNode is ObjectValueNode objNode)
         {
@@ -134,16 +142,18 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
                 }
 
                 // SEC-01: Zero-Trust rule: Filtering on columns without explicit Clear access (or with Mask/Deny) is strictly forbidden to prevent side-channel inference
-                if (columnAccess != null)
+                if (columnAccess == null)
                 {
-                    var access = columnAccess.TryGetValue(fieldName, out var explicitAccess)
-                        ? explicitAccess
-                        : ColumnAccessLevel.Deny;
+                    throw new SecurityException($"Zero-Trust-Verletzung: Spaltenberechtigungen (columnAccess) müssen für die Filterung auf Spalte '{fieldName}' zwingend übergeben werden.");
+                }
 
-                    if (access != ColumnAccessLevel.Clear)
-                    {
-                        throw new SecurityException($"Zero-Trust-Verletzung: Filtern auf Spalte '{fieldName}' ist nicht gestattet (Zugriffsebene: {access}).");
-                    }
+                var access = columnAccess.TryGetValue(fieldName, out var explicitAccess)
+                    ? explicitAccess
+                    : ColumnAccessLevel.Deny;
+
+                if (access != ColumnAccessLevel.Clear)
+                {
+                    throw new SecurityException($"Zero-Trust-Verletzung: Filtern auf Spalte '{fieldName}' ist nicht gestattet (Zugriffsebene: {access}).");
                 }
 
                 var quotedColumn = QuoteIdentifier(fieldName, dialect);

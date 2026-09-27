@@ -11,13 +11,13 @@ public interface ISqlFilterProvider
         FieldNode filterAst,
         TableMetadata metadata,
         DatabaseDialect dialect,
-        IReadOnlyDictionary<string, ColumnAccessLevel>? columnAccess = null
+        IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess
     );
 
     (string SqlWhereClause, IReadOnlyDictionary<string, object?> Parameters) TranslateObjectValue(
         IValueNode filterValueNode,
         TableMetadata metadata,
         DatabaseDialect dialect,
-        IReadOnlyDictionary<string, ColumnAccessLevel>? columnAccess = null
+        IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess
     );
 }

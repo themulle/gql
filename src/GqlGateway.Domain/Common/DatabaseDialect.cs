@@ -59,6 +59,12 @@ public static class DatabaseDialectExtensions
 
         var schemaQuoted = dialect.QuoteIdentifier(table.Schema);
         var tableQuoted = dialect.QuoteIdentifier(table.TableName);
+
+        if (dialect == DatabaseDialect.Sqlite)
+        {
+            return tableQuoted;
+        }
+
         return $"{schemaQuoted}.{tableQuoted}";
     }
 

@@ -85,6 +85,9 @@ public static class GatewayServiceCollectionExtensions
                 environment.IsDevelopment() || !opts.OpenMetadata.Enabled ||
                 (Uri.TryCreate(opts.OpenMetadata.ServerUrl, UriKind.Absolute, out var uri) && string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase)),
                 "Sicherheitsverletzung: OpenMetadata.ServerUrl muss außerhalb von Development zwingend HTTPS verwenden.")
+            .Validate(opts =>
+                environment.IsDevelopment() || !opts.HighAvailability.MultiNodeClusterMode || opts.Caching.Redis.Enabled,
+                "NF-HA-02 Verletzung: Im MultiNodeClusterMode erfordert die clusterweite Cache- und Epoch-Invalidierung zwingend Caching.Redis.Enabled = true!")
             .ValidateOnStart();
 
         var gatewayOptions = configuration.GetSection(GatewayOptions.SectionName).Get<GatewayOptions>() ?? new GatewayOptions();
@@ -566,6 +569,11 @@ public static class GatewayServiceCollectionExtensions
                 !string.Equals(omUri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
             {
                 throw new ValidationException("Sicherheitsverletzung: OpenMetadata.ServerUrl muss außerhalb von Development zwingend HTTPS verwenden.");
+            }
+
+            if (options.HighAvailability.MultiNodeClusterMode && !options.Caching.Redis.Enabled)
+            {
+                throw new ValidationException("NF-HA-02 Verletzung: Im MultiNodeClusterMode erfordert die clusterweite Cache- und Epoch-Invalidierung zwingend Caching.Redis.Enabled = true!");
             }
         }
 

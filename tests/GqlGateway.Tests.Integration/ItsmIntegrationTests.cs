@@ -376,4 +376,55 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
         var pendingRequests = await repo.GetPendingRequestsForApproverAsync(new Sid("S-1-5-21-DATAOWNER-1"));
         pendingRequests.Any(r => r.BusinessJustification == uniqueJustification).ShouldBeFalse();
     }
+
+    [Fact]
+    public async Task Webhook_WithUnknownInstanceId_IsStrictlyRejected()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IGovernanceRepository>();
+
+        var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await repo.GetTableMetadataAsync(tableId);
+        meta.ShouldNotBeNull();
+
+        var ticketId = $"UNKNOWN-INST-TICKET-{Guid.NewGuid():N}";
+        var consentReq = new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = tableId,
+            RequesterSid = new Sid("S-1-5-21-UNKNOWN-INST-USER"),
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = "S-1-5-21-UNKNOWN-INST-USER",
+            BusinessJustification = "Unknown instance test",
+            Status = "PENDING_EXTERNAL_APPROVAL",
+            TenantId = TenantId.LegacySingleTenant, // Even if tenant is LegacySingleTenant, unknown instance must be rejected!
+            ItsmTicketId = ticketId,
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7)
+        };
+        await repo.CreateConsentRequestAsync(consentReq);
+
+        var client = _factory.CreateClient();
+        var payload = JsonSerializer.Serialize(new
+        {
+            TicketId = ticketId,
+            InstanceId = "malicious-unregistered-instance",
+            Action = "APPROVE"
+        });
+
+        var timestamp = DateTimeOffset.UtcNow;
+        var signature = ComputeSignature(payload, timestamp);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/itsm/status-change");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        request.Headers.Add("X-ITSM-Signature", signature);
+        request.Headers.Add("X-ITSM-Timestamp", timestamp.ToString("O"));
+
+        var response = await client.SendAsync(request);
+        // Webhook handler returns false -> 401 Unauthorized
+        response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+
+        // Verify request was NOT activated
+        var updated = await repo.GetConsentRequestAsync(consentReq.Id);
+        updated.ShouldNotBeNull();
+        updated.Status.ShouldBe("PENDING_EXTERNAL_APPROVAL");
+    }
 }

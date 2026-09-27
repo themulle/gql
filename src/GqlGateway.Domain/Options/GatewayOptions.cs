@@ -38,6 +38,7 @@ public sealed class ReverseProxyOptions
 
 public sealed class HighAvailabilityOptions
 {
+    public bool MultiNodeClusterMode { get; init; } = false;
     [Range(1, 30)] public int DrainDelaySeconds { get; init; } = 5;
     [Range(5, 120)] public int QueryTimeoutSeconds { get; init; } = 30;
     [Range(10, 180)] public int ShutdownTimeoutSeconds { get; init; } = 40;
@@ -244,13 +245,13 @@ public sealed class ItsmOptions
     public string JiraBaseUrl { get; init; } = string.Empty;
     public Dictionary<string, string> InstanceToTenantMap { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 
-    public TenantId GetTenantForInstance(string instanceId)
+    public TenantId? GetTenantForInstance(string instanceId)
     {
         if (InstanceToTenantMap.TryGetValue(instanceId, out var tenantStr) && !string.IsNullOrWhiteSpace(tenantStr))
         {
             return new TenantId(tenantStr);
         }
-        return TenantId.LegacySingleTenant;
+        return null;
     }
 }
 
