@@ -159,8 +159,10 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
             }
 
             var actualBytes = Encoding.UTF8.GetBytes(actualSecretStr);
+            var hashExpected = SHA256.HashData(expectedBytes);
+            var hashActual = SHA256.HashData(actualBytes);
 
-            if (!CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes))
+            if (!CryptographicOperations.FixedTimeEquals(hashExpected, hashActual))
             {
                 Logger.LogWarning("ForwardAuth rejected: Shared secret mismatch.");
                 return Task.FromResult(AuthenticateResult.Fail("Invalid ForwardAuth shared secret."));

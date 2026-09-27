@@ -4,7 +4,7 @@ namespace GqlGateway.Domain.Common;
 
 public readonly record struct Sid(string Value) : IEquatable<Sid>
 {
-    public override string ToString() => Value;
+    public override string ToString() => Value ?? string.Empty;
 
     public static implicit operator string(Sid sid) => sid.Value;
     public static implicit operator Sid(string value) => new(value);

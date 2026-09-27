@@ -30,7 +30,8 @@ public partial class SqliteGovernanceRepository
             {
                 cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
                                            c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
-                                           c.is_revoked, c.revoked_by_sid, c.revoked_at, c.revoke_reason
+                                           c.is_revoked, c.revoked_by_sid, c.revoked_at, c.revoke_reason,
+                                           c.tenant_id
                                     FROM CONSENTS c
                                     JOIN TABLES t ON c.table_id = t.id
                                     WHERE t.source_name = @domain COLLATE NOCASE AND t.schema_name = @schema COLLATE NOCASE AND t.table_name = @table COLLATE NOCASE
@@ -69,7 +70,8 @@ public partial class SqliteGovernanceRepository
                         RoleName = reader.IsDBNull(7) ? null : reader.GetString(7),
                         ValidFrom = validFrom,
                         ValidTo = validTo,
-                        IsRevoked = reader.GetInt32(10) == 1
+                        IsRevoked = reader.GetInt32(10) == 1,
+                        TenantId = reader.IsDBNull(14) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(14))
                     };
                     consents.Add(consent);
                 }
@@ -106,7 +108,8 @@ public partial class SqliteGovernanceRepository
             {
                 cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
                                            c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
-                                           c.is_revoked, t.source_name, t.schema_name, t.table_name
+                                           c.is_revoked, t.source_name, t.schema_name, t.table_name,
+                                           c.tenant_id
                                     FROM CONSENTS c
                                     JOIN TABLES t ON c.table_id = t.id
                                     WHERE c.is_revoked = 0";
@@ -152,7 +155,8 @@ public partial class SqliteGovernanceRepository
                         RoleName = reader.IsDBNull(7) ? null : reader.GetString(7),
                         ValidFrom = validFrom,
                         ValidTo = validTo,
-                        IsRevoked = reader.GetInt32(10) == 1
+                        IsRevoked = reader.GetInt32(10) == 1,
+                        TenantId = reader.IsDBNull(14) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(14))
                     };
                     consents.Add(consent);
                 }
@@ -566,8 +570,8 @@ public partial class SqliteGovernanceRepository
             using (var cmd = _connection.CreateCommand())
             {
                 cmd.Transaction = tx;
-                cmd.CommandText = @"INSERT INTO CONSENTS (id, table_id, consent_request_id, effect, grantee_type, grantee_sid, role_id, role_name, valid_from, valid_to, is_revoked)
-                                    VALUES (@id, @tid, @reqId, 'Allow', @type, @sid, @roleId, @roleName, @from, @to, 0)";
+                cmd.CommandText = @"INSERT INTO CONSENTS (id, table_id, consent_request_id, effect, grantee_type, grantee_sid, role_id, role_name, valid_from, valid_to, is_revoked, tenant_id)
+                                    VALUES (@id, @tid, @reqId, 'Allow', @type, @sid, @roleId, @roleName, @from, @to, 0, @tenantId)";
                 cmd.Parameters.AddWithValue("@id", consentId.ToString());
                 cmd.Parameters.AddWithValue("@tid", req.TableId.ToString());
                 cmd.Parameters.AddWithValue("@reqId", req.Id.ToString());
@@ -577,6 +581,7 @@ public partial class SqliteGovernanceRepository
                 cmd.Parameters.AddWithValue("@roleName", isRole ? (object)req.RequestedGranteeRef : DBNull.Value);
                 cmd.Parameters.AddWithValue("@from", DateTimeOffset.UtcNow.ToString("O"));
                 cmd.Parameters.AddWithValue("@to", req.RequestedValidTo.ToString("O"));
+                cmd.Parameters.AddWithValue("@tenantId", req.TenantId.Value);
                 await cmd.ExecuteNonQueryAsync(ct);
             }
 
@@ -871,8 +876,8 @@ public partial class SqliteGovernanceRepository
 
             using var cmd = _connection.CreateCommand();
             cmd.Transaction = tx;
-            cmd.CommandText = @"INSERT INTO CONSENTS (id, table_id, consent_request_id, effect, grantee_type, grantee_sid, role_id, role_name, valid_from, valid_to, is_revoked)
-                                VALUES (@id, @tid, @reqId, @effect, @type, @sid, @roleId, @roleName, @from, @to, 0)";
+            cmd.CommandText = @"INSERT INTO CONSENTS (id, table_id, consent_request_id, effect, grantee_type, grantee_sid, role_id, role_name, valid_from, valid_to, is_revoked, tenant_id)
+                                VALUES (@id, @tid, @reqId, @effect, @type, @sid, @roleId, @roleName, @from, @to, 0, @tenantId)";
             cmd.Parameters.AddWithValue("@id", consent.Id.ToString());
             cmd.Parameters.AddWithValue("@tid", consent.TableId.ToString());
             cmd.Parameters.AddWithValue("@reqId", (object?)consent.ConsentRequestId?.ToString() ?? DBNull.Value);
@@ -883,6 +888,7 @@ public partial class SqliteGovernanceRepository
             cmd.Parameters.AddWithValue("@roleName", (object?)consent.RoleName ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@from", consent.ValidFrom.ToString("O"));
             cmd.Parameters.AddWithValue("@to", consent.ValidTo.ToString("O"));
+            cmd.Parameters.AddWithValue("@tenantId", consent.TenantId.Value);
 
             await cmd.ExecuteNonQueryAsync(ct);
 
@@ -968,7 +974,7 @@ public partial class SqliteGovernanceRepository
                 cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
                                            c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
                                            c.is_revoked, c.revoked_by_sid, c.revoked_at, c.revoke_reason,
-                                           t.source_name, t.schema_name, t.table_name
+                                           t.source_name, t.schema_name, t.table_name, c.tenant_id
                                     FROM CONSENTS c
                                     JOIN TABLES t ON c.table_id = t.id
                                     WHERE c.id = @id";
@@ -1000,7 +1006,8 @@ public partial class SqliteGovernanceRepository
                         IsRevoked = reader.GetInt32(10) == 1,
                         RevokedBySid = reader.IsDBNull(11) ? (Sid?)null : new Sid(reader.GetString(11)),
                         RevokedAt = reader.IsDBNull(12) ? null : DateTimeOffset.Parse(reader.GetString(12)),
-                        RevokeReason = reader.IsDBNull(13) ? null : reader.GetString(13)
+                        RevokeReason = reader.IsDBNull(13) ? null : reader.GetString(13),
+                        TenantId = reader.IsDBNull(17) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(17))
                     };
                 }
             }

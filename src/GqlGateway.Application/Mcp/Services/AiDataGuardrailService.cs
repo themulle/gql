@@ -21,18 +21,23 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
     private readonly IOptions<GatewayOptions> _options;
     private readonly ILogger<AiDataGuardrailService> _logger;
 
-    // High-performance compiled regexes for automated PII detection
+    private static readonly TimeSpan DefaultRegexTimeout = TimeSpan.FromMilliseconds(250);
+
+    // High-performance compiled regexes for automated PII detection with ReDoS timeout protection
     private static readonly Regex EmailRegex = new(
         @"\b([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        DefaultRegexTimeout);
 
     private static readonly Regex IbanRegex = new(
         @"\b[A-Z]{2}[0-9]{2}(?:[ ]?[0-9]{4}){3,7}(?:[ ]?[0-9]{1,4})?\b",
-        RegexOptions.Compiled);
+        RegexOptions.Compiled,
+        DefaultRegexTimeout);
 
     private static readonly Regex GdprArt9Regex = new(
         @"""(healthCondition|diagnosis|medicalRecord|biometricData|geneticMarker|religiousAffiliation|politicalBelief)""\s*:\s*""([^""]+)""",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        RegexOptions.Compiled | RegexOptions.IgnoreCase,
+        DefaultRegexTimeout);
 
     public AiDataGuardrailService(
         IMcpToolRegistry toolRegistry,

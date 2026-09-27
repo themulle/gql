@@ -354,7 +354,7 @@ public sealed class Mutation
         }
 
         // Four-Eyes Principle / Separation of Duties (Funktionstrennung)
-        if (req.RequesterSid == approverSid && !roles.Contains("ClusterAdmin"))
+        if (req.RequesterSid == approverSid)
         {
             throw new GraphQLException(ErrorBuilder.New()
                 .SetCode("FORBIDDEN")

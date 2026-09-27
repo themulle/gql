@@ -7,7 +7,8 @@ public enum DataSourceType
 {
     Sql = 0,
     HttpDeclarative = 1,
-    HttpPlugin = 2
+    HttpPlugin = 2,
+    LakehouseIceberg = 3
 }
 
 public enum HttpAuthMode

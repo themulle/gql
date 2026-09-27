@@ -41,6 +41,7 @@ public sealed class JustificationTriageService : IJustificationTriageService
         // 2. Tabellen-Metadaten prüfen (Prüfung auf explizites LOW_SENSITIVITY Opt-In)
         var metadata = await _metadataRepo.GetTableMetadataAsync(table, ct).ConfigureAwait(false);
         bool isLowSensitivityOptIn = metadata != null &&
+            !metadata.Table.RequiresFourEyes &&
             (string.Equals(metadata.Table.Sensitivity, "LOW", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(metadata.Table.Sensitivity, "LOW_SENSITIVITY", StringComparison.OrdinalIgnoreCase));
 

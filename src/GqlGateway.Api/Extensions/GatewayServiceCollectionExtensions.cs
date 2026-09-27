@@ -658,12 +658,7 @@ public static class GatewayServiceCollectionExtensions
             var activeBypasses = options.GetAllActiveBypasses();
             var disallowedInProd = activeBypasses
                 .Where(b => b.StartsWith("DANGER:", StringComparison.OrdinalIgnoreCase) ||
-                            b == "WARN:warn_auto_approve_access_requests" ||
-                            b == "WARN:warn_fallback_default_tenant_for_webhooks" ||
-                            b == "WARN:warn_mock_external_systems_if_unreachable" ||
-                            b == "WARN:warn_allow_all_cors_origins" ||
-                            b == "WARN:warn_disable_rate_limiting" ||
-                            b == "WARN:warn_allow_unmasked_ai_access")
+                            b.StartsWith("WARN:", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             if (disallowedInProd.Count > 0)

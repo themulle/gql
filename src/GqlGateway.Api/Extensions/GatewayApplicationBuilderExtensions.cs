@@ -582,13 +582,18 @@ public static class GatewayApplicationBuilderExtensions
             }
 
             // 3. Session Teardown
-            app.MapDelete($"{mcpBasePath}/session/{{id}}", (
+            var sessionEndpoint = app.MapDelete($"{mcpBasePath}/session/{{id}}", (
                 string id,
                 IMcpProtocolHandler mcpHandler) =>
             {
                 var removed = mcpHandler.RemoveSession(id);
                 return removed ? Results.NoContent() : Results.NotFound();
             });
+
+            if (!gatewayOptions.IsMcpAuthBypassed)
+            {
+                sessionEndpoint.RequireAuthorization();
+            }
         }
 
         return app;

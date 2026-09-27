@@ -3,6 +3,7 @@ using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.GraphQL.Types;
+using NSubstitute;
 using GqlGateway.Infrastructure.Cache;
 using GqlGateway.Infrastructure.Persistence;
 using HotChocolate;
@@ -876,5 +877,89 @@ public class GovernanceSecurityTests : IDisposable
             await hrQuery.GetEmployeesAsync(50, 0, executionService, unauthenticatedAccessor);
         });
         ex3.Errors.ShouldContain(e => e.Code == "UNAUTHORIZED");
+    }
+
+    [Fact]
+    public async Task ApproveConsentRequest_ClusterAdminSelfApproval_ThrowsForbidden()
+    {
+        var table = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await _repository.GetTableMetadataAsync(table);
+        meta.ShouldNotBeNull();
+
+        var clusterAdminSid = new Sid("S-1-5-21-CLUSTER-ADMIN");
+
+        var req = await _repository.CreateConsentRequestAsync(new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = table,
+            RequesterSid = clusterAdminSid,
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = clusterAdminSid.Value,
+            BusinessJustification = "Admin self approval attempt",
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7),
+            TenantId = TenantId.LegacySingleTenant
+        });
+
+        var accessor = CreateAccessor(clusterAdminSid, "ClusterAdmin");
+
+        var ex = await Should.ThrowAsync<GraphQLException>(async () =>
+        {
+            await _mutation.ApproveConsentRequestAsync(req.Id, null, _repository, _repository, _repository, accessor);
+        });
+
+        ex.Errors.ShouldContain(e => e.Code == "FORBIDDEN" && e.Message.Contains("Funktionstrennung verletzt"));
+    }
+
+    [Fact]
+    public async Task Query_GetGdprDataDisclosureReport_WhenSubjectSidNull_DefaultsToCallerSelf()
+    {
+        var query = new Query();
+        var callerSid = new Sid("S-1-5-21-STANDARD-CALLER");
+        var accessor = CreateAccessor(callerSid);
+
+        var lineageService = NSubstitute.Substitute.For<ILineageImpactAnalyzerService>();
+
+        await query.GetGdprDataDisclosureReportAsync(
+            domain: "finance",
+            schema: "dbo",
+            tableName: "finance_table_1",
+            subjectSid: null,
+            timeWindowDays: 365,
+            lineageService: lineageService,
+            httpContextAccessor: accessor);
+
+        await lineageService.Received(1).GetGdprDataDisclosureReportAsync(
+            NSubstitute.Arg.Any<TableIdentifier?>(),
+            NSubstitute.Arg.Is<Sid?>(s => s.HasValue && s.Value == callerSid),
+            NSubstitute.Arg.Any<int>(),
+            NSubstitute.Arg.Any<CallerSecurityContext>(),
+            NSubstitute.Arg.Any<System.Threading.CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Consents_PersistAndRetrieve_TenantIdCorrectly()
+    {
+        var table = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await _repository.GetTableMetadataAsync(table);
+        meta.ShouldNotBeNull();
+
+        var granteeSid = new Sid("S-1-5-21-TENANT-ISOLATED-GRANTEE");
+        var tenantAlpha = new TenantId("tenant-isolated-alpha");
+
+        var consent = await _repository.CreateConsentAsync(new Consent
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = table,
+            Effect = ConsentEffect.Allow,
+            GranteeType = GranteeType.User,
+            GranteeSid = granteeSid,
+            ValidFrom = DateTimeOffset.UtcNow.AddDays(-1),
+            ValidTo = DateTimeOffset.UtcNow.AddDays(30),
+            TenantId = tenantAlpha
+        });
+
+        var retrieved = await _repository.GetConsentByIdAsync(consent.Id);
+        retrieved.ShouldNotBeNull();
+        retrieved.TenantId.ShouldBe(tenantAlpha);
     }
 }

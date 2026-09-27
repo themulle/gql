@@ -101,7 +101,8 @@ public partial class SqliteGovernanceRepository
                 is_revoked INTEGER NOT NULL,
                 revoked_by_sid TEXT,
                 revoked_at TEXT,
-                revoke_reason TEXT
+                revoke_reason TEXT,
+                tenant_id TEXT NOT NULL DEFAULT 'legacy-default'
             );
 
             CREATE TABLE IF NOT EXISTS CONSENT_COLUMN_RULES (
@@ -219,6 +220,7 @@ public partial class SqliteGovernanceRepository
         EnsureConsentRowFilterColumns();
         EnsureTableColumns();
         EnsureConsentRequestColumns();
+        EnsureConsentColumns();
 
         using (var lastHashCmd = _connection.CreateCommand())
         {
@@ -256,6 +258,35 @@ public partial class SqliteGovernanceRepository
             {
                 using var alterCmd = _connection.CreateCommand();
                 alterCmd.CommandText = $"ALTER TABLE CONSENT_REQUESTS ADD COLUMN {colDef};";
+                alterCmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    private void EnsureConsentColumns()
+    {
+        var existingCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA table_info(CONSENTS);";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                existingCols.Add(reader.GetString(1));
+            }
+        }
+
+        string[] requiredCols = {
+            "tenant_id TEXT NOT NULL DEFAULT 'legacy-default'"
+        };
+
+        foreach (var colDef in requiredCols)
+        {
+            var colName = colDef.Split(' ')[0];
+            if (!existingCols.Contains(colName))
+            {
+                using var alterCmd = _connection.CreateCommand();
+                alterCmd.CommandText = $"ALTER TABLE CONSENTS ADD COLUMN {colDef};";
                 alterCmd.ExecuteNonQuery();
             }
         }

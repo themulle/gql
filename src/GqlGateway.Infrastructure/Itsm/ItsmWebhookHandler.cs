@@ -84,7 +84,7 @@ public sealed class ItsmWebhookHandler(
                 return false;
             }
 
-            // 3. Timing-sicherer Signaturvergleich (Timestamp-gebunden oder Roh-Payload)
+            // 3. Timing-sicherer Signaturvergleich (Timestamp-gebunden oder Roh-Payload mit Header-Timestamp-Validierung)
             bool signatureValid = CryptographicOperations.FixedTimeEquals(computedHashWithTimestamp, providedHash) ||
                                   CryptographicOperations.FixedTimeEquals(computedHashRaw, providedHash);
             if (!signatureValid)

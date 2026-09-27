@@ -231,24 +231,24 @@ public sealed class Query
             : null;
         Sid? sid = !string.IsNullOrWhiteSpace(subjectSid) ? new Sid(subjectSid) : (Sid?)null;
 
-        if (sid.HasValue && !sid.Value.Equals(callerContext.UserSid))
-        {
-            bool canAccessForeignReports = callerContext.Roles.Any(r =>
-                r.Equals("PrivacyAdmin", StringComparison.OrdinalIgnoreCase) ||
-                r.Equals("DataProtectionOfficer", StringComparison.OrdinalIgnoreCase) ||
-                r.Equals("GovernanceAdmin", StringComparison.OrdinalIgnoreCase) ||
-                r.Equals("ClusterAdmin", StringComparison.OrdinalIgnoreCase));
+        bool canAccessForeignReports = callerContext.Roles.Any(r =>
+            r.Equals("PrivacyAdmin", StringComparison.OrdinalIgnoreCase) ||
+            r.Equals("DataProtectionOfficer", StringComparison.OrdinalIgnoreCase) ||
+            r.Equals("GovernanceAdmin", StringComparison.OrdinalIgnoreCase) ||
+            r.Equals("ClusterAdmin", StringComparison.OrdinalIgnoreCase));
 
-            if (!canAccessForeignReports)
-            {
-                throw new GraphQLException(ErrorBuilder.New()
-                    .SetCode("FORBIDDEN")
-                    .SetMessage("DSGVO-Auskunftsberichte für fremde Identitäten erfordern PrivacyAdmin- oder GovernanceAdmin-Rechte.")
-                    .Build());
-            }
+        // Effective SID: If subjectSid is omitted, default to callerContext.UserSid unless caller is a privacy officer
+        var effectiveSid = sid ?? (canAccessForeignReports ? (Sid?)null : callerContext.UserSid);
+
+        if (effectiveSid.HasValue && !effectiveSid.Value.Equals(callerContext.UserSid) && !canAccessForeignReports)
+        {
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetCode("FORBIDDEN")
+                .SetMessage("DSGVO-Auskunftsberichte für fremde Identitäten erfordern PrivacyAdmin- oder GovernanceAdmin-Rechte.")
+                .Build());
         }
 
-        return await lineageService.GetGdprDataDisclosureReportAsync(tableId, sid, timeWindowDays, callerContext, ct);
+        return await lineageService.GetGdprDataDisclosureReportAsync(tableId, effectiveSid, timeWindowDays, callerContext, ct);
     }
 
     private static CallerSecurityContext GetCallerSecurityContext(IHttpContextAccessor httpContextAccessor)

@@ -2,8 +2,22 @@ using System;
 
 namespace GqlGateway.Domain.Common;
 
-public readonly record struct TableIdentifier(string Domain, string Schema, string TableName) : IEquatable<TableIdentifier>
+public readonly record struct TableIdentifier : IEquatable<TableIdentifier>
 {
+    public string Domain { get; init; }
+    public string Schema { get; init; }
+    public string TableName { get; init; }
+
+    public TableIdentifier(string domain, string schema, string tableName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(domain);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schema);
+        ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+        Domain = domain.Trim();
+        Schema = schema.Trim();
+        TableName = tableName.Trim();
+    }
+
     public override string ToString() => $"{Domain}.{Schema}.{TableName}";
 
     public string ToQualifiedName() => $"{Schema}.{TableName}";
