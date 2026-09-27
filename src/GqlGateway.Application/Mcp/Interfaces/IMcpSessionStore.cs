@@ -10,7 +10,12 @@ public interface IMcpSessionStore
     /// <summary>
     /// Creates and persists a new session.
     /// </summary>
-    McpSessionContext CreateSession(string servicePrincipalId, string tenantId);
+    McpSessionContext CreateSession(
+        string servicePrincipalId,
+        string tenantId,
+        string? userSid = null,
+        System.Collections.Generic.IReadOnlyList<string>? roles = null,
+        System.Collections.Generic.IReadOnlyList<string>? groupSids = null);
 
     /// <summary>
     /// Retrieves an active session by ID.

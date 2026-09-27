@@ -335,10 +335,11 @@ public static class GatewayApplicationBuilderExtensions
             return Results.Ok(new { status = "Processed" });
         }).AllowAnonymous();
 
-        app.MapPost("/api/webhooks/itsm/status-change", async (
+        async Task<IResult> ProcessItsmWebhookAsync(
             HttpContext context,
             IItsmWebhookHandler webhookHandler,
-            IOptions<GatewayOptions> gatewayOptions) =>
+            IOptions<GatewayOptions> gatewayOptions,
+            string defaultSystemName)
         {
             if (context.Request.ContentLength > 2 * 1024 * 1024)
             {
@@ -349,7 +350,11 @@ public static class GatewayApplicationBuilderExtensions
             var payload = await reader.ReadToEndAsync(context.RequestAborted);
 
             var opts = gatewayOptions.Value;
-            string? signature = context.Request.Headers["X-ITSM-Signature"].FirstOrDefault();
+            string? signature = context.Request.Headers["X-ITSM-Signature"].FirstOrDefault()
+                                ?? context.Request.Headers["X-ServiceNow-Signature"].FirstOrDefault()
+                                ?? context.Request.Headers["X-Hub-Signature-256"].FirstOrDefault()
+                                ?? context.Request.Headers["X-Hub-Signature"].FirstOrDefault();
+
             if (string.IsNullOrWhiteSpace(signature))
             {
                 if (!opts.IsWebhookSignatureBypassed)
@@ -360,8 +365,11 @@ public static class GatewayApplicationBuilderExtensions
             }
 
             DateTimeOffset timestamp;
-            if (!context.Request.Headers.TryGetValue("X-ITSM-Timestamp", out var tsHeader) ||
-                !DateTimeOffset.TryParse(tsHeader.FirstOrDefault(), out timestamp))
+            var tsHeader = context.Request.Headers["X-ITSM-Timestamp"].FirstOrDefault()
+                           ?? context.Request.Headers["X-Timestamp"].FirstOrDefault()
+                           ?? context.Request.Headers["Date"].FirstOrDefault();
+
+            if (string.IsNullOrWhiteSpace(tsHeader) || !DateTimeOffset.TryParse(tsHeader, out timestamp))
             {
                 if (!opts.IsWebhookTimestampToleranceIgnored)
                 {
@@ -370,14 +378,37 @@ public static class GatewayApplicationBuilderExtensions
                 timestamp = DateTimeOffset.UtcNow;
             }
 
-            var success = await webhookHandler.HandleStatusChangeAsync(payload, signature, timestamp, context.RequestAborted);
+            string? instanceHeader = context.Request.Headers["X-Instance-ID"].FirstOrDefault()
+                                     ?? context.Request.Headers["X-ServiceNow-Instance"].FirstOrDefault()
+                                     ?? context.Request.Headers["X-Jira-Instance"].FirstOrDefault()
+                                     ?? context.Request.Query["instance"].FirstOrDefault();
+
+            var success = await webhookHandler.HandleStatusChangeAsync(payload, signature, timestamp, instanceHeader, context.RequestAborted);
             if (!success)
             {
                 return Results.Unauthorized();
             }
 
-            return Results.Ok(new { status = "Processed" });
-        }).AllowAnonymous();
+            return Results.Ok(new { status = "Processed", system = defaultSystemName });
+        }
+
+        // Canonical ITSM Webhook Endpoint
+        app.MapPost("/api/webhooks/itsm/status-change", (
+            HttpContext context,
+            IItsmWebhookHandler webhookHandler,
+            IOptions<GatewayOptions> gatewayOptions) => ProcessItsmWebhookAsync(context, webhookHandler, gatewayOptions, "ITSM")).AllowAnonymous();
+
+        // Dedicated ServiceNow Webhook Endpoint (Business Rules / REST Messages / Flow Designer)
+        app.MapPost("/api/webhooks/servicenow", (
+            HttpContext context,
+            IItsmWebhookHandler webhookHandler,
+            IOptions<GatewayOptions> gatewayOptions) => ProcessItsmWebhookAsync(context, webhookHandler, gatewayOptions, "ServiceNow")).AllowAnonymous();
+
+        // Dedicated Jira Webhook Endpoint (Jira Automation / Webhook Listeners)
+        app.MapPost("/api/webhooks/jira", (
+            HttpContext context,
+            IItsmWebhookHandler webhookHandler,
+            IOptions<GatewayOptions> gatewayOptions) => ProcessItsmWebhookAsync(context, webhookHandler, gatewayOptions, "Jira")).AllowAnonymous();
 
         // Real-Time Data Catalog Webhook Endpoint (OpenMetadata, Purview, Collibra, Alation)
         app.MapPost("/api/webhooks/catalog", async (
@@ -393,6 +424,33 @@ public static class GatewayApplicationBuilderExtensions
 
             using var reader = new StreamReader(context.Request.Body);
             var payload = await reader.ReadToEndAsync(context.RequestAborted);
+
+            // Azure EventGrid SubscriptionValidation handshake
+            if (context.Request.Headers.TryGetValue("Aeg-Event-Type", out var eventType) &&
+                string.Equals(eventType.FirstOrDefault(), "SubscriptionValidation", StringComparison.OrdinalIgnoreCase))
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(payload);
+                string? validationCode = null;
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var item in doc.RootElement.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("data", out var dataElem) &&
+                            dataElem.TryGetProperty("validationCode", out var vcProp))
+                        {
+                            validationCode = vcProp.GetString();
+                            break;
+                        }
+                    }
+                }
+                else if (doc.RootElement.TryGetProperty("data", out var dataElem) &&
+                         dataElem.TryGetProperty("validationCode", out var vcProp))
+                {
+                    validationCode = vcProp.GetString();
+                }
+
+                return Results.Ok(new { validationResponse = validationCode ?? "" });
+            }
 
             string? signature = null;
             if (context.Request.Headers.TryGetValue("X-Catalog-Signature", out var sigHeader) ||
@@ -413,6 +471,73 @@ public static class GatewayApplicationBuilderExtensions
             }
 
             var provider = context.Request.Query.TryGetValue("provider", out var prov) ? prov.FirstOrDefault() : null;
+
+            var result = await webhookHandler.HandleWebhookAsync(payload, signature, timestamp, provider, context.RequestAborted);
+            if (!result.Success)
+            {
+                return Results.Json(result, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            return Results.Ok(result);
+        }).AllowAnonymous();
+
+        app.MapPost("/api/v1/governance/catalog/webhook/{provider}", async (
+            HttpContext context,
+            string provider,
+            IDataCatalogWebhookHandler webhookHandler,
+            IOptions<GatewayOptions> options) =>
+        {
+            if (context.Request.ContentLength > 10 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Payload exceeds maximum allowed size (10 MB)." });
+            }
+
+            using var reader = new StreamReader(context.Request.Body);
+            var payload = await reader.ReadToEndAsync(context.RequestAborted);
+
+            if (context.Request.Headers.TryGetValue("Aeg-Event-Type", out var eventType) &&
+                string.Equals(eventType.FirstOrDefault(), "SubscriptionValidation", StringComparison.OrdinalIgnoreCase))
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(payload);
+                string? validationCode = null;
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var item in doc.RootElement.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("data", out var dataElem) &&
+                            dataElem.TryGetProperty("validationCode", out var vcProp))
+                        {
+                            validationCode = vcProp.GetString();
+                            break;
+                        }
+                    }
+                }
+                else if (doc.RootElement.TryGetProperty("data", out var dataElem) &&
+                         dataElem.TryGetProperty("validationCode", out var vcProp))
+                {
+                    validationCode = vcProp.GetString();
+                }
+
+                return Results.Ok(new { validationResponse = validationCode ?? "" });
+            }
+
+            string? signature = null;
+            if (context.Request.Headers.TryGetValue("X-Catalog-Signature", out var sigHeader) ||
+                context.Request.Headers.TryGetValue("X-Signature", out sigHeader) ||
+                context.Request.Headers.TryGetValue("X-Hub-Signature-256", out sigHeader))
+            {
+                signature = sigHeader.FirstOrDefault();
+            }
+
+            DateTimeOffset? timestamp = null;
+            if (context.Request.Headers.TryGetValue("X-Catalog-Timestamp", out var tsHeader) ||
+                context.Request.Headers.TryGetValue("X-Timestamp", out tsHeader))
+            {
+                if (DateTimeOffset.TryParse(tsHeader.FirstOrDefault(), out var ts))
+                {
+                    timestamp = ts;
+                }
+            }
 
             var result = await webhookHandler.HandleWebhookAsync(payload, signature, timestamp, provider, context.RequestAborted);
             if (!result.Success)
@@ -560,7 +685,11 @@ public static class GatewayApplicationBuilderExtensions
                     ?? principal.FindFirst("tid")?.Value
                     ?? "default";
 
-                var session = mcpHandler.CreateSession(principalId, tenantId);
+                var userSid = principal.GetUserSid()?.Value;
+                var roles = principal.GetUserRoles().ToList();
+                var groupSids = principal.GetGroupSids().Select(s => s.Value).ToList();
+
+                var session = mcpHandler.CreateSession(principalId, tenantId, userSid, roles, groupSids);
 
                 sessionStore.RegisterSseSender(session.SessionId, async (evt, data) =>
                 {
@@ -615,6 +744,27 @@ public static class GatewayApplicationBuilderExtensions
                     return Results.BadRequest(new { error = "Missing 'sessionId' query parameter or 'X-MCP-Session-Id' header." });
                 }
 
+                var session = mcpHandler.GetSession(sessionId);
+                if (session == null)
+                {
+                    return Results.NotFound(new { error = $"Invalid or expired MCP session '{sessionId}'." });
+                }
+
+                if (!gatewayOptions.IsMcpAuthBypassed)
+                {
+                    var callerId = context.User.FindFirst("client_id")?.Value
+                        ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                        ?? context.User.FindFirst("sub")?.Value
+                        ?? context.User.FindFirst("appid")?.Value
+                        ?? context.User.Identity?.Name;
+
+                    if (!string.IsNullOrWhiteSpace(callerId) &&
+                        !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Results.StatusCode(StatusCodes.Status403Forbidden);
+                    }
+                }
+
                 using var reader = new System.IO.StreamReader(context.Request.Body);
                 var payload = await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
 
@@ -636,8 +786,30 @@ public static class GatewayApplicationBuilderExtensions
             // 3. Session Teardown
             var sessionEndpoint = app.MapDelete($"{mcpBasePath}/session/{{id}}", (
                 string id,
-                IMcpProtocolHandler mcpHandler) =>
+                IMcpProtocolHandler mcpHandler,
+                HttpContext context) =>
             {
+                var session = mcpHandler.GetSession(id);
+                if (session == null)
+                {
+                    return Results.NotFound(new { error = $"Session '{id}' not found." });
+                }
+
+                if (!gatewayOptions.IsMcpAuthBypassed)
+                {
+                    var callerId = context.User.FindFirst("client_id")?.Value
+                        ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                        ?? context.User.FindFirst("sub")?.Value
+                        ?? context.User.FindFirst("appid")?.Value
+                        ?? context.User.Identity?.Name;
+
+                    if (!string.IsNullOrWhiteSpace(callerId) &&
+                        !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Results.StatusCode(StatusCodes.Status403Forbidden);
+                    }
+                }
+
                 var removed = mcpHandler.RemoveSession(id);
                 return removed ? Results.NoContent() : Results.NotFound();
             });

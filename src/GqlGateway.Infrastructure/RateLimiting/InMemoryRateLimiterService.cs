@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Hosting;
 
@@ -209,5 +210,38 @@ public sealed class InMemoryRateLimiterService : IRateLimiterService
         }
 
         return Task.FromResult(new RateLimitResult(!limitExceeded, waitSeconds));
+    }
+
+    private readonly ConcurrentDictionary<string, TokenBucket> _costBuckets = new(StringComparer.OrdinalIgnoreCase);
+
+    public Task<CostQuotaResult> CheckCostQuotaAsync(string key, int requestedCost, ClientQuotaPolicy policy, CancellationToken ct = default)
+    {
+        var currentTimestamp = Stopwatch.GetTimestamp();
+
+        var bucket = _costBuckets.GetOrAdd(key, _ => new TokenBucket
+        {
+            Tokens = policy.MaxTokensCapacity,
+            LastRefillTimestamp = currentTimestamp
+        });
+
+        lock (bucket.Lock)
+        {
+            var elapsedSeconds = Stopwatch.GetElapsedTime(bucket.LastRefillTimestamp, currentTimestamp).TotalSeconds;
+            bucket.Tokens = Math.Min(policy.MaxTokensCapacity, bucket.Tokens + (elapsedSeconds * policy.TokenRefillRatePerSecond));
+            bucket.LastRefillTimestamp = currentTimestamp;
+
+            if (bucket.Tokens >= requestedCost)
+            {
+                bucket.Tokens -= requestedCost;
+                return Task.FromResult(new CostQuotaResult(true, (int)Math.Floor(bucket.Tokens), 0));
+            }
+            else
+            {
+                var missingTokens = requestedCost - bucket.Tokens;
+                var refillRate = policy.TokenRefillRatePerSecond > 0 ? policy.TokenRefillRatePerSecond : 1.0;
+                var waitSeconds = Math.Max(1, (int)Math.Ceiling(missingTokens / refillRate));
+                return Task.FromResult(new CostQuotaResult(false, (int)Math.Floor(bucket.Tokens), waitSeconds));
+            }
+        }
     }
 }

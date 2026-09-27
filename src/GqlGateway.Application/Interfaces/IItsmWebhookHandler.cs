@@ -13,5 +13,17 @@ public interface IItsmWebhookHandler
         string rawPayload,
         string hmacSignature,
         DateTimeOffset timestamp,
+        CancellationToken ct = default)
+        => HandleStatusChangeAsync(rawPayload, hmacSignature, timestamp, null, ct);
+
+    /// <summary>
+    /// Verarbeitet ITSM-Statusänderungen mit optionalem Instanz-Header unter strikter Prüfung von Tenant- und Ticket-Bindung.
+    /// Unterstützt kanonische DTOs sowie native ServiceNow- und Jira-Webhook-Payloads.
+    /// </summary>
+    Task<bool> HandleStatusChangeAsync(
+        string rawPayload,
+        string hmacSignature,
+        DateTimeOffset timestamp,
+        string? headerInstanceId,
         CancellationToken ct = default);
 }

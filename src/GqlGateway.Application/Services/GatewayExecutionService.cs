@@ -134,6 +134,21 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         var groupSids = principal.GetGroupSids();
         var roles = principal.GetUserRoles();
 
+        // Resolve TenantId upfront for cache and consent isolation
+        var tenantId = TenantId.LegacySingleTenant;
+        if (principal.FindFirst("tenant")?.Value is { Length: > 0 } tVal && TenantId.TryParse(tVal, out var parsedFromClaim))
+        {
+            tenantId = parsedFromClaim;
+        }
+        else if (principal.FindFirst("tenant_id")?.Value is { Length: > 0 } tIdVal && TenantId.TryParse(tIdVal, out var parsedFromIdClaim))
+        {
+            tenantId = parsedFromIdClaim;
+        }
+        else if (requestHeaders != null && requestHeaders.TryGetValue("X-Tenant-ID", out var tHeaders) && tHeaders.Length > 0 && TenantId.TryParse(tHeaders[0], out var parsedFromHeader))
+        {
+            tenantId = parsedFromHeader;
+        }
+
         // Verify table existence in metadata catalog
         var metadata = await _metadataRepository.GetTableMetadataAsync(table, ct);
         if (metadata == null)
@@ -148,14 +163,19 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         }
         else
         {
-            // Check Consent Cache (L1/L2 with Epoch Validation & Group/Role Context Hash)
+            // Check Consent Cache (L1/L2 with Epoch Validation & Group/Role Context Hash, strictly tenant-isolated)
             var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
-            var cached = await _cacheService.GetCachedDecisionAsync(userSid, table, contextHash, ct);
+            var cached = await _cacheService.GetCachedDecisionAsync(tenantId, userSid, table, contextHash, ct);
             if (cached == null)
             {
                 // Cache Miss -> Load from Governance DB
                 var allSubjects = groupSids.Append(userSid).ToList();
                 var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
+
+                // Multi-Tenancy Isolation: Filter active consents strictly for current tenant
+                activeConsents = activeConsents
+                    .Where(c => c.TenantId == tenantId || c.TenantId == TenantId.LegacySingleTenant)
+                    .ToList();
 
                 decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
 
@@ -163,7 +183,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
                 var ttl = metadata.Table.IsHighlySensitive
                     ? TimeSpan.FromSeconds(60)
                     : TimeSpan.FromMinutes(10);
-                await _cacheService.SetCachedDecisionAsync(userSid, table, decision, ttl, contextHash, ct);
+                await _cacheService.SetCachedDecisionAsync(tenantId, userSid, table, decision, ttl, contextHash, ct);
             }
             else
             {
@@ -224,15 +244,6 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             effectiveRequestedFields = authorizedColumns;
         }
 
-        var tenantId = TenantId.LegacySingleTenant;
-        if (principal.FindFirst("tenant")?.Value is { Length: > 0 } tVal && TenantId.TryParse(tVal, out var parsedFromClaim))
-        {
-            tenantId = parsedFromClaim;
-        }
-        else if (requestHeaders != null && requestHeaders.TryGetValue("X-Tenant-ID", out var tHeaders) && tHeaders.Length > 0 && TenantId.TryParse(tHeaders[0], out var parsedFromHeader))
-        {
-            tenantId = parsedFromHeader;
-        }
 
         var execContext = new DataSourceExecutionContext(
             SourceName: metadata.Table.SourceName,
@@ -275,6 +286,13 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
                 if (access == ColumnAccessLevel.Deny)
                 {
                     continue; // Strip denied columns completely
+                }
+
+                // Zero-Trust Hardening: Sensitive columns in catalog NEVER output cleartext without explicit Clear rule
+                bool isSensitiveInCatalog = col.IsSensitive || metadata.ColumnMaskingRules.ContainsKey(col.ColumnName);
+                if (isSensitiveInCatalog && !decision.HasExplicitClear(col.ColumnName))
+                {
+                    access = ColumnAccessLevel.Mask;
                 }
 
                 if (r.TryGetValue(col.ColumnName, out var rawVal))
@@ -543,19 +561,33 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             return TableAccessDecision.Denied(table, $"Table '{table}' not found in metadata catalog.");
         }
 
+        var tenantId = TenantId.LegacySingleTenant;
+        if (principal.FindFirst("tenant")?.Value is { Length: > 0 } tVal && TenantId.TryParse(tVal, out var parsedFromClaim))
+        {
+            tenantId = parsedFromClaim;
+        }
+        else if (principal.FindFirst("tenant_id")?.Value is { Length: > 0 } tIdVal && TenantId.TryParse(tIdVal, out var parsedFromIdClaim))
+        {
+            tenantId = parsedFromIdClaim;
+        }
+
         var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
-        var decision = await _cacheService.GetCachedDecisionAsync(userSid, table, contextHash, ct);
+        var decision = await _cacheService.GetCachedDecisionAsync(tenantId, userSid, table, contextHash, ct);
         if (decision == null)
         {
             var allSubjects = groupSids.Append(userSid).ToList();
             var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, ct);
+
+            activeConsents = activeConsents
+                .Where(c => c.TenantId == tenantId || c.TenantId == TenantId.LegacySingleTenant)
+                .ToList();
 
             decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
 
             var ttl = metadata.Table.IsHighlySensitive
                 ? TimeSpan.FromSeconds(60)
                 : TimeSpan.FromMinutes(10);
-            await _cacheService.SetCachedDecisionAsync(userSid, table, decision, ttl, contextHash, ct);
+            await _cacheService.SetCachedDecisionAsync(tenantId, userSid, table, decision, ttl, contextHash, ct);
         }
 
         var traceId = Guid.NewGuid().ToString("N");

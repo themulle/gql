@@ -827,6 +827,7 @@ public partial class SqliteGovernanceRepository
             }
 
             bool isAuthorized = string.Equals(approverSid.Value, "ITSM_SYSTEM", StringComparison.OrdinalIgnoreCase) ||
+                                approverSid.Value.StartsWith("ITSM_", StringComparison.OrdinalIgnoreCase) ||
                                 await IsAuthorizedApproverForTableInternalAsync(req.TableIdentifier, approverSid, ct);
             if (!isAuthorized)
             {

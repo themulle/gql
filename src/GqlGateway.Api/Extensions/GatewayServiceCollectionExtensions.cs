@@ -33,6 +33,9 @@ using GqlGateway.Infrastructure.Itsm;
 using GqlGateway.Infrastructure.Lineage;
 using GqlGateway.Infrastructure.Plugins;
 using GqlGateway.Infrastructure.Diagnostics;
+using GqlGateway.Application.Caching.Interfaces;
+using GqlGateway.Application.Caching.Services;
+using GqlGateway.Infrastructure.Cdn;
 using GqlGateway.Infrastructure.OpenJev;
 using System.Net.Http;
 using Microsoft.Extensions.Logging;
@@ -575,8 +578,16 @@ public static class GatewayServiceCollectionExtensions
         var maxDepth = gatewayOptions.AreQueryLimitsRelaxed ? 100 : gatewayOptions.GraphQL.MaxAllowedExecutionDepth;
         var maxCost = gatewayOptions.AreQueryLimitsRelaxed ? 100000 : gatewayOptions.GraphQL.MaxAllowedComplexity;
 
+        services.AddScoped<IClientTierResolver, ClientTierResolver>();
+        services.AddHttpClient<CloudflareCdnPurgeService>();
+        services.AddHttpClient<FastlyCdnPurgeService>();
+        services.AddTransient<ICdnCachePurgeService, CloudflareCdnPurgeService>();
+
         var gqlBuilder = services
             .AddGraphQLServer()
+            .UseRequest<GqlGateway.GraphQL.Interceptors.CostAndQuotaMiddleware>()
+            .UseRequest<GqlGateway.GraphQL.Interceptors.CdnCacheTagMiddleware>()
+            .UseDefaultPipeline()
             .AddQueryType<Query>()
             .AddMutationType<Mutation>()
             .AddTypeExtension<InvoiceRecordExtensions>()

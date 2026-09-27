@@ -59,10 +59,26 @@ public sealed class PluginHttpDataSourceExecutor : IDataSourceExecutor
             Metadata: context.Metadata,
             Principal: context.Principal,
             Arguments: context.Arguments,
-            HttpClientFactory: _httpClientFactory,
+            HttpClientFactory: new SsrfProtectedHttpClientFactory(_httpClientFactory),
             RequestHeaders: context.RequestHeaders
         );
 
         return await plugin.ExecuteAsync(pluginContext, ct);
+    }
+
+    private sealed class SsrfProtectedHttpClientFactory : IHttpClientFactory
+    {
+        private readonly IHttpClientFactory _inner;
+
+        public SsrfProtectedHttpClientFactory(IHttpClientFactory inner)
+        {
+            _inner = inner;
+        }
+
+        public HttpClient CreateClient(string name)
+        {
+            // Route all outbound plugin HTTP requests through the SSRF-hardened client with SocketsHttpHandler ConnectCallback
+            return _inner.CreateClient(GqlGateway.Application.Services.DeclarativeHttpDataSourceExecutor.HttpClientName);
+        }
     }
 }

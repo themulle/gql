@@ -19,7 +19,7 @@ public sealed class InProcessChannelEventBus : IEventBus, IAsyncDisposable
         {
             SingleWriter = false,
             SingleReader = true,
-            FullMode = BoundedChannelFullMode.DropOldest
+            FullMode = BoundedChannelFullMode.Wait
         };
         _channel = Channel.CreateBounded<EventEnvelope>(boundedOptions);
         _consumerTask = Task.Run(ProcessEventsAsync);

@@ -43,5 +43,8 @@ public sealed record McpSessionContext(
     string ServicePrincipalId,
     string TenantId,
     DateTimeOffset CreatedAt,
-    DateTimeOffset LastActiveAt
+    DateTimeOffset LastActiveAt,
+    string? UserSid = null,
+    IReadOnlyList<string>? Roles = null,
+    IReadOnlyList<string>? GroupSids = null
 );

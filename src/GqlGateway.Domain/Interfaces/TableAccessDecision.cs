@@ -18,6 +18,9 @@ public record TableAccessDecision(
         return HasUnconstrainedColumnAllow ? ColumnAccessLevel.Clear : ColumnAccessLevel.Deny;
     }
 
+    public bool HasExplicitClear(string columnName) =>
+        ColumnAccess.TryGetValue(columnName, out var lvl) && lvl == ColumnAccessLevel.Clear;
+
     public static TableAccessDecision Denied(TableIdentifier table, params string[] reasons) =>
         new(table, false, new Dictionary<string, ColumnAccessLevel>(), null, reasons, false);
 

@@ -136,9 +136,16 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         var targetTable = ParseTableIdentifierFromTool(tool);
         if (_policyEnforcementService != null && targetTable != null && !_options.Value.IsMcpAuthBypassed)
         {
+            var userSidStr = !string.IsNullOrWhiteSpace(sessionContext.UserSid)
+                ? sessionContext.UserSid
+                : sessionContext.ServicePrincipalId;
+            var groupSids = sessionContext.GroupSids != null && sessionContext.GroupSids.Count > 0
+                ? sessionContext.GroupSids.Select(s => new Sid(s)).ToArray()
+                : Array.Empty<Sid>();
+
             var secContext = new SecurityEvaluationContext(
-                UserSid: new Sid(sessionContext.ServicePrincipalId),
-                GroupSids: Array.Empty<Sid>(),
+                UserSid: new Sid(userSidStr),
+                GroupSids: groupSids,
                 Tenant: new TenantId(sessionContext.TenantId),
                 TargetTable: targetTable.Value,
                 RequestedColumns: Array.Empty<string>(),
@@ -316,6 +323,10 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to record audit event for MCP tool execution '{ToolName}'.", toolName);
+            if (!_options.Value.IsMcpAuthBypassed)
+            {
+                throw new System.Security.SecurityException($"Zero-Trust: Audit-Protokollierung für MCP-Tool '{toolName}' fehlgeschlagen. Ausführung abgebrochen (Fail-Closed).", ex);
+            }
         }
     }
 

@@ -12,7 +12,12 @@ public interface IMcpProtocolHandler
     /// <summary>
     /// Creates a new MCP session for an authenticated principal.
     /// </summary>
-    McpSessionContext CreateSession(string servicePrincipalId, string tenantId);
+    McpSessionContext CreateSession(
+        string servicePrincipalId,
+        string tenantId,
+        string? userSid = null,
+        System.Collections.Generic.IReadOnlyList<string>? roles = null,
+        System.Collections.Generic.IReadOnlyList<string>? groupSids = null);
 
     /// <summary>
     /// Gets an existing active session by ID.

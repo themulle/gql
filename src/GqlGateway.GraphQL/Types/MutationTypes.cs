@@ -304,7 +304,27 @@ public sealed class Mutation
         [Service] IHttpContextAccessor httpContextAccessor,
         [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
-        => ApproveConsentRequestAsync(requestId, idempotencyKey, repository, repository, repository, httpContextAccessor, idempotencyStore, ct);
+        => ApproveConsentRequestAsync(requestId, idempotencyKey, repository, repository, repository, repository, httpContextAccessor, idempotencyStore, ct);
+
+    [GraphQLIgnore]
+    public Task<ConsentRequestPayload> ApproveConsentRequestAsync(
+        Guid requestId,
+        string? idempotencyKey,
+        [Service] IConsentApprovalRepository approvalRepository,
+        [Service] IDataOwnershipRepository ownershipRepository,
+        [Service] IConsentRepository consentRepository,
+        [Service] IHttpContextAccessor httpContextAccessor,
+        CancellationToken ct = default)
+        => ApproveConsentRequestAsync(
+            requestId,
+            idempotencyKey,
+            approvalRepository,
+            ownershipRepository,
+            consentRepository,
+            (approvalRepository as ITableMetadataRepository) ?? (consentRepository as ITableMetadataRepository)!,
+            httpContextAccessor,
+            default!,
+            ct);
 
     public async Task<ConsentRequestPayload> ApproveConsentRequestAsync(
         Guid requestId,
@@ -312,6 +332,7 @@ public sealed class Mutation
         [Service] IConsentApprovalRepository approvalRepository = default!,
         [Service] IDataOwnershipRepository ownershipRepository = default!,
         [Service] IConsentRepository consentRepository = default!,
+        [Service] ITableMetadataRepository metadataRepository = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         [Service] IIdempotencyStore idempotencyStore = default!,
         CancellationToken ct = default)
@@ -380,6 +401,25 @@ public sealed class Mutation
         if (string.Equals(approved.Status, "APPROVED", StringComparison.OrdinalIgnoreCase))
         {
             var isRole = approved.RequestedGranteeType == GranteeType.Role;
+            var columnRules = new List<ConsentColumnRule>();
+
+            if (metadataRepository != null)
+            {
+                var tableMeta = await metadataRepository.GetTableMetadataAsync(approved.TableIdentifier, ct);
+                if (tableMeta != null && tableMeta.Columns.Count > 0)
+                {
+                    foreach (var col in tableMeta.Columns)
+                    {
+                        var isSensitive = col.IsSensitive || tableMeta.ColumnMaskingRules.ContainsKey(col.ColumnName);
+                        columnRules.Add(new ConsentColumnRule
+                        {
+                            ColumnName = col.ColumnName,
+                            AccessLevel = isSensitive ? ColumnAccessLevel.Mask : ColumnAccessLevel.Clear
+                        });
+                    }
+                }
+            }
+
             var consent = new Consent
             {
                 TableId = approved.TableId,
@@ -391,7 +431,8 @@ public sealed class Mutation
                 GranteeSid = isRole ? (Sid?)null : new Sid(approved.RequestedGranteeRef),
                 RoleName = isRole ? approved.RequestedGranteeRef : null,
                 ValidFrom = DateTimeOffset.UtcNow,
-                ValidTo = approved.RequestedValidTo
+                ValidTo = approved.RequestedValidTo,
+                ColumnRules = columnRules
             };
             await consentRepository.CreateConsentAsync(consent, ct);
         }

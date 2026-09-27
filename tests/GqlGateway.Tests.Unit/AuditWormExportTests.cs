@@ -190,6 +190,8 @@ public sealed class AuditWormExportTests
                     S3Endpoint = "http://minio:9000",
                     S3Bucket = "worm-bucket",
                     S3Prefix = "audit-lock/",
+                    S3AccessKey = "AKIAEXAMPLEKEY",
+                    S3SecretKey = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
                     ObjectLockMode = "COMPLIANCE",
                     EnforceObjectLock = true,
                     RetentionDays = 365
@@ -213,6 +215,8 @@ public sealed class AuditWormExportTests
             req.Headers.Contains("x-amz-object-lock-mode").ShouldBeTrue();
             req.Headers.GetValues("x-amz-object-lock-mode").First().ShouldBe("COMPLIANCE");
             req.Headers.Contains("x-amz-object-lock-retain-until-date").ShouldBeTrue();
+            req.Headers.Contains("Authorization").ShouldBeTrue();
+            req.Headers.GetValues("Authorization").First().ShouldStartWith("AWS4-HMAC-SHA256");
         }
     }
 }

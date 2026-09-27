@@ -427,4 +427,250 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
         updated.ShouldNotBeNull();
         updated.Status.ShouldBe("PENDING_EXTERNAL_APPROVAL");
     }
+
+    [Fact]
+    public async Task ServiceNowWebhook_WithNativePayload_ApprovesAndActivatesConsent()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IGovernanceRepository>();
+
+        var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await repo.GetTableMetadataAsync(tableId);
+        meta.ShouldNotBeNull();
+
+        var ticketId = $"INC-{RandomNumberGenerator.GetInt32(100000, 999999)}";
+        var consentReq = new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = tableId,
+            RequesterSid = new Sid("S-1-5-21-SNOW-USER"),
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = "S-1-5-21-SNOW-USER",
+            BusinessJustification = "ServiceNow native approval test",
+            Status = "PENDING_EXTERNAL_APPROVAL",
+            TenantId = new TenantId("tenant-a"),
+            ItsmTicketId = ticketId,
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7)
+        };
+        await repo.CreateConsentRequestAsync(consentReq);
+
+        var client = _factory.CreateClient();
+        // Native ServiceNow format: "number", "approval", "instance_name", "close_notes"
+        var payload = JsonSerializer.Serialize(new
+        {
+            number = ticketId,
+            approval = "approved",
+            instance_name = "inst-tenant-a",
+            close_notes = "Approved by Risk & Compliance Officer in ServiceNow"
+        });
+
+        var timestamp = DateTimeOffset.UtcNow;
+        var signature = ComputeSignature(payload, timestamp);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/servicenow");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        request.Headers.Add("X-ServiceNow-Signature", signature);
+        request.Headers.Add("X-Timestamp", timestamp.ToString("O"));
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var respJson = await response.Content.ReadFromJsonAsync<JsonElement>();
+        respJson.GetProperty("status").GetString().ShouldBe("Processed");
+        respJson.GetProperty("system").GetString().ShouldBe("ServiceNow");
+
+        // Verify request is APPROVED in DB
+        var updated = await repo.GetConsentRequestAsync(consentReq.Id);
+        updated.ShouldNotBeNull();
+        updated.Status.ShouldBe("APPROVED");
+
+        // Verify active consent exists
+        var activeConsents = await repo.GetActiveConsentsForSubjectsAsync(
+            [new Sid("S-1-5-21-SNOW-USER")],
+            tableId,
+            DateTimeOffset.UtcNow);
+        activeConsents.Count.ShouldBeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task ServiceNowWebhook_WithStateClosedIncomplete_RejectsConsentRequest()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IGovernanceRepository>();
+
+        var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await repo.GetTableMetadataAsync(tableId);
+        meta.ShouldNotBeNull();
+
+        var ticketId = $"CHG-{RandomNumberGenerator.GetInt32(100000, 999999)}";
+        var consentReq = new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = tableId,
+            RequesterSid = new Sid("S-1-5-21-SNOW-REJECT-USER"),
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = "S-1-5-21-SNOW-REJECT-USER",
+            BusinessJustification = "ServiceNow native reject test",
+            Status = "PENDING_EXTERNAL_APPROVAL",
+            TenantId = new TenantId("tenant-a"),
+            ItsmTicketId = ticketId,
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7)
+        };
+        await repo.CreateConsentRequestAsync(consentReq);
+
+        var client = _factory.CreateClient();
+        // State 4 = Closed Incomplete (ServiceNow rejected)
+        var payload = JsonSerializer.Serialize(new
+        {
+            number = ticketId,
+            state = "4",
+            instance_id = "inst-tenant-a",
+            close_notes = "Security review denied the request"
+        });
+
+        var timestamp = DateTimeOffset.UtcNow;
+        var signature = ComputeSignature(payload, timestamp);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/servicenow");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        request.Headers.Add("X-ITSM-Signature", signature);
+        request.Headers.Add("X-ITSM-Timestamp", timestamp.ToString("O"));
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var updated = await repo.GetConsentRequestAsync(consentReq.Id);
+        updated.ShouldNotBeNull();
+        updated.Status.ShouldBe("REJECTED");
+    }
+
+    [Fact]
+    public async Task JiraWebhook_WithNativePayloadAndSha256Prefix_ApprovesAndActivatesConsent()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IGovernanceRepository>();
+
+        var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await repo.GetTableMetadataAsync(tableId);
+        meta.ShouldNotBeNull();
+
+        var ticketId = $"SEC-{RandomNumberGenerator.GetInt32(1000, 9999)}";
+        var consentReq = new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = tableId,
+            RequesterSid = new Sid("S-1-5-21-JIRA-USER"),
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = "S-1-5-21-JIRA-USER",
+            BusinessJustification = "Jira native approval test",
+            Status = "PENDING_EXTERNAL_APPROVAL",
+            TenantId = new TenantId("tenant-a"),
+            ItsmTicketId = ticketId,
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7)
+        };
+        await repo.CreateConsentRequestAsync(consentReq);
+
+        var client = _factory.CreateClient();
+        // Native Jira webhook format: issue.key, issue.fields.status.name, baseUrl
+        var payload = JsonSerializer.Serialize(new
+        {
+            webhookEvent = "jira:issue_updated",
+            baseUrl = "inst-tenant-a",
+            issue = new
+            {
+                key = ticketId,
+                fields = new
+                {
+                    status = new { name = "Approved" },
+                    resolution = new { name = "Done" }
+                }
+            }
+        });
+
+        var timestamp = DateTimeOffset.UtcNow;
+        var rawSig = ComputeSignature(payload, timestamp);
+        // Jira standard X-Hub-Signature format with sha256= prefix
+        var jiraSignature = $"sha256={rawSig}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/jira");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        request.Headers.Add("X-Hub-Signature-256", jiraSignature);
+        request.Headers.Add("X-ITSM-Timestamp", timestamp.ToString("O"));
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var respJson = await response.Content.ReadFromJsonAsync<JsonElement>();
+        respJson.GetProperty("status").GetString().ShouldBe("Processed");
+        respJson.GetProperty("system").GetString().ShouldBe("Jira");
+
+        // Verify request is APPROVED
+        var updated = await repo.GetConsentRequestAsync(consentReq.Id);
+        updated.ShouldNotBeNull();
+        updated.Status.ShouldBe("APPROVED");
+
+        // Verify active consent exists
+        var activeConsents = await repo.GetActiveConsentsForSubjectsAsync(
+            [new Sid("S-1-5-21-JIRA-USER")],
+            tableId,
+            DateTimeOffset.UtcNow);
+        activeConsents.Count.ShouldBeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task JiraWebhook_WithStatusDeclined_RejectsConsentRequest()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IGovernanceRepository>();
+
+        var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await repo.GetTableMetadataAsync(tableId);
+        meta.ShouldNotBeNull();
+
+        var ticketId = $"SEC-{RandomNumberGenerator.GetInt32(1000, 9999)}";
+        var consentReq = new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = tableId,
+            RequesterSid = new Sid("S-1-5-21-JIRA-DECLINED"),
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = "S-1-5-21-JIRA-DECLINED",
+            BusinessJustification = "Jira decline test",
+            Status = "PENDING_EXTERNAL_APPROVAL",
+            TenantId = new TenantId("tenant-a"),
+            ItsmTicketId = ticketId,
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7)
+        };
+        await repo.CreateConsentRequestAsync(consentReq);
+
+        var client = _factory.CreateClient();
+        var payload = JsonSerializer.Serialize(new
+        {
+            webhookEvent = "jira:issue_updated",
+            baseUrl = "inst-tenant-a",
+            issue = new
+            {
+                key = ticketId,
+                fields = new
+                {
+                    status = new { name = "Declined" },
+                    resolution = new { name = "Won't Do" }
+                }
+            }
+        });
+
+        var timestamp = DateTimeOffset.UtcNow;
+        var rawSig = ComputeSignature(payload, timestamp);
+        var jiraSignature = $"sha256={rawSig}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/jira");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        request.Headers.Add("X-Hub-Signature", jiraSignature);
+        request.Headers.Add("X-Timestamp", timestamp.ToString("O"));
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var updated = await repo.GetConsentRequestAsync(consentReq.Id);
+        updated.ShouldNotBeNull();
+        updated.Status.ShouldBe("REJECTED");
+    }
 }

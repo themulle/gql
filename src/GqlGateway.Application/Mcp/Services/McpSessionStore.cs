@@ -21,6 +21,14 @@ public sealed class McpSessionStore : IMcpSessionStore
     }
 
     public McpSessionContext CreateSession(string servicePrincipalId, string tenantId)
+        => CreateSession(servicePrincipalId, tenantId, null, null, null);
+
+    public McpSessionContext CreateSession(
+        string servicePrincipalId,
+        string tenantId,
+        string? userSid = null,
+        IReadOnlyList<string>? roles = null,
+        IReadOnlyList<string>? groupSids = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(servicePrincipalId);
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
@@ -30,19 +38,41 @@ public sealed class McpSessionStore : IMcpSessionStore
 
         var sessionId = Guid.NewGuid().ToString("N");
         var now = DateTimeOffset.UtcNow;
-        var session = new McpSessionContext(sessionId, servicePrincipalId, validatedTenant.Value, now, now);
+        var session = new McpSessionContext(
+            sessionId,
+            servicePrincipalId,
+            validatedTenant.Value,
+            now,
+            now,
+            userSid,
+            roles,
+            groupSids);
         _sessions[sessionId] = session;
 
-        _logger.LogInformation("Created new MCP session {SessionId} for principal {PrincipalId} in tenant {TenantId}.",
-            sessionId, servicePrincipalId, validatedTenant.Value);
+        _logger.LogInformation("Created new MCP session {SessionId} for principal {PrincipalId} (UserSid: {UserSid}) in tenant {TenantId}.",
+            sessionId, servicePrincipalId, userSid ?? "none", validatedTenant.Value);
 
         return session;
     }
 
+    private static readonly TimeSpan DefaultSessionTtl = TimeSpan.FromHours(1);
+
     public McpSessionContext? GetSession(string sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return null;
-        return _sessions.TryGetValue(sessionId, out var session) ? session : null;
+        if (!_sessions.TryGetValue(sessionId, out var session)) return null;
+
+        var now = DateTimeOffset.UtcNow;
+        if (now - session.LastActiveAt > DefaultSessionTtl)
+        {
+            RemoveSession(sessionId);
+            _logger.LogWarning("MCP session {SessionId} expired due to inactivity (TTL: {Ttl}).", sessionId, DefaultSessionTtl);
+            return null;
+        }
+
+        var updated = session with { LastActiveAt = now };
+        _sessions[sessionId] = updated;
+        return updated;
     }
 
     public bool RemoveSession(string sessionId)

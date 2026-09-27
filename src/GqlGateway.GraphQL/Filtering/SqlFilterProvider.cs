@@ -13,13 +13,16 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
     [GeneratedRegex("^[a-zA-Z_][a-zA-Z0-9_]*$")]
     private static partial Regex SafeIdentifierRegex();
     public const int DefaultMaxTotalParameters = 500;
+    public const int DefaultMaxFilterDepth = 15;
     private readonly int _maxInClauseSize;
     private readonly int _maxTotalParameters;
+    private readonly int _maxFilterDepth;
 
-    public SqlFilterProvider(int maxInClauseSize = 1000, int maxTotalParameters = DefaultMaxTotalParameters)
+    public SqlFilterProvider(int maxInClauseSize = 1000, int maxTotalParameters = DefaultMaxTotalParameters, int maxFilterDepth = DefaultMaxFilterDepth)
     {
         _maxInClauseSize = maxInClauseSize > 0 ? maxInClauseSize : 1000;
         _maxTotalParameters = maxTotalParameters > 0 ? maxTotalParameters : DefaultMaxTotalParameters;
+        _maxFilterDepth = maxFilterDepth > 0 ? maxFilterDepth : DefaultMaxFilterDepth;
     }
 
     private void AddParameter(Dictionary<string, object?> parameters, string rawParamName, object? value)
@@ -93,8 +96,14 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
         DatabaseDialect dialect,
         Dictionary<string, object?> parameters,
         Counter counter,
-        IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess)
+        IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess,
+        int depth = 0)
     {
+        if (depth > _maxFilterDepth)
+        {
+            throw new InvalidOperationException($"QUERY_TOO_COMPLEX: Die maximale Filter-Schachtelungstiefe ({_maxFilterDepth}) wurde überschritten.");
+        }
+
         if (valueNode is ObjectValueNode objNode)
         {
             var clauses = new List<string>();
@@ -110,7 +119,7 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
                         var andClauses = new List<string>();
                         foreach (var item in listNode.Items)
                         {
-                            var s = ProcessValueNode(item, metadata, dialect, parameters, counter, columnAccess);
+                            var s = ProcessValueNode(item, metadata, dialect, parameters, counter, columnAccess, depth + 1);
                             if (!string.IsNullOrEmpty(s))
                             {
                                 andClauses.Add(s);
@@ -132,7 +141,7 @@ public sealed partial class SqlFilterProvider : ISqlFilterProvider
                         var orClauses = new List<string>();
                         foreach (var item in listNode.Items)
                         {
-                            var s = ProcessValueNode(item, metadata, dialect, parameters, counter, columnAccess);
+                            var s = ProcessValueNode(item, metadata, dialect, parameters, counter, columnAccess, depth + 1);
                             if (!string.IsNullOrEmpty(s))
                             {
                                 orClauses.Add(s);

@@ -29,6 +29,34 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
     public bool IsCacheable => true;
     public ushort Priority => 10;
 
+    public static int CalculateCost(DocumentNode document, ISchema schema, int defaultListMultiplier = 10, int maxResponseRows = 1000)
+    {
+        var rule = new QueryCostAnalyzerRule(int.MaxValue, defaultListMultiplier, maxResponseRows);
+        var fragments = document.Definitions
+            .OfType<FragmentDefinitionNode>()
+            .ToDictionary(f => f.Name.Value, f => f, StringComparer.Ordinal);
+
+        var visitedFragments = new HashSet<string>(StringComparer.Ordinal);
+        int totalCost = 0;
+
+        foreach (var def in document.Definitions)
+        {
+            if (def is OperationDefinitionNode operation)
+            {
+                var rootType = operation.Operation switch
+                {
+                    OperationType.Mutation => schema.MutationType,
+                    OperationType.Subscription => schema.SubscriptionType,
+                    _ => schema.QueryType
+                };
+
+                totalCost += rule.CalculateSelectionSetCost(operation.SelectionSet, rootType, fragments, visitedFragments, schema);
+            }
+        }
+
+        return Math.Max(1, totalCost);
+    }
+
     public void Validate(IDocumentValidatorContext context, DocumentNode document)
     {
         var fragments = document.Definitions

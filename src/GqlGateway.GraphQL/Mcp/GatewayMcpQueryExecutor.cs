@@ -45,15 +45,40 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
         _logger.LogInformation("Executing MCP Tool '{ToolName}' for Principal '{PrincipalId}' on Tenant '{TenantId}'.",
             tool.Name, sessionContext.ServicePrincipalId, sessionContext.TenantId);
 
-        // Build authenticated ClaimsPrincipal from active MCP session
+        // Build authenticated ClaimsPrincipal from active MCP session preserving actual caller identity
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, sessionContext.ServicePrincipalId),
             new("sub", sessionContext.ServicePrincipalId),
             new("tenant_id", sessionContext.TenantId),
-            new(ClaimTypes.Role, "AiAgent"),
-            new(ClaimTypes.Role, "Reader")
+            new(ClaimTypes.Role, "AiAgent")
         };
+
+        if (!string.IsNullOrWhiteSpace(sessionContext.UserSid))
+        {
+            claims.Add(new Claim(ClaimTypes.PrimarySid, sessionContext.UserSid));
+        }
+
+        if (sessionContext.Roles != null && sessionContext.Roles.Count > 0)
+        {
+            foreach (var role in sessionContext.Roles)
+            {
+                claims.Add(new Claim(ClaimTypes.Role, role));
+            }
+        }
+        else
+        {
+            claims.Add(new Claim(ClaimTypes.Role, "Reader"));
+        }
+
+        if (sessionContext.GroupSids != null)
+        {
+            foreach (var groupSid in sessionContext.GroupSids)
+            {
+                claims.Add(new Claim(ClaimTypes.GroupSid, groupSid));
+            }
+        }
+
         var identity = new ClaimsIdentity(claims, "McpAuth");
         var principal = new ClaimsPrincipal(identity);
 

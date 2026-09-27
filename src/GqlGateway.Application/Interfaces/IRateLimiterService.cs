@@ -1,3 +1,4 @@
+using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 
 namespace GqlGateway.Application.Interfaces;
@@ -8,4 +9,5 @@ public interface IRateLimiterService
 {
     Task<RateLimitResult> CheckPreAuthIpAsync(string ip, PreAuthIpRateLimitOptions options, CancellationToken ct = default);
     Task<RateLimitResult> CheckPostAuthSidAsync(string sid, PostAuthSidRateLimitOptions options, CancellationToken ct = default);
+    Task<CostQuotaResult> CheckCostQuotaAsync(string key, int requestedCost, ClientQuotaPolicy policy, CancellationToken ct = default);
 }

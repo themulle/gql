@@ -191,6 +191,12 @@ public sealed class AuditWormExportService : IAuditWormExportService
         var bucket = !string.IsNullOrWhiteSpace(wormOpts.S3Bucket) ? wormOpts.S3Bucket : "audit-worm-bucket";
         var prefix = !string.IsNullOrWhiteSpace(wormOpts.S3Prefix) ? wormOpts.S3Prefix.Trim('/') + "/" : "audit-worm/";
 
+        bool hasCredentials = !string.IsNullOrWhiteSpace(wormOpts.S3AccessKey) && !string.IsNullOrWhiteSpace(wormOpts.S3SecretKey);
+        if (!hasCredentials && !_options.Value.AreUnsignedS3RequestsAllowed)
+        {
+            throw new System.Security.SecurityException("S3 WORM-Export verlangt signierte Anfragen (S3AccessKey/S3SecretKey). Unsignierte Anfragen sind nur mit warn_allow_unsigned_s3_requests erlaubt.");
+        }
+
         var dataUri = new Uri($"{endpoint}/{bucket}/{prefix}{fileName}");
         using var putRequest = new HttpRequestMessage(HttpMethod.Put, dataUri);
         putRequest.Content = new ByteArrayContent(payloadBytes);
@@ -202,22 +208,94 @@ public sealed class AuditWormExportService : IAuditWormExportService
             putRequest.Headers.TryAddWithoutValidation("x-amz-object-lock-retain-until-date", retentionUntil.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture));
         }
 
+        if (hasCredentials)
+        {
+            SignS3Request(putRequest, payloadBytes, wormOpts.S3AccessKey, wormOpts.S3SecretKey);
+        }
+
         var response = await _httpClient.SendAsync(putRequest, ct).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         // Also upload manifest
         var manifestUri = new Uri($"{endpoint}/{bucket}/{prefix}{manifestFileName}");
         using var putManifestRequest = new HttpRequestMessage(HttpMethod.Put, manifestUri);
-        putManifestRequest.Content = new StringContent(manifestJson, Encoding.UTF8, "application/json");
+        var manifestBytes = Encoding.UTF8.GetBytes(manifestJson);
+        putManifestRequest.Content = new ByteArrayContent(manifestBytes);
+        putManifestRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
         if (wormOpts.EnforceObjectLock)
         {
             putManifestRequest.Headers.TryAddWithoutValidation("x-amz-object-lock-mode", wormOpts.ObjectLockMode);
             putManifestRequest.Headers.TryAddWithoutValidation("x-amz-object-lock-retain-until-date", retentionUntil.ToString("yyyy-MM-ddTHH:mm:ssZ", CultureInfo.InvariantCulture));
         }
 
+        if (hasCredentials)
+        {
+            SignS3Request(putManifestRequest, manifestBytes, wormOpts.S3AccessKey, wormOpts.S3SecretKey);
+        }
+
         var manifestResponse = await _httpClient.SendAsync(putManifestRequest, ct).ConfigureAwait(false);
         manifestResponse.EnsureSuccessStatusCode();
 
         return dataUri.ToString();
+    }
+
+    private static void SignS3Request(
+        HttpRequestMessage request,
+        byte[] contentBytes,
+        string accessKey,
+        string secretKey,
+        string region = "us-east-1")
+    {
+        var now = DateTimeOffset.UtcNow;
+        var amzDate = now.ToString("yyyyMMddTHHmmssZ", CultureInfo.InvariantCulture);
+        var dateStamp = now.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+
+        var contentSha256 = Convert.ToHexStringLower(SHA256.HashData(contentBytes));
+
+        request.Headers.TryAddWithoutValidation("x-amz-date", amzDate);
+        request.Headers.TryAddWithoutValidation("x-amz-content-sha256", contentSha256);
+
+        var host = request.RequestUri!.Authority;
+        request.Headers.Host = host;
+
+        var headersToSign = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["host"] = host,
+            ["x-amz-content-sha256"] = contentSha256,
+            ["x-amz-date"] = amzDate
+        };
+
+        foreach (var header in request.Headers)
+        {
+            var lowerKey = header.Key.ToLowerInvariant();
+            if (lowerKey.StartsWith("x-amz-", StringComparison.Ordinal))
+            {
+                headersToSign[lowerKey] = string.Join(",", header.Value);
+            }
+        }
+
+        var canonicalHeaders = string.Join("\n", headersToSign.Select(kv => $"{kv.Key}:{kv.Value.Trim()}")) + "\n";
+        var signedHeaders = string.Join(";", headersToSign.Keys);
+
+        var canonicalUri = string.IsNullOrEmpty(request.RequestUri.AbsolutePath) ? "/" : request.RequestUri.AbsolutePath;
+        var canonicalQuery = string.Empty;
+
+        var canonicalRequest = $"{request.Method.Method}\n{canonicalUri}\n{canonicalQuery}\n{canonicalHeaders}\n{signedHeaders}\n{contentSha256}";
+        var canonicalRequestHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalRequest)));
+
+        var credentialScope = $"{dateStamp}/{region}/s3/aws4_request";
+        var stringToSign = $"AWS4-HMAC-SHA256\n{amzDate}\n{credentialScope}\n{canonicalRequestHash}";
+
+        var kSecret = Encoding.UTF8.GetBytes("AWS4" + secretKey);
+        var kDate = HMACSHA256.HashData(kSecret, Encoding.UTF8.GetBytes(dateStamp));
+        var kRegion = HMACSHA256.HashData(kDate, Encoding.UTF8.GetBytes(region));
+        var kService = HMACSHA256.HashData(kRegion, Encoding.UTF8.GetBytes("s3"));
+        var kSigning = HMACSHA256.HashData(kService, Encoding.UTF8.GetBytes("aws4_request"));
+
+        var signature = Convert.ToHexStringLower(HMACSHA256.HashData(kSigning, Encoding.UTF8.GetBytes(stringToSign)));
+
+        var authHeader = $"AWS4-HMAC-SHA256 Credential={accessKey}/{credentialScope}, SignedHeaders={signedHeaders}, Signature={signature}";
+        request.Headers.TryAddWithoutValidation("Authorization", authHeader);
     }
 }

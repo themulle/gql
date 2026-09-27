@@ -16,17 +16,20 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
     private readonly ISqlConnectionFactory? _connectionFactory;
     private readonly IOptions<GatewayOptions>? _options;
     private readonly ILogger<SqlDataSourceExecutor>? _logger;
+    private readonly Microsoft.Extensions.Hosting.IHostEnvironment? _environment;
 
     public DataSourceType SupportedType => DataSourceType.Sql;
 
     public SqlDataSourceExecutor(
         ISqlConnectionFactory? connectionFactory = null,
         IOptions<GatewayOptions>? options = null,
-        ILogger<SqlDataSourceExecutor>? logger = null)
+        ILogger<SqlDataSourceExecutor>? logger = null,
+        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null)
     {
         _connectionFactory = connectionFactory;
         _options = options;
         _logger = logger;
+        _environment = environment;
     }
 
     public async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> ExecuteAsync(
@@ -67,6 +70,16 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         // If no real connection is configured, or connection factory is missing, execute synthetic demo data generator (fallback for dev & unit tests)
         if (connOptions == null || string.IsNullOrWhiteSpace(connOptions.ConnectionString) || _connectionFactory == null)
         {
+            bool isDevOrTest = _environment == null ||
+                               string.Equals(_environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase) ||
+                               string.Equals(_environment.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase);
+            bool isExplicitlyAllowed = _options?.Value?.AreExternalSystemsMockedIfUnreachable == true;
+
+            if (!isDevOrTest && !isExplicitlyAllowed)
+            {
+                throw new InvalidOperationException($"Die SQL-Datenquelle '{context.SourceName}' besitzt keine gültige Datenbankverbindung. Synthetischer Daten-Fallback ist in Produktivumgebungen deaktiviert.");
+            }
+
             return GenerateSyntheticRows(context);
         }
 
