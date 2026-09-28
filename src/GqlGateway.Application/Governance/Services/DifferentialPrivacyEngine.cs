@@ -10,16 +10,11 @@ using GqlGateway.Domain.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-public sealed class DifferentialPrivacyEngine : IDifferentialPrivacyEngine
+public sealed class DifferentialPrivacyEngine(ILogger<DifferentialPrivacyEngine>? logger = null) : IDifferentialPrivacyEngine
 {
     private const double DefaultDailyEpsilonBudget = 10.0;
     private readonly ConcurrentDictionary<string, ClientBudgetState> _budgets = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ILogger<DifferentialPrivacyEngine> _logger;
-
-    public DifferentialPrivacyEngine(ILogger<DifferentialPrivacyEngine>? logger = null)
-    {
-        _logger = logger ?? NullLogger<DifferentialPrivacyEngine>.Instance;
-    }
+    private readonly ILogger<DifferentialPrivacyEngine> _logger = logger ?? NullLogger<DifferentialPrivacyEngine>.Instance;
 
     public ValueTask<PrivacyBudget> GetBudgetAsync(string clientId, CancellationToken cancellationToken = default)
     {

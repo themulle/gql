@@ -13,7 +13,9 @@ using GqlGateway.Domain.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-public sealed class PolicySimulationService : IPolicySimulationService
+public sealed partial class PolicySimulationService(
+    IAuditLogRepository auditLogRepository,
+    ILogger<PolicySimulationService>? logger = null) : IPolicySimulationService
 {
     private const string CasbinModelDefinition = @"
 [request_definition]
@@ -40,16 +42,11 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         "Diagnostics.", "Compiler", "IO.", "Security.", "Microsoft.", "Configuration", "Registry"
     ];
 
-    private readonly IAuditLogRepository _auditLogRepository;
-    private readonly ILogger<PolicySimulationService> _logger;
+    [GeneratedRegex(@"'([^']{2,})'")]
+    private static partial Regex SubRuleQuoteRegex();
 
-    public PolicySimulationService(
-        IAuditLogRepository auditLogRepository,
-        ILogger<PolicySimulationService>? logger = null)
-    {
-        _auditLogRepository = auditLogRepository ?? throw new ArgumentNullException(nameof(auditLogRepository));
-        _logger = logger ?? NullLogger<PolicySimulationService>.Instance;
-    }
+    private readonly IAuditLogRepository _auditLogRepository = auditLogRepository ?? throw new ArgumentNullException(nameof(auditLogRepository));
+    private readonly ILogger<PolicySimulationService> _logger = logger ?? NullLogger<PolicySimulationService>.Instance;
 
     public async Task<PolicySimulationResult> SimulateAsync(
         PolicySimulationRequest request,
@@ -213,7 +210,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
                     var eft = parts.Length > 6 && !string.IsNullOrWhiteSpace(parts[6]) ? parts[6] : "allow";
 
                     ValidateSubRule(subRule);
-                    var normalizedSubRule = Regex.Replace(subRule, @"'([^']{2,})'", "\"$1\"");
+                    var normalizedSubRule = SubRuleQuoteRegex().Replace(subRule, "\"$1\"");
                     enforcer.AddPolicy(sub, tenant, obj, act, normalizedSubRule, eft);
                 }
             }

@@ -11,16 +11,11 @@ using GqlGateway.Domain.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-public sealed class SchemaSunsettingService : ISchemaSunsettingService
+public sealed class SchemaSunsettingService(ILogger<SchemaSunsettingService>? logger = null) : ISchemaSunsettingService
 {
     private readonly ConcurrentDictionary<string, FieldSunsettingRule> _rulesByField = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<Guid, string> _fieldKeysById = new();
-    private readonly ILogger<SchemaSunsettingService> _logger;
-
-    public SchemaSunsettingService(ILogger<SchemaSunsettingService>? logger = null)
-    {
-        _logger = logger ?? NullLogger<SchemaSunsettingService>.Instance;
-    }
+    private readonly ILogger<SchemaSunsettingService> _logger = logger ?? NullLogger<SchemaSunsettingService>.Instance;
 
     private static string BuildKey(string targetTable, string fieldName) => $"{targetTable.Trim()}:{fieldName.Trim()}";
 
@@ -43,7 +38,7 @@ public sealed class SchemaSunsettingService : ISchemaSunsettingService
 
     public ValueTask<IReadOnlyList<FieldSunsettingRule>> GetRulesAsync(CancellationToken cancellationToken = default)
     {
-        IReadOnlyList<FieldSunsettingRule> list = _rulesByField.Values.ToList();
+        IReadOnlyList<FieldSunsettingRule> list = [.. _rulesByField.Values];
         return ValueTask.FromResult(list);
     }
 

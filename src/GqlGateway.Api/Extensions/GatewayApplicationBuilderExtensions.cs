@@ -731,6 +731,11 @@ public static class GatewayApplicationBuilderExtensions
                 }, statusCode: StatusCodes.Status410Gone);
             }
 
+            if (evaluation.ShouldInjectSyntheticLatency && evaluation.SyntheticLatencyMs > 0)
+            {
+                await Task.Delay(evaluation.SyntheticLatencyMs, context.RequestAborted);
+            }
+
             if (evaluation.ShouldRejectWith426)
             {
                 context.Response.Headers["Sunset"] = evaluation.HttpSunsetHeader;
@@ -741,11 +746,6 @@ public static class GatewayApplicationBuilderExtensions
                     sunsetDate = evaluation.SunsetDate,
                     replacement = evaluation.Rule.ReplacementField
                 }, statusCode: StatusCodes.Status426UpgradeRequired);
-            }
-
-            if (evaluation.ShouldInjectSyntheticLatency && evaluation.SyntheticLatencyMs > 0)
-            {
-                await Task.Delay(evaluation.SyntheticLatencyMs, context.RequestAborted);
             }
 
             context.Response.Headers["Sunset"] = evaluation.HttpSunsetHeader;
