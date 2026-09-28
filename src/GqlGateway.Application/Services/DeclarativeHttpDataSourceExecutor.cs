@@ -438,6 +438,8 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             if (bytes[0] == 192 && bytes[1] == 168) return true;
             // LinkLocal: 169.254.0.0/16
             if (bytes[0] == 169 && bytes[1] == 254) return true;
+            // RFC 6598: 100.64.0.0/10 (Carrier-Grade NAT / Alibaba Cloud IMDS 100.100.100.200)
+            if (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127) return true;
             // Current network: 0.0.0.0/8
             if (bytes[0] == 0) return true;
             // Broadcast: 255.255.255.255

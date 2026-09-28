@@ -19,14 +19,14 @@ public sealed partial class SemanticPromptGuardrail(ILogger<SemanticPromptGuardr
 
     // 1. Direct Instruction Overrides
     [GeneratedRegex(
-        @"(?:ignore|disregard|forget|bypass|override)\s+(?:all\s+)?(?:previous|prior|system|all)\s+(?:instructions|directives|prompts|rules|guidelines|guardrails)|(?:output|print|reveal|show|dump)\s+(?:the\s+)?(?:system\s+prompt|initial\s+instructions)",
+        @"(?:ignore|disregard|forget|bypass|override)\s+(?:all\s+)?(?:previous|prior|preceding|system|all)\s+(?:instructions|directives|prompts|rules|guidelines|guardrails)|(?:output|print|reveal|show|dump)\s+(?:the\s+)?(?:system\s+prompt|initial\s+instructions)",
         RegexOptions.IgnoreCase,
         matchTimeoutMilliseconds: 200)]
     private static partial Regex DirectInstructionOverrideRegex();
 
     // 2. Jailbreak Personas & Modes (DAN, Developer Mode, AIM, Unrestricted AI)
     [GeneratedRegex(
-        @"\b(?:DAN\s+mode|Do\s+Anything\s+Now|Developer\s+Mode\s+(?:v[0-9]|enabled|active)|AIM\s+persona|unfiltered\s+assistant|evil\s+confidant|jailbreak\s+mode|always\s+intelligent\s+and\s+machiavellian)\b|(?:pretend|act|simulate|roleplay)\s+(?:you\s+are|as)\s+(?:an?\s+)?(?:unrestricted|unaligned|evil|godmode|jailbroken)",
+        @"\b(?:DAN\s+mode|Do\s+Anything\s+Now|Developer\s+Mode(?:\s+v[0-9]|\s+enabled|\s+active|\s+now)?|AIM\s+persona|unfiltered\s+assistant|evil\s+confidant|jailbreak\s+mode|always\s+intelligent\s+and\s+machiavellian)\b|(?:pretend|act|simulate|roleplay)\s+(?:you\s+are|as)\s+(?:an?\s+)?(?:unrestricted|unaligned|evil|godmode|jailbroken)",
         RegexOptions.IgnoreCase,
         matchTimeoutMilliseconds: 200)]
     private static partial Regex JailbreakPersonaRegex();
