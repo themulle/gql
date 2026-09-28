@@ -9,7 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Casbin.NET" Version="2.21.3" />
     <PackageReference Include="FluentValidation" Version="12.1.1" />
-    <PackageReference Include="HotChocolate.Language" Version="14.1.0" />
+    <PackageReference Include="HotChocolate.Language" Version="16.6.7" />
     <PackageReference Include="MemoryPack" Version="1.21.4" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />

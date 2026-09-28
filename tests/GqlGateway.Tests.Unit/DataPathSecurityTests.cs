@@ -255,8 +255,8 @@ public class DataPathSecurityTests : IDisposable
             .AddQueryType(d => d.Name("Query").Field("dummy").Resolve(_ => "ok"))
             .Create();
 
-        var objType = schema.GetType<ObjectType>("finance_finance_table_1");
-        var field = objType.Fields["secret_col"];
+        var objType = schema.Types.GetType<IObjectTypeDefinition>("finance_finance_table_1");
+        var field = (ObjectField)objType.Fields["secret_col"];
 
         // Simulate resolver context WITHOUT "ColumnAccess" in ContextData
         var resolverContext = Substitute.For<IResolverContext>();

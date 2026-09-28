@@ -1,4 +1,5 @@
 using HotChocolate;
+using HotChocolate.Execution;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -79,7 +80,7 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
         // Whitelisted client codes: retain safe message/code, but strictly strip internal exception details and sanitize sensitive text
         if (error.Code != null && WhitelistedSafeCodes.Contains(error.Code))
         {
-            var cleanError = error.RemoveException();
+            var cleanError = error.WithException(null);
             if (ContainsSensitivePatterns(cleanError.Message))
             {
                 return cleanError.WithMessage("Die Anfrage enthält ungültige Parameter oder kann nicht verarbeitet werden.");
@@ -91,6 +92,6 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
         return error
             .WithMessage("Ein interner Serverfehler ist aufgetreten.")
             .WithCode("INTERNAL_SERVER_ERROR")
-            .RemoveException();
+            .WithException(null);
     }
 }

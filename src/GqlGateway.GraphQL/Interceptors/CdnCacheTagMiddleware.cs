@@ -17,7 +17,7 @@ public sealed class CdnCacheTagMiddleware
         _next = next ?? throw new ArgumentNullException(nameof(next));
     }
 
-    public async ValueTask InvokeAsync(IRequestContext context)
+    public async ValueTask InvokeAsync(RequestContext context)
     {
         await _next(context).ConfigureAwait(false);
 
@@ -27,13 +27,14 @@ public sealed class CdnCacheTagMiddleware
             httpContext = hc;
         }
 
-        if (httpContext == null || context.Document == null)
+        var doc = context.OperationDocumentInfo?.Document;
+        if (httpContext == null || doc == null)
         {
             return;
         }
 
         // Only cache queries, never mutations or subscriptions
-        var isQueryOnly = context.Document.Definitions
+        var isQueryOnly = doc.Definitions
             .OfType<OperationDefinitionNode>()
             .All(op => op.Operation == OperationType.Query);
 
@@ -58,7 +59,7 @@ public sealed class CdnCacheTagMiddleware
         }
 
         // Public unconditioned data: generate Cache-Tag and Surrogate-Key headers
-        var tagDescriptor = CdnCacheTagVisitor.ExtractTags(context.Document);
+        var tagDescriptor = CdnCacheTagVisitor.ExtractTags(doc);
         var allTags = tagDescriptor.TypeTags.Concat(tagDescriptor.EntityTags).Distinct().ToList();
 
         if (allTags.Count > 0)

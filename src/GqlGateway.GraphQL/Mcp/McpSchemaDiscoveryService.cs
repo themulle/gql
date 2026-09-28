@@ -8,8 +8,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Domain.Model;
-using HotChocolate;
 using HotChocolate.Execution;
+using HotChocolate.Language;
 using HotChocolate.Types;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -20,16 +20,16 @@ using Microsoft.Extensions.Logging;
 /// </summary>
 public sealed class McpSchemaDiscoveryService : IHostedService
 {
-    private readonly IRequestExecutorResolver _executorResolver;
+    private readonly IRequestExecutorProvider _executorProvider;
     private readonly IMcpToolRegistry _toolRegistry;
     private readonly ILogger<McpSchemaDiscoveryService> _logger;
 
     public McpSchemaDiscoveryService(
-        IRequestExecutorResolver executorResolver,
+        IRequestExecutorProvider executorProvider,
         IMcpToolRegistry toolRegistry,
         ILogger<McpSchemaDiscoveryService> logger)
     {
-        _executorResolver = executorResolver ?? throw new ArgumentNullException(nameof(executorResolver));
+        _executorProvider = executorProvider ?? throw new ArgumentNullException(nameof(executorProvider));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -38,7 +38,7 @@ public sealed class McpSchemaDiscoveryService : IHostedService
     {
         try
         {
-            var executor = await _executorResolver.GetRequestExecutorAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            var executor = await _executorProvider.GetExecutorAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             var schema = executor.Schema;
 
             if (schema.QueryType is { } queryType)
@@ -46,13 +46,22 @@ public sealed class McpSchemaDiscoveryService : IHostedService
                 int discoveredCount = 0;
                 foreach (var field in queryType.Fields)
                 {
-                    var directive = field.Directives.FirstOrDefault(d => d.Type.Name.Equals("mcpTool", StringComparison.OrdinalIgnoreCase));
+                    var directive = field.Directives.FirstOrDefault("mcpTool");
                     if (directive != null)
                     {
-                        var toolName = directive.GetArgumentValue<string?>("name") ?? field.Name;
-                        var description = directive.GetArgumentValue<string?>("description")
-                            ?? field.Description
-                            ?? $"Executes GraphQL query operation {field.Name}";
+                        string? toolName = null;
+                        if (directive.Arguments.TryGetValue("name", out var nameVal) && nameVal is StringValueNode sn)
+                        {
+                            toolName = sn.Value;
+                        }
+                        toolName ??= field.Name;
+
+                        string? description = null;
+                        if (directive.Arguments.TryGetValue("description", out var descVal) && descVal is StringValueNode ds)
+                        {
+                            description = ds.Value;
+                        }
+                        description ??= field.Description ?? $"Executes GraphQL query operation {field.Name}";
 
                         var inputSchema = BuildInputJsonSchema(field.Arguments);
                         var targetOp = BuildGraphQLOperation(field);
@@ -77,7 +86,7 @@ public sealed class McpSchemaDiscoveryService : IHostedService
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
-    private static string BuildInputJsonSchema(IReadOnlyCollection<IInputField> arguments)
+    private static string BuildInputJsonSchema(IEnumerable<IInputValueDefinition> arguments)
     {
         var properties = new Dictionary<string, object>();
         var requiredList = new List<string>();
@@ -85,14 +94,19 @@ public sealed class McpSchemaDiscoveryService : IHostedService
         foreach (var arg in arguments)
         {
             string jsonType = "string";
-            IType innerType = arg.Type;
-            if (innerType is NonNullType nonNull)
+            bool isNonNull = arg.Type.Kind == TypeKind.NonNull;
+            if (isNonNull)
             {
                 requiredList.Add(arg.Name);
-                innerType = nonNull.Type;
             }
 
-            var typeName = innerType.TypeName().ToString();
+            IType innerType = arg.Type;
+            while (innerType is IWrapperType wrapper)
+            {
+                innerType = wrapper.InnerType;
+            }
+
+            string typeName = innerType is INameProvider nameProvider ? nameProvider.Name : innerType.ToString() ?? "";
             if (typeName.Contains("Int", StringComparison.OrdinalIgnoreCase)) jsonType = "integer";
             else if (typeName.Contains("Float", StringComparison.OrdinalIgnoreCase)) jsonType = "number";
             else if (typeName.Contains("Boolean", StringComparison.OrdinalIgnoreCase)) jsonType = "boolean";
@@ -118,14 +132,15 @@ public sealed class McpSchemaDiscoveryService : IHostedService
         return JsonSerializer.Serialize(schemaObj);
     }
 
-    private static string BuildGraphQLOperation(IOutputField field)
+    private static string BuildGraphQLOperation(IOutputFieldDefinition field)
     {
         var argDefs = new List<string>();
         var argUsages = new List<string>();
 
         foreach (var arg in field.Arguments)
         {
-            argDefs.Add($"${arg.Name}: {arg.Type.TypeName()}");
+            string typeStr = FormatTypeString(arg.Type);
+            argDefs.Add($"${arg.Name}: {typeStr}");
             argUsages.Add($"{arg.Name}: ${arg.Name}");
         }
 
@@ -133,5 +148,16 @@ public sealed class McpSchemaDiscoveryService : IHostedService
         string argUsageString = argUsages.Count > 0 ? $"({string.Join(", ", argUsages)})" : "";
 
         return $"query AutoGenerated_{field.Name}{argDefString} {{ {field.Name}{argUsageString} }}";
+    }
+
+    private static string FormatTypeString(IType type)
+    {
+        return type switch
+        {
+            IWrapperType wrapper when type.Kind == TypeKind.NonNull => $"{FormatTypeString(wrapper.InnerType)}!",
+            IWrapperType wrapper when type.Kind == TypeKind.List => $"[{FormatTypeString(wrapper.InnerType)}]",
+            INameProvider named => named.Name,
+            _ => type.ToString() ?? "String"
+        };
     }
 }

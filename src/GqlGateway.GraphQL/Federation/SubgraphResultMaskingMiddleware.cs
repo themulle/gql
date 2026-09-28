@@ -24,11 +24,11 @@ public sealed class SubgraphResultMaskingMiddleware
         _next = next ?? throw new ArgumentNullException(nameof(next));
     }
 
-    public async ValueTask InvokeAsync(IRequestContext context)
+    public async ValueTask InvokeAsync(RequestContext context)
     {
         await _next(context).ConfigureAwait(false);
 
-        var options = context.Services.GetService<IOptions<GatewayOptions>>();
+        var options = context.RequestServices.GetService<IOptions<GatewayOptions>>();
         if (options?.Value?.Federation?.Enabled != true ||
             !options.Value.Federation.EnableResultMasking ||
             options.Value.IsColumnMaskingDisabled)
@@ -36,9 +36,9 @@ public sealed class SubgraphResultMaskingMiddleware
             return;
         }
 
-        if (context.Result is IOperationResult opResult && opResult.Data != null)
+        if (context.Result is OperationResult opResult && opResult.Data is { } originalData && originalData.Value != null)
         {
-            var masker = context.Services.GetService<ISubgraphResultMasker>();
+            var masker = context.RequestServices.GetService<ISubgraphResultMasker>();
             if (masker == null) return;
 
             HttpContext? httpContext = null;
@@ -48,17 +48,21 @@ public sealed class SubgraphResultMaskingMiddleware
             }
             else
             {
-                httpContext = context.Services.GetService<IHttpContextAccessor>()?.HttpContext;
+                httpContext = context.RequestServices.GetService<IHttpContextAccessor>()?.HttpContext;
             }
 
             var principal = httpContext?.User;
-            var maskedObj = masker.MaskResultData(opResult.Data, principal);
+            var maskedObj = masker.MaskResultData(originalData.Value, principal);
 
-            if (maskedObj is IReadOnlyDictionary<string, object?> maskedDict)
+            if (maskedObj != null)
             {
-                context.Result = OperationResultBuilder.FromResult(opResult)
-                    .SetData(maskedDict)
-                    .Build();
+                var newData = new OperationResultData(maskedObj, isValueNull: false, originalData.Formatter, originalData.MemoryHolder);
+                var newResult = new OperationResult(
+                    newData,
+                    opResult.Errors ?? System.Collections.Immutable.ImmutableList<HotChocolate.IError>.Empty,
+                    opResult.Extensions ?? HotChocolate.Collections.Immutable.ImmutableOrderedDictionary<string, object?>.Empty);
+                newResult.ContextData = opResult.ContextData;
+                context.Result = newResult;
             }
         }
     }

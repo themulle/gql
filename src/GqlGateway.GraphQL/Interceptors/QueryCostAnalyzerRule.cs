@@ -29,7 +29,7 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
     public bool IsCacheable => true;
     public ushort Priority => 10;
 
-    public static int CalculateCost(DocumentNode document, ISchema schema, int defaultListMultiplier = 10, int maxResponseRows = 1000)
+    public static int CalculateCost(DocumentNode document, ISchemaDefinition schema, int defaultListMultiplier = 10, int maxResponseRows = 1000)
     {
         var rule = new QueryCostAnalyzerRule(int.MaxValue, defaultListMultiplier, maxResponseRows);
         var fragments = document.Definitions
@@ -57,7 +57,7 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
         return Math.Max(1, totalCost);
     }
 
-    public void Validate(IDocumentValidatorContext context, DocumentNode document)
+    public void Validate(DocumentValidatorContext context, DocumentNode document)
     {
         var fragments = document.Definitions
             .OfType<FragmentDefinitionNode>()
@@ -94,10 +94,10 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
 
     private int CalculateSelectionSetCost(
         SelectionSetNode? selectionSet,
-        ObjectType? currentType,
+        IObjectTypeDefinition? currentType,
         IReadOnlyDictionary<string, FragmentDefinitionNode> fragments,
         HashSet<string> visitedFragments,
-        ISchema schema)
+        ISchemaDefinition schema)
     {
         if (selectionSet == null || selectionSet.Selections.Count == 0)
         {
@@ -115,19 +115,23 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                     continue;
                 }
 
-                IOutputField? fieldDef = null;
+                IOutputFieldDefinition? fieldDef = null;
                 currentType?.Fields.TryGetField(field.Name.Value, out fieldDef);
 
                 bool isList = false;
-                ObjectType? nextType = null;
+                IObjectTypeDefinition? nextType = null;
 
                 if (fieldDef != null)
                 {
-                    isList = fieldDef.Type.IsListType();
-                    var named = fieldDef.Type.NamedType();
-                    if (named is ObjectType ot)
+                    isList = IsListType(fieldDef.Type);
+                    var named = UnwrapType(fieldDef.Type);
+                    if (named is IObjectTypeDefinition ot)
                     {
                         nextType = ot;
+                    }
+                    else if (named is INameProvider np && schema.Types.TryGetType<IObjectTypeDefinition>(np.Name, out var foundOt))
+                    {
+                        nextType = foundOt;
                     }
                 }
                 else
@@ -183,8 +187,8 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
             }
             else if (selection is InlineFragmentNode inlineFrag)
             {
-                ObjectType? inlineType = currentType;
-                if (inlineFrag.TypeCondition != null && schema.TryGetType<ObjectType>(inlineFrag.TypeCondition.Name.Value, out var foundType))
+                IObjectTypeDefinition? inlineType = currentType;
+                if (inlineFrag.TypeCondition != null && schema.Types.TryGetType<IObjectTypeDefinition>(inlineFrag.TypeCondition.Name.Value, out var foundType))
                 {
                     inlineType = foundType;
                 }
@@ -195,8 +199,8 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
             {
                 if (fragments.TryGetValue(fragmentSpread.Name.Value, out var fragDef) && visitedFragments.Add(fragDef.Name.Value))
                 {
-                    ObjectType? fragType = currentType;
-                    if (fragDef.TypeCondition != null && schema.TryGetType<ObjectType>(fragDef.TypeCondition.Name.Value, out var foundType))
+                    IObjectTypeDefinition? fragType = currentType;
+                    if (fragDef.TypeCondition != null && schema.Types.TryGetType<IObjectTypeDefinition>(fragDef.TypeCondition.Name.Value, out var foundType))
                     {
                         fragType = foundType;
                     }
@@ -248,5 +252,26 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                fieldName.Contains("ssn", StringComparison.OrdinalIgnoreCase) ||
                fieldName.Contains("creditcard", StringComparison.OrdinalIgnoreCase) ||
                fieldName.Contains("mask", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsListType(IType type)
+    {
+        var current = type;
+        while (current is IWrapperType wrapper)
+        {
+            if (current.Kind == TypeKind.List) return true;
+            current = wrapper.InnerType;
+        }
+        return current.Kind == TypeKind.List;
+    }
+
+    private static IType UnwrapType(IType type)
+    {
+        var current = type;
+        while (current is IWrapperType wrapper)
+        {
+            current = wrapper.InnerType;
+        }
+        return current;
     }
 }

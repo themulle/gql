@@ -19,16 +19,16 @@ using Microsoft.Extensions.Logging;
 /// </summary>
 public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
 {
-    private readonly IRequestExecutorResolver _executorResolver;
+    private readonly IRequestExecutorProvider _executorProvider;
     private readonly IGatewayExecutionService _gatewayExecutionService;
     private readonly ILogger<GatewayMcpQueryExecutor> _logger;
 
     public GatewayMcpQueryExecutor(
-        IRequestExecutorResolver executorResolver,
+        IRequestExecutorProvider executorProvider,
         IGatewayExecutionService gatewayExecutionService,
         ILogger<GatewayMcpQueryExecutor> logger)
     {
-        _executorResolver = executorResolver ?? throw new ArgumentNullException(nameof(executorResolver));
+        _executorProvider = executorProvider ?? throw new ArgumentNullException(nameof(executorProvider));
         _gatewayExecutionService = gatewayExecutionService ?? throw new ArgumentNullException(nameof(gatewayExecutionService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -119,7 +119,7 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
         {
             try
             {
-                var executor = await _executorResolver.GetRequestExecutorAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                var executor = await _executorProvider.GetExecutorAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 var requestBuilder = OperationRequestBuilder.New()
                     .SetDocument(tool.TargetGraphQLOperation)
                     .AddGlobalState("ClaimsPrincipal", principal)
@@ -138,10 +138,15 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
                 }
 
                 var executionResult = await executor.ExecuteAsync(requestBuilder.Build(), cancellationToken).ConfigureAwait(false);
-                var json = executionResult.ToJson();
-                if (executionResult is IOperationResult op && (op.Errors is null || op.Errors.Count == 0))
+                if (executionResult is OperationResult op)
                 {
-                    return json;
+                    var writer = new System.Buffers.ArrayBufferWriter<byte>();
+                    HotChocolate.Transport.Formatters.JsonResultFormatter.Default.Format(op, writer);
+                    var json = System.Text.Encoding.UTF8.GetString(writer.WrittenSpan);
+                    if (op.Errors is null || op.Errors.Count == 0)
+                    {
+                        return json;
+                    }
                 }
                 _logger.LogDebug("GraphQL execution returned errors for tool '{ToolName}'. Falling back to default tool data.", tool.Name);
             }

@@ -667,6 +667,14 @@ public static class GatewayApplicationBuilderExtensions
             IDbtMetadataIngestionService dbtService,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var user = context.User.Identity?.Name ?? context.User.GetUserSid()?.Value ?? "system_admin";
             try
             {
@@ -684,6 +692,14 @@ public static class GatewayApplicationBuilderExtensions
             IDbtMetadataIngestionService dbtService,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var user = context.User.Identity?.Name ?? context.User.GetUserSid()?.Value ?? "system_admin";
             try
             {
@@ -736,6 +752,14 @@ public static class GatewayApplicationBuilderExtensions
             ISchemaSunsettingService sunsettingService,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("SchemaAdmin") ||
+                               context.User.IsInRole("ClusterAdmin");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             await sunsettingService.RegisterRuleAsync(rule, context.RequestAborted);
             return Results.Created($"/api/governance/sunsetting/rules/{rule.Id}", rule);
         }).RequireAuthorization();
@@ -805,6 +829,15 @@ public static class GatewayApplicationBuilderExtensions
             IDifferentialPrivacyEngine dpEngine,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("PrivacyAdmin") ||
+                               context.User.IsInRole("DataProtectionOfficer") ||
+                               context.User.IsInRole("ClusterAdmin");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             await dpEngine.ResetBudgetAsync(clientId, context.RequestAborted);
             return Results.Ok(new { message = $"Privacy budget reset for client '{clientId}'." });
         }).RequireAuthorization();
@@ -1245,12 +1278,44 @@ public static class GatewayApplicationBuilderExtensions
             HttpContext context,
             CancellationToken ct) =>
         {
+            var principal = context.User;
+            var userSid = principal.GetUserSid() ?? new Sid("S-1-5-21-ANONYMOUS");
+            var groupSids = principal.GetGroupSids().ToList();
+            var roles = principal.GetUserRoles().ToList();
+
+            var tenantId = TenantId.LegacySingleTenant;
+            if (context.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
+            {
+                tenantId = tid;
+            }
+
+            bool isGovAdmin = roles.Contains("GovernanceAdmin", StringComparer.OrdinalIgnoreCase);
+            bool isClusterAdmin = roles.Contains("ClusterAdmin", StringComparer.OrdinalIgnoreCase);
+            bool isPrivacyAdmin = roles.Contains("PrivacyAdmin", StringComparer.OrdinalIgnoreCase) ||
+                                  roles.Contains("DataProtectionOfficer", StringComparer.OrdinalIgnoreCase);
+
+            var callerContext = new CallerSecurityContext(
+                userSid,
+                groupSids,
+                roles,
+                tenantId,
+                isGovAdmin,
+                isClusterAdmin);
+
             TableIdentifier? tableId = !string.IsNullOrWhiteSpace(domain) && !string.IsNullOrWhiteSpace(schema) && !string.IsNullOrWhiteSpace(table)
                 ? new TableIdentifier(domain, schema, table)
                 : null;
             Sid? sid = !string.IsNullOrWhiteSpace(subjectSid) ? new Sid(subjectSid) : (Sid?)null;
 
-            var report = await lineageService.GetGdprDataDisclosureReportAsync(tableId, sid, timeWindowDays ?? 365, null, ct);
+            bool canAccessForeignReports = isPrivacyAdmin || isGovAdmin || isClusterAdmin;
+            var effectiveSid = sid ?? (canAccessForeignReports ? (Sid?)null : callerContext.UserSid);
+
+            if (effectiveSid.HasValue && !effectiveSid.Value.Equals(callerContext.UserSid) && !canAccessForeignReports)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            var report = await lineageService.GetGdprDataDisclosureReportAsync(tableId, effectiveSid, timeWindowDays ?? 365, callerContext, ct);
             var exportResult = pdfExporter.ExportReportToPdf(report);
 
             context.Response.Headers["X-Audit-Seal-SHA256"] = exportResult.Sha256AuditSeal;

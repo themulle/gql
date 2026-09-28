@@ -86,13 +86,12 @@ public static class SlaValidationBenchmark
             .AddQueryType<DummyQuery>()
             .Create();
         var mockContext = new DocumentValidatorContext();
-        mockContext.Schema = schema;
+        mockContext.Initialize(schema, default, document, 10, 10, 10, null!);
 
         // Warmup
         for (int i = 0; i < 1000; i++)
         {
-            mockContext.Clear();
-            mockContext.Schema = schema;
+            mockContext.Initialize(schema, default, document, 10, 10, 10, null!);
             rule.Validate(mockContext, document);
         }
 
@@ -102,8 +101,7 @@ public static class SlaValidationBenchmark
 
         for (int i = 0; i < iterations; i++)
         {
-            mockContext.Clear();
-            mockContext.Schema = schema;
+            mockContext.Initialize(schema, default, document, 10, 10, 10, null!);
             sw.Restart();
             rule.Validate(mockContext, document);
             sw.Stop();

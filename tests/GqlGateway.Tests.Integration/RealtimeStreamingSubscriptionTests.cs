@@ -36,6 +36,7 @@ public class RealtimeStreamingSubscriptionTests : IClassFixture<WebApplicationFa
     {
         var client = _factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-TEST-ADMIN");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "ClusterAdmin");
 
         var payload = """
         {

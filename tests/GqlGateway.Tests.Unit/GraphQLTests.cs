@@ -145,7 +145,7 @@ public class GraphQLTests
             .AddMutationType<Mutation>();
 
         var sp = services.BuildServiceProvider();
-        var executor = await sp.GetRequiredService<IRequestExecutorResolver>().GetRequestExecutorAsync();
+        var executor = await sp.GetRequiredService<IRequestExecutorProvider>().GetExecutorAsync();
         var schema = executor.Schema;
 
         var sdl = schema.ToString();
@@ -265,10 +265,10 @@ public class GraphQLTests
             .AddType(new GqlGateway.GraphQL.DynamicTypes.DynamicTableType(meta, masking))
             .BuildSchemaAsync();
 
-        var dynamicType = schema.GetType<ObjectType>("finance_transactions");
+        var dynamicType = schema.Types.GetType<IObjectTypeDefinition>("finance_transactions");
         dynamicType.ShouldNotBeNull();
-        dynamicType.Fields["tx_id"].Type.TypeName().ShouldBe("Long");
-        dynamicType.Fields["quantity"].Type.TypeName().ShouldBe("Int");
+        ((INameProvider)dynamicType.Fields["tx_id"].Type).Name.ShouldBe("Long");
+        ((INameProvider)dynamicType.Fields["quantity"].Type).Name.ShouldBe("Int");
     }
 
     [Fact]

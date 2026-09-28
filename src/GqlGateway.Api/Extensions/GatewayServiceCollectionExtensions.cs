@@ -696,20 +696,30 @@ public static class GatewayServiceCollectionExtensions
 
         services.AddFusionFederationServices(gatewayOptions);
 
+        services.AddSingleton(sp => new ErrorSanitizingFilter(
+            sp.GetRequiredService<IHostEnvironment>(),
+            sp.GetRequiredService<ILogger<ErrorSanitizingFilter>>()));
+
+        services.AddSingleton(sp => new WebSocketAuthInterceptor(
+            sp.GetRequiredService<ILogger<WebSocketAuthInterceptor>>()));
+
         var gqlBuilder = services
             .AddGraphQLServer()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CostAndQuotaMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CdnCacheTagMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Federation.SubgraphResultMaskingMiddleware>()
             .UseDefaultPipeline()
+            .AddApplicationService<IHostEnvironment>()
+            .AddApplicationService<ErrorSanitizingFilter>()
+            .AddApplicationService<WebSocketAuthInterceptor>()
+            .AddErrorFilter(sp => sp.GetRequiredService<ErrorSanitizingFilter>())
             .AddQueryType<Query>()
             .AddMutationType<Mutation>()
             .AddSubscriptionType<Subscription>()
             .AddInMemorySubscriptions()
-            .AddSocketSessionInterceptor<WebSocketAuthInterceptor>()
+            .AddSocketSessionInterceptor(sp => sp.GetRequiredService<WebSocketAuthInterceptor>())
             .AddTypeExtension<InvoiceRecordExtensions>()
             .AddDirectiveType<GqlGateway.GraphQL.Directives.McpToolDirectiveType>()
-            .AddErrorFilter<ErrorSanitizingFilter>()
             .AddMaxExecutionDepthRule(maxDepth)
             .AddValidationRule<GqlGateway.GraphQL.Interceptors.QueryCostAnalyzerRule>((sp, _) =>
                 new GqlGateway.GraphQL.Interceptors.QueryCostAnalyzerRule(

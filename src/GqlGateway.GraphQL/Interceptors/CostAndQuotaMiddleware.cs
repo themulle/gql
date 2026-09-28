@@ -21,7 +21,7 @@ public sealed class CostAndQuotaMiddleware
         _rateLimiter = rateLimiter ?? throw new ArgumentNullException(nameof(rateLimiter));
     }
 
-    public async ValueTask InvokeAsync(IRequestContext context)
+    public async ValueTask InvokeAsync(RequestContext context)
     {
         HttpContext? httpContext = null;
         if (context.ContextData.TryGetValue("HttpContext", out var hcObj) && hcObj is HttpContext hc)
@@ -30,11 +30,12 @@ public sealed class CostAndQuotaMiddleware
         }
         else
         {
-            var accessor = context.Services.GetService<IHttpContextAccessor>();
+            var accessor = context.RequestServices.GetService<IHttpContextAccessor>();
             httpContext = accessor?.HttpContext;
         }
 
-        if (httpContext == null || context.Document == null || context.Schema == null)
+        var doc = context.OperationDocumentInfo?.Document;
+        if (httpContext == null || doc == null || context.Schema == null)
         {
             await _next(context).ConfigureAwait(false);
             return;
@@ -48,7 +49,7 @@ public sealed class CostAndQuotaMiddleware
         var clientContext = await tierResolver.ResolveAsync(httpContext.User, apiKey, clientIp, context.RequestAborted).ConfigureAwait(false);
 
         // 2. Calculate cost via QueryCostAnalyzerRule
-        int calculatedCost = QueryCostAnalyzerRule.CalculateCost(context.Document, context.Schema);
+        int calculatedCost = QueryCostAnalyzerRule.CalculateCost(doc, context.Schema);
 
         // 3. Check query cost against tier policy max limit
         if (calculatedCost > clientContext.Policy.MaxCostPerQuery)
@@ -59,7 +60,7 @@ public sealed class CostAndQuotaMiddleware
                 .SetExtension("calculatedCost", calculatedCost)
                 .SetExtension("maxAllowedCost", clientContext.Policy.MaxCostPerQuery)
                 .Build();
-            context.Result = OperationResultBuilder.New().AddError(error).Build();
+            context.Result = OperationResult.FromError(error);
             httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
             return;
         }
@@ -78,7 +79,7 @@ public sealed class CostAndQuotaMiddleware
                 .SetCode("RATE_LIMIT_EXCEEDED")
                 .SetExtension("retryAfterSeconds", limitResult.RetryAfterSeconds)
                 .Build();
-            context.Result = OperationResultBuilder.New().AddError(error).Build();
+            context.Result = OperationResult.FromError(error);
             httpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
             httpContext.Response.Headers.RetryAfter = limitResult.RetryAfterSeconds.ToString();
             return;
@@ -91,17 +92,16 @@ public sealed class CostAndQuotaMiddleware
         httpContext.Response.Headers["X-Query-Cost"] = calculatedCost.ToString();
         httpContext.Response.Headers["X-RateLimit-Remaining"] = limitResult.RemainingTokens.ToString();
 
-        if (clientContext.Policy.ExposeCostExtensions && context.Result is IOperationResult opResult)
+        if (clientContext.Policy.ExposeCostExtensions && context.Result is OperationResult opResult)
         {
-            context.Result = OperationResultBuilder.FromResult(opResult)
-                .SetExtension("cost", new Dictionary<string, object?>
-                {
-                    ["requestedQueryCost"] = calculatedCost,
-                    ["clientTier"] = clientContext.Tier.ToString(),
-                    ["rateLimitRemaining"] = limitResult.RemainingTokens,
-                    ["rateLimitResetSeconds"] = limitResult.RetryAfterSeconds
-                })
-                .Build();
+            var extensions = opResult.Extensions ?? HotChocolate.Collections.Immutable.ImmutableOrderedDictionary<string, object?>.Empty;
+            opResult.Extensions = extensions.SetItem("cost", new Dictionary<string, object?>
+            {
+                ["requestedQueryCost"] = calculatedCost,
+                ["clientTier"] = clientContext.Tier.ToString(),
+                ["rateLimitRemaining"] = limitResult.RemainingTokens,
+                ["rateLimitResetSeconds"] = limitResult.RetryAfterSeconds
+            });
         }
     }
 }

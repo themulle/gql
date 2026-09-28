@@ -6,7 +6,6 @@ using GqlGateway.Application.Federation.Interfaces;
 using GqlGateway.Application.Federation.Services;
 using GqlGateway.Domain.Options;
 using HotChocolate.Execution.Configuration;
-using HotChocolate.Fusion;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
