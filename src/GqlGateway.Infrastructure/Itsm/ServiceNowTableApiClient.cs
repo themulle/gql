@@ -18,23 +18,16 @@ using Microsoft.Extensions.Options;
 /// Outbound REST client for ServiceNow Table API (e.g. /api/now/table/change_request).
 /// Creates automated access request and recertification tickets with full justification context.
 /// </summary>
-public sealed class ServiceNowTableApiClient : IItsmWorkflowClient
+public sealed class ServiceNowTableApiClient(
+    HttpClient httpClient,
+    IOptions<GatewayOptions> options,
+    ILogger<ServiceNowTableApiClient> logger) : IItsmWorkflowClient
 {
-    private readonly HttpClient _httpClient;
-    private readonly IOptions<GatewayOptions> _options;
-    private readonly ILogger<ServiceNowTableApiClient> _logger;
+    private readonly HttpClient _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+    private readonly IOptions<GatewayOptions> _options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly ILogger<ServiceNowTableApiClient> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     public ItsmSystemType SystemType => ItsmSystemType.ServiceNow;
-
-    public ServiceNowTableApiClient(
-        HttpClient httpClient,
-        IOptions<GatewayOptions> options,
-        ILogger<ServiceNowTableApiClient> logger)
-    {
-        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        _options = options ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
 
     public async Task<ItsmTicketResult> CreateAccessTicketAsync(ItsmTicketRequest request, CancellationToken ct = default)
     {
@@ -73,7 +66,7 @@ public sealed class ServiceNowTableApiClient : IItsmWorkflowClient
 
         if (!string.IsNullOrWhiteSpace(itsmOpts.ServiceNowUsername) && !string.IsNullOrWhiteSpace(itsmOpts.ServiceNowPassword))
         {
-            var authHeader = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{itsmOpts.ServiceNowUsername}:{itsmOpts.ServiceNowPassword}"));
+            var authHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{itsmOpts.ServiceNowUsername}:{itsmOpts.ServiceNowPassword}"));
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
         }
 

@@ -73,7 +73,7 @@ public sealed class GdprAuditReportPdfExporter : IGdprAuditReportExporter
     private static byte[] GeneratePdfDocument(GdprDisclosureReport report, string sealHash)
     {
         using var ms = new MemoryStream();
-        using var writer = new StreamWriter(ms, Encoding.ASCII);
+        using var writer = new StreamWriter(ms, Encoding.Latin1);
 
         // Build PDF text stream
         var contentSb = new StringBuilder();
@@ -124,7 +124,7 @@ public sealed class GdprAuditReportPdfExporter : IGdprAuditReportExporter
         contentSb.AppendLine("(Verified Tamper-Evident by GqlGateway Governance Engine) Tj");
         contentSb.AppendLine("ET");
 
-        var contentStream = Encoding.ASCII.GetBytes(contentSb.ToString());
+        var contentStream = Encoding.Latin1.GetBytes(contentSb.ToString());
 
         // Construct standard PDF 1.4 vector structure
         var offsets = new long[5];
@@ -170,6 +170,7 @@ public sealed class GdprAuditReportPdfExporter : IGdprAuditReportExporter
     private static string SanitizePdfText(string text)
     {
         return text
+            .Replace("\\", "\\\\")
             .Replace("(", "\\(")
             .Replace(")", "\\)")
             .Replace("\r", " ")
@@ -181,6 +182,6 @@ public sealed class GdprAuditReportPdfExporter : IGdprAuditReportExporter
     {
         var bytes = Encoding.UTF8.GetBytes(content);
         var hash = SHA256.HashData(bytes);
-        return Convert.ToHexString(hash).ToLowerInvariant();
+        return Convert.ToHexStringLower(hash);
     }
 }

@@ -221,4 +221,114 @@ public class ItsmClientsAndRecertificationTests
             Arg.Is<AuditLogEntry>(a => a.EventType == "CONSENT_RECERTIFIED_AND_EXTENDED"),
             Arg.Any<CancellationToken>());
     }
+
+    [Fact]
+    public async Task ConsentRecertificationWorkflowService_ShouldDeduplicateRecertificationTickets()
+    {
+        // Arrange
+        var consentRepo = Substitute.For<IConsentRepository>();
+        var outboxRepo = Substitute.For<IItsmOutboxRepository>();
+        var options = Options.Create(new GatewayOptions());
+
+        var consentId = Guid.NewGuid();
+        var expiringList = new List<Consent>
+        {
+            new Consent
+            {
+                Id = consentId,
+                TableIdentifier = new TableIdentifier("crm", "dbo", "leads"),
+                GranteeSid = new Sid("S-1-5-21-lead-user"),
+                TenantId = new TenantId("tenant-alpha"),
+                ValidFrom = DateTimeOffset.UtcNow.AddDays(-10),
+                ValidTo = DateTimeOffset.UtcNow.AddHours(2)
+            }
+        };
+
+        consentRepo.GetExpiringConsentsAsync(Arg.Any<DateTimeOffset>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<Consent>>(expiringList));
+
+        outboxRepo.GetPendingMessagesAsync(Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<ItsmOutboxMessage>>([]));
+
+        var workflow = new ConsentRecertificationWorkflowService(
+            consentRepo,
+            outboxRepo,
+            options,
+            NullLogger<ConsentRecertificationWorkflowService>.Instance);
+
+        // Act 1: First scan should dispatch 1 ticket
+        var firstCount = await workflow.ScanAndTriggerExpiringConsentRecertificationsAsync();
+
+        // Act 2: Second scan within 24h should skip duplicate
+        var secondCount = await workflow.ScanAndTriggerExpiringConsentRecertificationsAsync();
+
+        // Assert
+        firstCount.ShouldBe(1);
+        secondCount.ShouldBe(0);
+        await outboxRepo.Received(1).EnqueueAsync(Arg.Any<ItsmOutboxMessage>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task SqliteGovernanceRepository_GetExpiringConsentsAsync_ShouldReadStringEnumsCorrectly()
+    {
+        // Arrange: Real in-memory SQLite database
+        using var repo = new GqlGateway.Infrastructure.Persistence.SqliteGovernanceRepository(new StubEpochValidationService());
+
+        var table = new TableIdentifier("crm", "dbo", "customers");
+        var tableEntity = new Table
+        {
+            SourceName = "crm",
+            SchemaName = "dbo",
+            TableName = "customers",
+            DataSourceType = DataSourceType.Sql
+        };
+        var tableMeta = await repo.UpsertTableMetadataAsync(new TableMetadata
+        {
+            Identifier = table,
+            Table = tableEntity,
+            Columns = []
+        });
+
+        var consent = new Consent
+        {
+            Id = Guid.NewGuid(),
+            TableId = tableMeta.Table.Id,
+            TableIdentifier = table,
+            Effect = ConsentEffect.Allow,
+            GranteeType = GranteeType.User,
+            GranteeSid = new Sid("S-1-5-21-user-123"),
+            ValidFrom = DateTimeOffset.UtcNow.AddDays(-1),
+            ValidTo = DateTimeOffset.UtcNow.AddHours(4),
+            IsRevoked = false,
+            TenantId = new TenantId("tenant-primary")
+        };
+
+        await repo.CreateConsentAsync(consent);
+
+        // Act
+        var expiring = await repo.GetExpiringConsentsAsync(DateTimeOffset.UtcNow.AddDays(1));
+
+        // Assert
+        expiring.ShouldNotBeEmpty();
+        var fetched = expiring.ShouldHaveSingleItem();
+        fetched.Id.ShouldBe(consent.Id);
+        fetched.Effect.ShouldBe(ConsentEffect.Allow);
+        fetched.GranteeType.ShouldBe(GranteeType.User);
+        fetched.GranteeSid.ShouldBe(new Sid("S-1-5-21-user-123"));
+    }
+
+    private sealed class StubEpochValidationService : IEpochValidationService
+    {
+        public Task<bool> IsEpochValidAsync(TableIdentifier table, long cachedEpoch, CancellationToken ct = default)
+            => Task.FromResult(true);
+
+        public Task InvalidateEpochAsync(TableIdentifier table, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task<long> GetCurrentEpochAsync(TableIdentifier table, CancellationToken ct = default)
+            => Task.FromResult(1L);
+
+        public Task<IReadOnlyDictionary<TableIdentifier, long>> GetCurrentEpochsAsync(IEnumerable<TableIdentifier> tables, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyDictionary<TableIdentifier, long>>(new Dictionary<TableIdentifier, long>());
+    }
 }

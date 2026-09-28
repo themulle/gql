@@ -1162,8 +1162,8 @@ public partial class SqliteGovernanceRepository
                 var id = Guid.Parse(reader.GetString(0));
                 var tableId = Guid.Parse(reader.GetString(1));
                 Guid? requestId = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2));
-                var effect = (ConsentEffect)reader.GetInt32(3);
-                var granteeType = (GranteeType)reader.GetInt32(4);
+                var effect = Enum.Parse<ConsentEffect>(reader.GetString(3), true);
+                var granteeType = Enum.Parse<GranteeType>(reader.GetString(4), true);
                 Sid? granteeSid = reader.IsDBNull(5) ? (Sid?)null : new Sid(reader.GetString(5));
                 Guid? roleId = reader.IsDBNull(6) ? null : Guid.Parse(reader.GetString(6));
                 var roleName = reader.IsDBNull(7) ? null : reader.GetString(7);

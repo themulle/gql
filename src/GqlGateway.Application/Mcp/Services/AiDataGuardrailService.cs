@@ -173,14 +173,14 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
                 : sessionContext.ServicePrincipalId;
             var groupSids = sessionContext.GroupSids != null && sessionContext.GroupSids.Count > 0
                 ? sessionContext.GroupSids.Select(s => new Sid(s)).ToArray()
-                : Array.Empty<Sid>();
+                : [];
 
             var secContext = new SecurityEvaluationContext(
                 UserSid: new Sid(userSidStr),
                 GroupSids: groupSids,
                 Tenant: new TenantId(sessionContext.TenantId),
                 TargetTable: targetTable.Value,
-                RequestedColumns: Array.Empty<string>(),
+                RequestedColumns: [],
                 ClientIp: System.Net.IPAddress.Loopback,
                 Timestamp: DateTimeOffset.UtcNow,
                 PurposeId: "MCP_AI_AGENT_QUERY"

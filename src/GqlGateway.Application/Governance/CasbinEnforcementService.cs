@@ -25,6 +25,7 @@ public sealed class CasbinEnforcementService : IPolicyEnforcementService, IDispo
     private readonly ConcurrentDictionary<string, TableAccessDecision> _decisionCache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _tenantPolicyFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, FileSystemWatcher> _fileWatchers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, System.Timers.Timer> _debounceTimers = new(StringComparer.OrdinalIgnoreCase);
     private readonly IRlsFilterGenerator _rlsFilterGenerator;
     private readonly string _modelText;
     private long _policyEpoch = 1;
@@ -108,15 +109,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         "Diagnostics.", "Compiler", "IO.", "Security.", "Microsoft.", "Configuration", "Registry"
     ];
 
-    public void AddPolicy(
-        TenantId tenant,
-        string sub,
-        string obj,
-        string act,
-        string subRule = "true",
-        string eft = "allow",
-        string? rlsFilter = null,
-        ConsentRowFilter? correlatedRowFilter = null)
+    private static void ValidateSubRuleTokens(string subRule, string? rlsFilter)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(subRule);
         foreach (var token in DangerousSubRuleTokens)
@@ -131,6 +124,19 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
                 throw new ArgumentException($"Sicherheitsfehler: Casbin rls_filter enthält nicht erlaubten Ausdruck '{token}'.", nameof(rlsFilter));
             }
         }
+    }
+
+    public void AddPolicy(
+        TenantId tenant,
+        string sub,
+        string obj,
+        string act,
+        string subRule = "true",
+        string eft = "allow",
+        string? rlsFilter = null,
+        ConsentRowFilter? correlatedRowFilter = null)
+    {
+        ValidateSubRuleTokens(subRule, rlsFilter);
 
         // Normalize single-quoted strings (length > 1) to double-quoted C# strings for DynamicExpresso
         var normalizedSubRule = Regex.Replace(subRule, @"'([^']{2,})'", "\"$1\"");
@@ -382,9 +388,9 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
     {
         ArgumentNullException.ThrowIfNull(policyText);
 
-        _decisionCache.Clear();
-        _tenantEnforcers.TryRemove(tenant.Value, out _);
-        _tenantRules.TryRemove(tenant.Value, out _);
+        var model = DefaultModel.CreateFromText(_modelText);
+        var newEnforcer = new Enforcer(model);
+        var newRules = new List<CasbinRuleMetadata>();
 
         var lines = policyText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         foreach (var rawLine in lines)
@@ -409,7 +415,10 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
                     var eft = parts.Length > 6 && !string.IsNullOrWhiteSpace(parts[6]) ? parts[6] : "allow";
                     var rlsFilter = parts.Length > 7 && !string.IsNullOrWhiteSpace(parts[7]) ? parts[7] : null;
 
-                    AddPolicy(new TenantId(ruleTenant), sub, obj, act, subRule, eft, rlsFilter);
+                    ValidateSubRuleTokens(subRule, rlsFilter);
+                    var normalizedSubRule = Regex.Replace(subRule, @"'([^']{2,})'", "\"$1\"");
+                    newEnforcer.AddPolicy(sub, ruleTenant, obj, act, normalizedSubRule, eft);
+                    newRules.Add(new CasbinRuleMetadata(sub, ruleTenant, obj, act, subRule, eft, rlsFilter, null));
                 }
             }
             else if (type == "g")
@@ -417,10 +426,15 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
                 // g, user, role
                 if (parts.Length >= 3)
                 {
-                    AddRoleForUser(tenant, parts[1], parts[2]);
+                    newEnforcer.AddGroupingPolicy(parts[1], parts[2]);
                 }
             }
         }
+
+        // Atomically replace enforcer and rules, then invalidate cache and notify
+        _tenantEnforcers[tenant.Value] = newEnforcer;
+        _tenantRules[tenant.Value] = newRules;
+        _decisionCache.Clear();
 
         Interlocked.Increment(ref _policyEpoch);
         OnPolicyReloaded?.Invoke(tenant);
@@ -450,9 +464,14 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         var dir = Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory();
         var fileName = Path.GetFileName(fullPath);
 
-        if (_fileWatchers.TryGetValue(tenant.Value, out var existingWatcher))
+        if (_fileWatchers.TryRemove(tenant.Value, out var existingWatcher))
         {
             existingWatcher.Dispose();
+        }
+
+        if (_debounceTimers.TryRemove(tenant.Value, out var existingTimer))
+        {
+            existingTimer.Dispose();
         }
 
         var watcher = new FileSystemWatcher(dir, fileName)
@@ -493,7 +512,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         };
 
         _fileWatchers[tenant.Value] = watcher;
-
+        _debounceTimers[tenant.Value] = debounceTimer;
     }
 
     public Task ReloadPoliciesAsync(TenantId tenant, CancellationToken ct = default)
@@ -517,6 +536,12 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
 
     public void Dispose()
     {
+        foreach (var timer in _debounceTimers.Values)
+        {
+            timer.Dispose();
+        }
+        _debounceTimers.Clear();
+
         foreach (var watcher in _fileWatchers.Values)
         {
             watcher.Dispose();

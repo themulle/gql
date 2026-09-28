@@ -11,18 +11,12 @@ using Microsoft.Extensions.Logging;
 /// Model Context Protocol (MCP) Stdio Transport runner for local developer CLIs (Claude Code, Cursor, Windsurf).
 /// Reads newline-delimited JSON-RPC 2.0 requests from standard input and streams responses to standard output.
 /// </summary>
-public sealed class McpStdioRunner : IMcpStdioRunner
+public sealed class McpStdioRunner(
+    IMcpProtocolHandler protocolHandler,
+    ILogger<McpStdioRunner>? logger = null) : IMcpStdioRunner
 {
-    private readonly IMcpProtocolHandler _protocolHandler;
-    private readonly ILogger<McpStdioRunner>? _logger;
-
-    public McpStdioRunner(
-        IMcpProtocolHandler protocolHandler,
-        ILogger<McpStdioRunner>? logger = null)
-    {
-        _protocolHandler = protocolHandler ?? throw new ArgumentNullException(nameof(protocolHandler));
-        _logger = logger;
-    }
+    private readonly IMcpProtocolHandler _protocolHandler = protocolHandler ?? throw new ArgumentNullException(nameof(protocolHandler));
+    private readonly ILogger<McpStdioRunner>? _logger = logger;
 
     public async Task RunAsync(
         TextReader input,

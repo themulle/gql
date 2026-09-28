@@ -1,6 +1,8 @@
 namespace GqlGateway.Application.Workflows;
 
 using System;
+using System.Collections.Concurrent;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,6 +26,8 @@ public sealed class ConsentRecertificationWorkflowService : IConsentRecertificat
     private readonly IAuditLogRepository? _auditRepo;
     private readonly IOptions<GatewayOptions> _options;
     private readonly ILogger<ConsentRecertificationWorkflowService> _logger;
+
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _recentlyTriggered = new();
 
     public ConsentRecertificationWorkflowService(
         IConsentRepository consentRepo,
@@ -54,8 +58,32 @@ public sealed class ConsentRecertificationWorkflowService : IConsentRecertificat
         var expiringConsents = await _consentRepo.GetExpiringConsentsAsync(threshold, ct).ConfigureAwait(false);
         int dispatchedCount = 0;
 
+        // Cleanup stale entries older than 24h
+        var staleCutoff = DateTimeOffset.UtcNow.AddHours(-24);
+        foreach (var kvp in _recentlyTriggered)
+        {
+            if (kvp.Value < staleCutoff) _recentlyTriggered.TryRemove(kvp.Key, out _);
+        }
+
+        // Check pending messages to avoid cross-restart duplicates
+        var pendingMessages = await _outboxRepo.GetPendingMessagesAsync(100, ct).ConfigureAwait(false);
+        var pendingRequestIds = pendingMessages.Select(m => m.RequestId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         foreach (var consent in expiringConsents)
         {
+            if (_recentlyTriggered.TryGetValue(consent.Id, out var triggeredAt) && (DateTimeOffset.UtcNow - triggeredAt) < TimeSpan.FromHours(24))
+            {
+                _logger.LogDebug("Skipping recertification for consent '{ConsentId}' (already triggered within 24h).", consent.Id);
+                continue;
+            }
+
+            var consentIdStr = consent.Id.ToString();
+            if (pendingRequestIds.Contains(consentIdStr))
+            {
+                _logger.LogDebug("Skipping recertification for consent '{ConsentId}' (pending outbox message already exists).", consent.Id);
+                continue;
+            }
+
             var requesterSid = consent.GranteeSid ?? new Sid("UNKNOWN_USER");
             var remainingHours = (int)Math.Max(1, (consent.ValidTo - DateTimeOffset.UtcNow).TotalHours);
 
@@ -85,6 +113,7 @@ public sealed class ConsentRecertificationWorkflowService : IConsentRecertificat
             );
 
             await _outboxRepo.EnqueueAsync(outboxMessage, ct).ConfigureAwait(false);
+            _recentlyTriggered[consent.Id] = DateTimeOffset.UtcNow;
             dispatchedCount++;
 
             _logger.LogInformation(

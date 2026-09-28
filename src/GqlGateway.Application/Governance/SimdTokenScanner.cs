@@ -12,7 +12,7 @@ public static class SimdTokenScanner
 {
     // SearchValues for GraphQL special syntax delimiters: { } ( ) : $ @ [ ] ! , =
     private static readonly SearchValues<char> GraphQlDelimiters =
-        SearchValues.Create("{}(()):$@[]!,=");
+        SearchValues.Create("{}():$@[]!,=");
 
     // SearchValues for dangerous SQL syntax characters: ; ' " - / * \ | &
     private static readonly SearchValues<char> DangerousSqlChars =

@@ -18,23 +18,16 @@ using Microsoft.Extensions.Options;
 /// Outbound REST client for Jira Cloud REST API v3 (/rest/api/3/issue).
 /// Creates structured access governance issues with project key, summary, and description.
 /// </summary>
-public sealed class JiraCloudRestClient : IItsmWorkflowClient
+public sealed class JiraCloudRestClient(
+    HttpClient httpClient,
+    IOptions<GatewayOptions> options,
+    ILogger<JiraCloudRestClient> logger) : IItsmWorkflowClient
 {
-    private readonly HttpClient _httpClient;
-    private readonly IOptions<GatewayOptions> _options;
-    private readonly ILogger<JiraCloudRestClient> _logger;
+    private readonly HttpClient _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+    private readonly IOptions<GatewayOptions> _options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly ILogger<JiraCloudRestClient> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
     public ItsmSystemType SystemType => ItsmSystemType.Jira;
-
-    public JiraCloudRestClient(
-        HttpClient httpClient,
-        IOptions<GatewayOptions> options,
-        ILogger<JiraCloudRestClient> logger)
-    {
-        _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        _options = options ?? throw new ArgumentNullException(nameof(options));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
 
     public async Task<ItsmTicketResult> CreateAccessTicketAsync(ItsmTicketRequest request, CancellationToken ct = default)
     {
@@ -94,7 +87,7 @@ public sealed class JiraCloudRestClient : IItsmWorkflowClient
 
         if (!string.IsNullOrWhiteSpace(itsmOpts.JiraEmail) && !string.IsNullOrWhiteSpace(itsmOpts.JiraApiToken))
         {
-            var authHeader = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{itsmOpts.JiraEmail}:{itsmOpts.JiraApiToken}"));
+            var authHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{itsmOpts.JiraEmail}:{itsmOpts.JiraApiToken}"));
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Basic", authHeader);
         }
 
