@@ -384,10 +384,10 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **F-DBT-1: `run_results.json` Health Telemetry & Circuit Breaker** | 9 | 2.5 | 95% | 1.8 | 1.0 W | **38.4** | 🚀 **Top-Priorität (Wave 1)** |
 | **F-DBT-3: Live Telemetry-Driven Exposures (Ops, P99, Consumers)** | 7 | 2.0 | 90% | 1.2 | 0.8 W | **18.9** | 🚀 **Top-Priorität (Wave 1)** |
 | **F-DBT-2: dbt Model Contract Enforcement & Breaking Change Gate** | 8 | 2.5 | 90% | 1.5 | 1.5 W | **18.0** | 🚀 **Top-Priorität (Wave 1)** |
-| **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | 🟢 **Höchste Priorität (Wave 1)** |
-| **P11: Smart Schema Deprecation & Sunsetting Engine** | 9 | 2.2 | 95% | 1.4 | 2 W | **13.2** | 🟢 **Top Priorität (Wave 1)** |
+| **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | ✅ **100% Abgeschlossen (GA)** |
+| **P11: Smart Schema Deprecation & Sunsetting Engine** | 9 | 2.2 | 95% | 1.4 | 2 W | **13.2** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DBT-4: dbt Cloud & Orchestrator HMAC Webhook Receiver** | 8 | 1.5 | 90% | 1.2 | 1.0 W | **12.9** | 🟢 **Top Priorität (Wave 1)** |
-| **P12: Differential Privacy & Dynamic Perturbation** | 7 | 3.0 | 85% | 2.0 | 3 W | **11.9** | 🟢 **Top Priorität (Wave 1)** |
+| **P12: Differential Privacy & Dynamic Perturbation** | 7 | 3.0 | 85% | 2.0 | 3 W | **11.9** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DBT-6: Policy & RLS Auto-Sync aus dbt Metadaten** | 7 | 2.0 | 85% | 1.5 | 1.5 W | **11.9** | 🟢 **Top Priorität (Wave 1)** |
 | **P13: Data Contract & FinOps Chargeback Engine** | 8 | 2.0 | 90% | 1.3 | 2 W | **9.4** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P16: Post-Quantum Cryptography (ML-KEM / PQC)** | 6 | 2.0 | 85% | 1.6 | 2 W | **8.2** | 🟡 **Mittlere Priorität (Wave 2)** |
@@ -418,15 +418,15 @@ flowchart TD
         D11["ITSM Outbound REST Clients (ServiceNow / Jira) & Recertification"]
         D12["DSGVO Art. 15 PDF Export & OpenLineage RunEvents"]
         D13["dbt Streaming Ingestion & Lineage Graph Integration"]
+        D14["P10 Policy Simulation Sandbox (What-If Replay via Audit Logs)"]
+        D15["P11 Smart Schema Deprecation & Automated Client Sunsetting"]
+        D16["P12 Federated Differential Privacy & Dynamic Epsilon Perturbation"]
     end
 
     subgraph Wave1["Wave 1: Enterprise Governance, dbt Quality & Zero-Leakage (Q2/Q3 2026)"]
         direction TB
         W1_1["F-DBT-1 run_results Data Health Circuit Breaker & Quarantäne"]
         W1_2["F-DBT-2/3 dbt Model Contract CI Gate & Live Telemetry Exposures"]
-        W1_3["P10 Policy Simulation Sandbox (What-If Replay via Audit Logs)"]
-        W1_4["P11 Smart Schema Deprecation & Automated Client Sunsetting"]
-        W1_5["P12 Federated Differential Privacy & Dynamic Epsilon Perturbation"]
         W1_6["F-DBT-4/6 dbt Cloud Webhooks & Policy Auto-Sync"]
     end
 

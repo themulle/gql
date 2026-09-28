@@ -25,6 +25,8 @@ using GqlGateway.Infrastructure.Security;
 using GqlGateway.Api.Security;
 using GqlGateway.Application.Plugins;
 using GqlGateway.Application.Governance;
+using GqlGateway.Application.Governance.Interfaces;
+using GqlGateway.Application.Governance.Services;
 using GqlGateway.Application.Lineage;
 using GqlGateway.Application.Workflows;
 using GqlGateway.Application.Dbt.Interfaces;
@@ -338,6 +340,11 @@ public static class GatewayServiceCollectionExtensions
 
         // Casbin ABAC Engine
         services.AddSingleton<IPolicyEnforcementService, CasbinEnforcementService>();
+
+        // Strategic Enterprise Moats (P10, P11, P12)
+        services.AddSingleton<IPolicySimulationService, PolicySimulationService>();
+        services.AddSingleton<ISchemaSunsettingService, SchemaSunsettingService>();
+        services.AddSingleton<IDifferentialPrivacyEngine, DifferentialPrivacyEngine>();
 
         // ITSM Dispatcher, Outbound REST Clients (ServiceNow & Jira) & Inbound Webhooks
         services.AddHttpClient<ServiceNowTableApiClient>();

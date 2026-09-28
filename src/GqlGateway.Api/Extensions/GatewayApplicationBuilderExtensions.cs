@@ -4,6 +4,7 @@ using GqlGateway.Application.OpenMetadata.Interfaces;
 using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Application.Mcp.Interfaces;
+using GqlGateway.Application.Governance.Interfaces;
 using GqlGateway.Application.Streaming.Interfaces;
 using GqlGateway.Infrastructure.Streaming;
 using GqlGateway.Application.SchemaRegistry;
@@ -670,6 +671,130 @@ public static class GatewayApplicationBuilderExtensions
 
             var result = await validator.ValidateContractsStreamAsync(context.Request.Body, context.RequestAborted);
             return result.IsCompatible ? Results.Ok(result) : Results.UnprocessableEntity(result);
+        }).RequireAuthorization();
+
+
+        // P10: Multi-Tenant Policy Simulation Sandbox ("What-If" Replay via Audit Logs)
+        app.MapPost("/api/governance/policy-simulation/replay", async (
+            PolicySimulationRequest request,
+            IPolicySimulationService simulationService,
+            HttpContext context) =>
+        {
+            var result = await simulationService.SimulateAsync(request, context.RequestAborted);
+            return Results.Ok(result);
+        }).RequireAuthorization();
+
+
+        // P11: Automated Schema Deprecation & Client-Impact Sunsetting (Smart Sunsetting Engine)
+        app.MapGet("/api/governance/sunsetting/rules", async (
+            ISchemaSunsettingService sunsettingService,
+            HttpContext context) =>
+        {
+            var rules = await sunsettingService.GetRulesAsync(context.RequestAborted);
+            return Results.Ok(rules);
+        }).RequireAuthorization();
+
+        app.MapPost("/api/governance/sunsetting/rules", async (
+            FieldSunsettingRule rule,
+            ISchemaSunsettingService sunsettingService,
+            HttpContext context) =>
+        {
+            await sunsettingService.RegisterRuleAsync(rule, context.RequestAborted);
+            return Results.Created($"/api/governance/sunsetting/rules/{rule.Id}", rule);
+        }).RequireAuthorization();
+
+        app.MapPost("/api/governance/sunsetting/evaluate", async (
+            EvaluateFieldSunsettingRequest request,
+            ISchemaSunsettingService sunsettingService,
+            HttpContext context) =>
+        {
+            var evaluation = await sunsettingService.EvaluateFieldAsync(
+                request.TargetTable,
+                request.FieldName,
+                request.EvaluationDate,
+                context.RequestAborted);
+
+            if (evaluation == null)
+            {
+                return Results.Ok(new { isDeprecated = false });
+            }
+
+            if (evaluation.IsHardSunsetBlocked)
+            {
+                context.Response.Headers["Sunset"] = evaluation.HttpSunsetHeader;
+                return Results.Json(new
+                {
+                    error = evaluation.DeprecationNotice,
+                    phase = evaluation.Phase.ToString(),
+                    sunsetDate = evaluation.SunsetDate,
+                    replacement = evaluation.Rule.ReplacementField
+                }, statusCode: StatusCodes.Status410Gone);
+            }
+
+            if (evaluation.ShouldRejectWith426)
+            {
+                context.Response.Headers["Sunset"] = evaluation.HttpSunsetHeader;
+                return Results.Json(new
+                {
+                    error = "Chaos Testing: Upgrade Required. " + evaluation.DeprecationNotice,
+                    phase = evaluation.Phase.ToString(),
+                    sunsetDate = evaluation.SunsetDate,
+                    replacement = evaluation.Rule.ReplacementField
+                }, statusCode: StatusCodes.Status426UpgradeRequired);
+            }
+
+            if (evaluation.ShouldInjectSyntheticLatency && evaluation.SyntheticLatencyMs > 0)
+            {
+                await Task.Delay(evaluation.SyntheticLatencyMs, context.RequestAborted);
+            }
+
+            context.Response.Headers["Sunset"] = evaluation.HttpSunsetHeader;
+            return Results.Ok(evaluation);
+        }).RequireAuthorization();
+
+
+        // P12: Federated Differential Privacy & Dynamic Epsilon-Perturbation Engine
+        app.MapGet("/api/governance/differential-privacy/budget/{clientId}", async (
+            string clientId,
+            IDifferentialPrivacyEngine dpEngine,
+            HttpContext context) =>
+        {
+            var budget = await dpEngine.GetBudgetAsync(clientId, context.RequestAborted);
+            return Results.Ok(budget);
+        }).RequireAuthorization();
+
+        app.MapPost("/api/governance/differential-privacy/budget/{clientId}/reset", async (
+            string clientId,
+            IDifferentialPrivacyEngine dpEngine,
+            HttpContext context) =>
+        {
+            await dpEngine.ResetBudgetAsync(clientId, context.RequestAborted);
+            return Results.Ok(new { message = $"Privacy budget reset for client '{clientId}'." });
+        }).RequireAuthorization();
+
+        app.MapPost("/api/governance/differential-privacy/perturb", async (
+            DifferentialPrivacyPerturbationRequest request,
+            IDifferentialPrivacyEngine dpEngine,
+            HttpContext context) =>
+        {
+            try
+            {
+                var result = await dpEngine.PerturbAsync(request, context.RequestAborted);
+                context.Response.Headers["X-Privacy-Budget-Consumed"] = result.ConsumedEpsilon.ToString("F2");
+                context.Response.Headers["X-Privacy-Budget-Remaining"] = result.RemainingEpsilon.ToString("F2");
+                return Results.Ok(result);
+            }
+            catch (PrivacyBudgetExhaustedException ex)
+            {
+                context.Response.Headers["X-Privacy-Budget-Exhausted"] = "true";
+                return Results.Json(new
+                {
+                    error = ex.Message,
+                    clientId = ex.ClientId,
+                    consumed = ex.ConsumedEpsilon,
+                    totalBudget = ex.TotalBudget
+                }, statusCode: StatusCodes.Status429TooManyRequests);
+            }
         }).RequireAuthorization();
 
 
