@@ -25,6 +25,7 @@ public sealed class GatewayOptions
     [Required] public McpOptions Mcp { get; init; } = new();
     [Required] public LakehouseOptions Lakehouse { get; init; } = new();
     [Required] public FederationOptions Federation { get; init; } = new();
+    [Required] public ExtensibilityOptions Extensibility { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -321,8 +322,37 @@ public sealed class CachingOptions
 {
     [Required] public L1MemoryCacheOptions L1MemoryCache { get; init; } = new();
     [Required] public RedisOptions Redis { get; init; } = new();
+    [Required] public GarnetOptions Garnet { get; init; } = new();
     [Required] public EpochValidationOptions EpochValidation { get; init; } = new();
     [Required] public CdnOptions Cdn { get; init; } = new();
+}
+
+public sealed class GarnetOptions
+{
+    /// <summary>
+    /// Wenn true, startet das Gateway einen eingebetteten Microsoft Garnet Cache-Server (RESP-kompatibel, Tsavorite-Engine).
+    /// </summary>
+    public bool EnableEmbeddedServer { get; init; } = false;
+
+    /// <summary>
+    /// Bind-Adresse für den eingebetteten Garnet-Server (Standard: 127.0.0.1).
+    /// </summary>
+    public string Host { get; init; } = "127.0.0.1";
+
+    /// <summary>
+    /// Port für den eingebetteten Garnet-Server (Standard: 3278).
+    /// </summary>
+    [Range(1024, 65535)] public int Port { get; init; } = 3278;
+
+    /// <summary>
+    /// Deaktiviert die interne Konsolenausgabe von Garnet, um stdout nicht mit Cache-Logs zu fluten.
+    /// </summary>
+    public bool DisableConsole { get; init; } = true;
+
+    /// <summary>
+    /// Speicherort für Persistenz-Checkpoints (optional).
+    /// </summary>
+    public string? CheckpointDir { get; init; }
 }
 
 public sealed class L1MemoryCacheOptions
@@ -587,6 +617,16 @@ public sealed class LakehouseOptions
     // Insecure flags
     public bool warn_allow_unsigned_s3_requests { get; init; } = false;
     public bool danger_bypass_lakehouse_auth { get; init; } = false;
+}
+
+public sealed class ExtensibilityOptions
+{
+    public bool Enabled { get; init; } = true;
+    public bool EnableBreakGlass { get; init; } = true;
+    public bool RequireJustificationForBreakGlass { get; init; } = true;
+    public string JustificationHeaderName { get; init; } = "X-Access-Justification";
+    public string BreakGlassHeaderName { get; init; } = "X-Break-Glass";
+    public string PluginDirectory { get; init; } = "plugins";
 }
 
 

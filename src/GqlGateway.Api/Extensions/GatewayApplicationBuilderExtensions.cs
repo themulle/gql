@@ -6,6 +6,7 @@ using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Application.Streaming.Interfaces;
 using GqlGateway.Infrastructure.Streaming;
+using GqlGateway.Application.SchemaRegistry;
 using GqlGateway.Extensions.OData;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
@@ -180,6 +181,7 @@ public static class GatewayApplicationBuilderExtensions
         app.UseMiddleware<TenantResolutionMiddleware>();
         app.UseMiddleware<OpenTelemetryTracingMiddleware>();
         app.UseMiddleware<PostAuthSidRateLimitingMiddleware>();
+        app.UseMiddleware<GatewayExtensibilityMiddleware>();
 
         return app;
     }
@@ -846,6 +848,62 @@ public static class GatewayApplicationBuilderExtensions
                 sessionEndpoint.RequireAuthorization();
             }
         }
+
+        // Schema Registry & CI/CD Endpoints (P8)
+        app.MapPost("/api/schema-registry/publish", async (
+            SchemaRegistrationRequest request,
+            ISchemaRegistryService registry,
+            CancellationToken ct) =>
+        {
+            var response = await registry.RegisterSchemaAsync(request, ct);
+            return response.Success
+                ? Results.Ok(response)
+                : Results.BadRequest(response);
+        });
+
+        app.MapPost("/api/schema-registry/check", async (
+            SchemaRegistrationRequest request,
+            ISchemaRegistryService registry,
+            CancellationToken ct) =>
+        {
+            var diff = await registry.CheckSchemaAsync(request.ServiceName, request.Sdl, ct);
+            return Results.Ok(new
+            {
+                serviceName = request.ServiceName,
+                isCompatible = diff.IsCompatible,
+                hasBreakingChanges = diff.HasBreakingChanges,
+                breakingCount = diff.BreakingCount,
+                dangerousCount = diff.DangerousCount,
+                safeCount = diff.SafeCount,
+                changes = diff.Changes
+            });
+        });
+
+        app.MapGet("/api/schema-registry/{service}/latest", async (
+            string service,
+            ISchemaRegistryService registry,
+            CancellationToken ct) =>
+        {
+            var latest = await registry.GetLatestSchemaAsync(service, ct);
+            return latest != null ? Results.Ok(latest) : Results.NotFound(new { error = $"No active schema found for service '{service}'." });
+        });
+
+        app.MapGet("/api/schema-registry/{service}/history", async (
+            string service,
+            ISchemaRegistryService registry,
+            CancellationToken ct) =>
+        {
+            var history = await registry.GetSchemaHistoryAsync(service, ct);
+            return Results.Ok(history);
+        });
+
+        app.MapGet("/api/schema-registry/services", async (
+            ISchemaRegistryService registry,
+            CancellationToken ct) =>
+        {
+            var services = await registry.GetAllServicesAsync(ct);
+            return Results.Ok(services);
+        });
 
         return app;
     }

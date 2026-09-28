@@ -1,10 +1,13 @@
 using System.Collections.Concurrent;
+using GqlGateway.Application.Caching.Interfaces;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
+using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
 namespace GqlGateway.Infrastructure.Cache;
 
@@ -12,6 +15,10 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
 {
     private readonly IMemoryCache _memoryCache;
     private readonly IEpochValidationService _epochValidationService;
+    private readonly IBinaryCacheSerializer? _serializer;
+    private readonly IConnectionMultiplexer? _multiplexer;
+    private readonly IDatabase? _redisDb;
+    private readonly string _prefix;
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _tableCacheKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly IDisposable? _subscription;
 
@@ -23,10 +30,20 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         IMemoryCache memoryCache,
         IEpochValidationService epochValidationService,
         IEventBus eventBus,
-        IOptions<GatewayOptions>? options = null)
+        IOptions<GatewayOptions>? options = null,
+        IBinaryCacheSerializer? serializer = null,
+        IConnectionMultiplexer? multiplexer = null)
     {
         _memoryCache = memoryCache;
         _epochValidationService = epochValidationService;
+        _serializer = serializer;
+        _multiplexer = multiplexer;
+        _redisDb = multiplexer?.GetDatabase();
+        _prefix = options?.Value?.Caching?.Redis?.InstanceName ?? "GqlGateway:";
+        if (!_prefix.EndsWith(':'))
+        {
+            _prefix += ":";
+        }
 
         var channel = options?.Value?.Caching?.Redis?.InvalidationChannel ?? "consent:invalidations";
         _subscription = eventBus.Subscribe<string>(channel, async tableString =>
@@ -66,25 +83,55 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         CancellationToken ct = default)
     {
         var cacheKey = BuildCacheKey(tenant, userSid, table, contextHash);
-        if (!_memoryCache.TryGetValue(cacheKey, out CacheEntryEnvelope? envelope) || envelope == null)
+        if (_memoryCache.TryGetValue(cacheKey, out CacheEntryEnvelope? envelope) && envelope != null)
         {
-            CacheMisses.Inc();
-            RemoveKeyFromTableIndex(table, cacheKey);
-            return null;
+            // Validate epoch
+            var isValid = await _epochValidationService.IsEpochValidAsync(table, envelope.Epoch, ct).ConfigureAwait(false);
+            if (!isValid)
+            {
+                CacheMisses.Inc();
+                _memoryCache.Remove(cacheKey);
+                RemoveKeyFromTableIndex(table, cacheKey);
+                return null;
+            }
+
+            CacheHits.Inc();
+            return envelope.Decision;
         }
 
-        // Validate epoch
-        var isValid = await _epochValidationService.IsEpochValidAsync(table, envelope.Epoch, ct);
-        if (!isValid)
+        // L1 Miss: Check L2 Distributed Cache (Redis / Garnet via MemoryPack)
+        if (_redisDb != null && _serializer != null)
         {
-            CacheMisses.Inc();
-            _memoryCache.Remove(cacheKey);
-            RemoveKeyFromTableIndex(table, cacheKey);
-            return null;
+            try
+            {
+                var l2Key = (RedisKey)$"{_prefix}consent:l2:{cacheKey}";
+                var rawBytes = await _redisDb.StringGetAsync(l2Key).ConfigureAwait(false);
+                if (!rawBytes.IsNullOrEmpty && _serializer.TryDeserialize<CachedConsentEnvelope>(rawBytes, out var l2Env) && l2Env != null)
+                {
+                    var isL2EpochValid = await _epochValidationService.IsEpochValidAsync(table, l2Env.Epoch, ct).ConfigureAwait(false);
+                    if (isL2EpochValid)
+                    {
+                        var decision = l2Env.ToDecision();
+                        // Populate L1 cache for subsequent fast-path hits
+                        SetL1Internal(table, cacheKey, new CacheEntryEnvelope(decision, l2Env.Epoch), TimeSpan.FromMinutes(5));
+                        CacheHits.Inc();
+                        return decision;
+                    }
+                    else
+                    {
+                        await _redisDb.KeyDeleteAsync(l2Key).ConfigureAwait(false);
+                    }
+                }
+            }
+            catch
+            {
+                // Fallback gracefully on L2 error
+            }
         }
 
-        CacheHits.Inc();
-        return envelope.Decision;
+        CacheMisses.Inc();
+        RemoveKeyFromTableIndex(table, cacheKey);
+        return null;
     }
 
     public Task SetCachedDecisionAsync(
@@ -106,8 +153,31 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         CancellationToken ct = default)
     {
         var cacheKey = BuildCacheKey(tenant, userSid, table, contextHash);
-        var currentEpoch = await _epochValidationService.GetCurrentEpochAsync(table, ct);
+        var currentEpoch = await _epochValidationService.GetCurrentEpochAsync(table, ct).ConfigureAwait(false);
         var envelope = new CacheEntryEnvelope(decision, currentEpoch);
+
+        SetL1Internal(table, cacheKey, envelope, ttl);
+
+        // Store in L2 Distributed Cache (Redis / Garnet via MemoryPack)
+        if (_redisDb != null && _serializer != null)
+        {
+            try
+            {
+                var l2Key = (RedisKey)$"{_prefix}consent:l2:{cacheKey}";
+                var l2Dto = CachedConsentEnvelope.FromDecision(decision, currentEpoch);
+                var binaryPayload = _serializer.Serialize(l2Dto);
+                await _redisDb.StringSetAsync(l2Key, binaryPayload, ttl).ConfigureAwait(false);
+            }
+            catch
+            {
+                // L1 remains active even if L2 fails
+            }
+        }
+    }
+
+    private void SetL1Internal(TableIdentifier table, string cacheKey, CacheEntryEnvelope envelope, TimeSpan ttl)
+    {
+        var decision = envelope.Decision;
 
         // Approximate byte size for L1 MemoryCache size budgeting (NF-PERF-02)
         var estimatedBytes = 512
@@ -196,7 +266,6 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
 
     public static string ComputeSubjectContextHash(IReadOnlySet<Sid>? groupSids, IReadOnlySet<string>? roles) =>
         IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
-
 
     private static string BuildCacheKey(TenantId tenant, Sid userSid, TableIdentifier table, string? contextHash = null)
     {

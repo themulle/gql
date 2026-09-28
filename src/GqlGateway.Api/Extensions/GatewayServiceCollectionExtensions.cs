@@ -38,6 +38,8 @@ using GqlGateway.Infrastructure.Lineage;
 using GqlGateway.Infrastructure.Plugins;
 using GqlGateway.Infrastructure.Diagnostics;
 using GqlGateway.Application.Caching.Interfaces;
+using GqlGateway.Infrastructure.Garnet;
+using GqlGateway.Infrastructure.Serialization;
 using GqlGateway.Application.Caching.Services;
 using GqlGateway.Application.Streaming.Interfaces;
 using GqlGateway.Application.Streaming.Services;
@@ -45,6 +47,10 @@ using GqlGateway.Infrastructure.Streaming;
 using GqlGateway.GraphQL.Subscriptions;
 using GqlGateway.Infrastructure.Cdn;
 using GqlGateway.Infrastructure.OpenJev;
+using GqlGateway.Application.Extensibility;
+using GqlGateway.Application.Extensibility.Interceptors;
+using GqlGateway.Application.SchemaRegistry;
+using GqlGateway.Application.SchemaRegistry.Validation;
 using System.Net.Http;
 using Microsoft.Extensions.Logging;
 using OpenTelemetry.Trace;
@@ -164,7 +170,28 @@ public static class GatewayServiceCollectionExtensions
             options.SizeLimit = (long)gatewayOptions.Caching.L1MemoryCache.SizeLimitMb * 1024 * 1024;
         });
 
-        if (gatewayOptions.Caching.Redis.Enabled)
+        services.AddSingleton<IBinaryCacheSerializer, MemoryPackCacheSerializer>();
+
+        if (gatewayOptions.Caching.Garnet.EnableEmbeddedServer)
+        {
+            var garnetManager = new GarnetServerManager(Microsoft.Extensions.Options.Options.Create(gatewayOptions));
+            garnetManager.StartServer();
+            services.AddSingleton<IGarnetServerManager>(garnetManager);
+            services.AddHostedService(sp => (GarnetServerManager)sp.GetRequiredService<IGarnetServerManager>());
+
+            var garnetConfig = new ConfigurationOptions
+            {
+                EndPoints = { $"{gatewayOptions.Caching.Garnet.Host}:{gatewayOptions.Caching.Garnet.Port}" },
+                ConnectTimeout = gatewayOptions.Caching.Redis.ConnectTimeoutMs,
+                SyncTimeout = gatewayOptions.Caching.Redis.SyncTimeoutMs,
+                AbortOnConnectFail = false
+            };
+            services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(garnetConfig));
+            services.AddSingleton<IEventBus, RedisEventBus>();
+            services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
+            services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
+        }
+        else if (gatewayOptions.Caching.Redis.Enabled)
         {
             var redisConfig = ConfigurationOptions.Parse(gatewayOptions.Caching.Redis.Configuration);
             redisConfig.ConnectTimeout = gatewayOptions.Caching.Redis.ConnectTimeoutMs;
@@ -419,6 +446,17 @@ public static class GatewayServiceCollectionExtensions
                 metrics.AddMeter(GatewayDiagnostics.MeterName);
                 metrics.AddOtlpExporter();
             });
+
+        // Extensibility Pipeline & Interceptors (P9)
+        services.AddSingleton<IExtensibilityPipeline, ExtensibilityPipeline>();
+        services.AddSingleton<IIngressInterceptor, JustificationAndBreakGlassInterceptor>();
+        services.AddSingleton<IEgressInterceptor, AuditLineageEgressInterceptor>();
+
+        // Schema Registry & AST Linter (P8)
+        services.AddSingleton<FluentValidation.IValidator<SchemaRegistrationRequest>, SchemaRegistrationRequestValidator>();
+        services.AddSingleton<ISchemaLinter, SchemaLinter>();
+        services.AddSingleton<ISchemaRegistryRepository, InMemorySchemaRegistryRepository>();
+        services.AddSingleton<ISchemaRegistryService, SchemaRegistryService>();
 
         return services;
     }
