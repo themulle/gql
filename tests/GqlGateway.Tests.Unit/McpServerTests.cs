@@ -339,6 +339,7 @@ public sealed class McpServerTests
                 $"Role 'AiAgent' not authorized for table '{context.TargetTable}'."));
         }
 
+        public bool HasPolicies(TenantId tenant) => true;
         public Task ReloadPoliciesAsync(TenantId tenant, System.Threading.CancellationToken ct = default) => Task.CompletedTask;
     }
 

@@ -13,8 +13,23 @@ public sealed record SecurityEvaluationContext(
     IReadOnlyCollection<string> RequestedColumns,
     IPAddress ClientIp,
     DateTimeOffset Timestamp,
-    string? PurposeId
-);
+    string? PurposeId,
+    IReadOnlyDictionary<string, object?>? Attributes = null
+)
+{
+    public string? Department => GetAttribute("department") ?? GetAttribute("dept");
+    public string? Region => GetAttribute("region") ?? GetAttribute("country");
+    public string? ClearanceLevel => GetAttribute("clearance") ?? GetAttribute("clearance_level");
+
+    public string? GetAttribute(string key)
+    {
+        if (Attributes != null && Attributes.TryGetValue(key, out var val) && val != null)
+        {
+            return val.ToString();
+        }
+        return null;
+    }
+}
 
 public enum LineageNodeType
 {

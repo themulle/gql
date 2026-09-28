@@ -18,6 +18,11 @@ public interface IPolicyEnforcementService
         CancellationToken ct = default);
 
     /// <summary>
+    /// Checks whether active Casbin ABAC policies are registered for the given tenant.
+    /// </summary>
+    bool HasPolicies(TenantId tenant);
+
+    /// <summary>
     /// Synchronizes updated policies from Redis event bus invalidations (<= 50 ms).
     /// </summary>
     Task ReloadPoliciesAsync(TenantId tenant, CancellationToken ct = default);

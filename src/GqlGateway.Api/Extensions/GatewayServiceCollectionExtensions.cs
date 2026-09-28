@@ -371,7 +371,8 @@ public static class GatewayServiceCollectionExtensions
             sp.GetRequiredService<IChunkedQueryExecutor>(),
             sp.GetService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
             sp.GetService<ITrafficDrainController>(),
-            sp.GetServices<IDataSourceExecutor>()));
+            sp.GetServices<IDataSourceExecutor>(),
+            sp.GetService<IPolicyEnforcementService>()));
         services.AddScoped<IGatewayExecutionService>(sp => sp.GetRequiredService<GatewayExecutionService>());
 
         // Model Context Protocol (MCP) Server & AI Data Guardrails

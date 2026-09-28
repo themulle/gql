@@ -33,6 +33,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
     private readonly GatewayOptions? _options;
     private readonly ITrafficDrainController? _drainController;
     private readonly IEnumerable<IDataSourceExecutor>? _dataSourceExecutors;
+    private readonly IPolicyEnforcementService? _policyEnforcementService;
     private readonly IDataSourceExecutor _defaultSqlExecutor = new SqlDataSourceExecutor();
 
     public int LastDispatchedChildQueryCount { get; private set; }
@@ -48,7 +49,8 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         IChunkedQueryExecutor? chunkedQueryExecutor = null,
         IOptions<GatewayOptions>? options = null,
         ITrafficDrainController? drainController = null,
-        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null)
+        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null,
+        IPolicyEnforcementService? policyEnforcementService = null)
     {
         _metadataRepository = metadataRepository;
         _consentRepository = consentRepository;
@@ -60,6 +62,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         _options = options?.Value;
         _drainController = drainController;
         _dataSourceExecutors = dataSourceExecutors;
+        _policyEnforcementService = policyEnforcementService;
     }
 
     public GatewayExecutionService(
@@ -70,8 +73,9 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         IChunkedQueryExecutor? chunkedQueryExecutor = null,
         IOptions<GatewayOptions>? options = null,
         ITrafficDrainController? drainController = null,
-        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null)
-        : this(repository, repository, repository, resolutionService, cacheService, maskingProvider, chunkedQueryExecutor, options, drainController, dataSourceExecutors)
+        IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null,
+        IPolicyEnforcementService? policyEnforcementService = null)
+        : this(repository, repository, repository, resolutionService, cacheService, maskingProvider, chunkedQueryExecutor, options, drainController, dataSourceExecutors, policyEnforcementService)
     {
     }
 
@@ -186,6 +190,50 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             else
             {
                 decision = cached;
+            }
+        }
+
+        // Casbin ABAC & Row-Level Security (RLS) Pushdown Evaluation
+        if (_policyEnforcementService != null && _policyEnforcementService.HasPolicies(tenantId) && _options?.IsConsentBypassed != true)
+        {
+            var attributes = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var claim in principal.Claims)
+            {
+                attributes[claim.Type] = claim.Value;
+            }
+
+            var clientIp = System.Net.IPAddress.Loopback;
+            if (principal.FindFirst("ip")?.Value is { Length: > 0 } ipStr && System.Net.IPAddress.TryParse(ipStr, out var parsedIp))
+            {
+                clientIp = parsedIp;
+            }
+
+            var purpose = principal.FindFirst("purpose")?.Value ?? principal.FindFirst("purpose_id")?.Value;
+
+            var secContext = new SecurityEvaluationContext(
+                UserSid: userSid,
+                GroupSids: groupSids,
+                Tenant: tenantId,
+                TargetTable: table,
+                RequestedColumns: requestedFields ?? metadata.Columns.Select(c => c.ColumnName).ToList(),
+                ClientIp: clientIp,
+                Timestamp: DateTimeOffset.UtcNow,
+                PurposeId: purpose,
+                Attributes: attributes
+            );
+
+            var casbinDecision = await _policyEnforcementService.EvaluatePolicyAsync(secContext, ct);
+            if (!casbinDecision.IsAllowed)
+            {
+                decision = TableAccessDecision.Denied(table, $"Casbin ABAC Policy Denial: Access denied for subject '{userSid.Value}' in tenant '{tenantId.Value}'.");
+            }
+            else if (!string.IsNullOrWhiteSpace(casbinDecision.CombinedRowFilterSql))
+            {
+                var mergedFilter = !string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql)
+                    ? $"({decision.CombinedRowFilterSql}) AND ({casbinDecision.CombinedRowFilterSql})"
+                    : casbinDecision.CombinedRowFilterSql;
+
+                decision = decision with { CombinedRowFilterSql = mergedFilter };
             }
         }
 

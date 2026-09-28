@@ -26,6 +26,7 @@ public sealed class GatewayOptions
     [Required] public LakehouseOptions Lakehouse { get; init; } = new();
     [Required] public FederationOptions Federation { get; init; } = new();
     [Required] public ExtensibilityOptions Extensibility { get; init; } = new();
+    [Required] public CasbinOptions Casbin { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -627,6 +628,14 @@ public sealed class ExtensibilityOptions
     public string JustificationHeaderName { get; init; } = "X-Access-Justification";
     public string BreakGlassHeaderName { get; init; } = "X-Break-Glass";
     public string PluginDirectory { get; init; } = "plugins";
+}
+
+public sealed class CasbinOptions
+{
+    public bool Enabled { get; init; } = true;
+    public bool EnforceInQueryPipeline { get; init; } = true;
+    public string? ModelPath { get; init; }
+    public string? PolicyPath { get; init; }
 }
 
 
