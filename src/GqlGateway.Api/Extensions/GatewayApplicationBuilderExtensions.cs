@@ -827,6 +827,20 @@ public static class GatewayApplicationBuilderExtensions
                 if (!string.IsNullOrWhiteSpace(sessionId))
                 {
                     session = mcpHandler.GetSession(sessionId);
+                    if (session != null && !gatewayOptions.IsMcpAuthBypassed)
+                    {
+                        var callerId = context.User.FindFirst("client_id")?.Value
+                            ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                            ?? context.User.FindFirst("sub")?.Value
+                            ?? context.User.FindFirst("appid")?.Value
+                            ?? context.User.Identity?.Name;
+
+                        if (!string.IsNullOrWhiteSpace(callerId) &&
+                            !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return Results.StatusCode(StatusCodes.Status403Forbidden);
+                        }
+                    }
                 }
 
                 if (session == null)
@@ -986,7 +1000,7 @@ public static class GatewayApplicationBuilderExtensions
 
             context.Response.Headers["X-Audit-Seal-SHA256"] = exportResult.Sha256AuditSeal;
             return Results.File(exportResult.DocumentBytes, exportResult.ContentType, exportResult.FileName);
-        });
+        }).RequireAuthorization();
 
         // OpenLineage Lineage Push Trigger
         app.MapPost("/api/lineage/openlineage/sync", async (
@@ -999,7 +1013,7 @@ public static class GatewayApplicationBuilderExtensions
             return success
                 ? Results.Ok(new { message = "OpenLineage sync completed successfully." })
                 : Results.StatusCode(StatusCodes.Status502BadGateway);
-        });
+        }).RequireAuthorization();
 
         return app;
     }
