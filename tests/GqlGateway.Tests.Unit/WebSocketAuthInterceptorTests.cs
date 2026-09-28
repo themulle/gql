@@ -61,4 +61,14 @@ public sealed class WebSocketAuthInterceptorTests
         principal.FindFirst(ClaimTypes.PrimarySid)?.Value.ShouldBe("S-1-5-21-ALICE");
         principal.FindFirst("tenant_id")?.Value.ShouldBe("default");
     }
+
+    [Theory]
+    [InlineData("S-1-5-32-544")] // Builtin Administrators
+    [InlineData("S-1-5-32-545")] // Builtin Users
+    [InlineData("S-1-5-21-123456789-500")] // Domain Administrator
+    public void CreatePrincipalFromToken_WithPrivilegedSid_ThrowsSecurityException(string privilegedSid)
+    {
+        Should.Throw<System.Security.SecurityException>(() =>
+            WebSocketAuthInterceptor.CreatePrincipalFromToken(privilegedSid));
+    }
 }

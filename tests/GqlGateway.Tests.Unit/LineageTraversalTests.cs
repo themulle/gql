@@ -258,4 +258,38 @@ public class LineageTraversalTests
         report.AffectedDownstreamCount.ShouldBe(9_999);
         sw.ElapsedMilliseconds.ShouldBeLessThanOrEqualTo(150); // SLA target: iterative BFS is extremely fast (< 15ms target, buffer for parallel runs)
     }
+
+    [Fact]
+    public async Task CalculateConsentRevocationImpactAsync_WhenCrossTenantConsentRequested_ThrowsKeyNotFoundException()
+    {
+        var consentId = Guid.NewGuid();
+        var foreignConsent = new Consent
+        {
+            Id = consentId,
+            TableId = Guid.NewGuid(),
+            TableIdentifier = new TableIdentifier("finance", "dbo", "salaries"),
+            TenantId = new TenantId("tenant-victim"),
+            Effect = ConsentEffect.Allow,
+            GranteeType = GranteeType.User,
+            GranteeSid = new Sid("S-1-5-21-VICTIM"),
+            ValidFrom = DateTimeOffset.UtcNow.AddDays(-1),
+            ValidTo = DateTimeOffset.UtcNow.AddDays(1)
+        };
+        _consentRepo.GetConsentByIdAsync(consentId, Arg.Any<CancellationToken>()).Returns(foreignConsent);
+
+        var attackerContext = new CallerSecurityContext(
+            new Sid("S-1-5-21-ATTACKER"),
+            [],
+            ["Analyst"],
+            new TenantId("tenant-attacker"),
+            IsGovernanceAdmin: false,
+            IsClusterAdmin: false);
+
+        // SEC BOLA: Must throw KeyNotFoundException when attempting to analyze a consent belonging to another tenant
+        await Should.ThrowAsync<KeyNotFoundException>(() =>
+            _sut.CalculateConsentRevocationImpactAsync(
+                new TenantId("tenant-attacker"),
+                consentId,
+                attackerContext));
+    }
 }

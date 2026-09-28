@@ -581,7 +581,30 @@ public static class GatewayApplicationBuilderExtensions
 
             try
             {
+                var user = request.HttpContext.User;
+                var callerTenant = user.FindFirst("tenant_id")?.Value
+                                  ?? user.FindFirst("tid")?.Value
+                                  ?? user.FindFirst("tenant")?.Value;
+
+                var isClusterAdmin = user.IsInRole("ClusterAdmin") || user.IsInRole("PlatformAdmin");
+
                 var cdcEvent = DebeziumCdcParser.Parse(body);
+
+                // SEC-4: Enforce strict tenant isolation on ingested CDC events to prevent cross-tenant event spoofing
+                if (!string.IsNullOrWhiteSpace(callerTenant) && !isClusterAdmin)
+                {
+                    if (!string.IsNullOrWhiteSpace(cdcEvent.TenantId) &&
+                        !string.Equals(cdcEvent.TenantId, callerTenant, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return Results.Forbid();
+                    }
+
+                    if (string.IsNullOrWhiteSpace(cdcEvent.TenantId))
+                    {
+                        cdcEvent = cdcEvent with { TenantId = callerTenant };
+                    }
+                }
+
                 await ingestionService.PublishEventAsync(cdcEvent, request.HttpContext.RequestAborted);
                 return Results.Accepted(value: new { status = "Ingested", eventId = cdcEvent.EventId });
             }
@@ -927,7 +950,18 @@ public static class GatewayApplicationBuilderExtensions
 
                 sessionStore.RegisterSseSender(session.SessionId, async (evt, data) =>
                 {
-                    await context.Response.WriteAsync($"event: {evt}\r\ndata: {data}\r\n\r\n", context.RequestAborted).ConfigureAwait(false);
+                    // SEC-3: Sanitize event name and properly format multi-line data to eliminate SSE CRLF injection
+                    var cleanEvt = string.IsNullOrWhiteSpace(evt) ? "message" : System.Text.RegularExpressions.Regex.Replace(evt, @"[\r\n]", string.Empty);
+                    var normalizedData = (data ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n');
+                    var lines = normalizedData.Split('\n');
+                    var sb = new System.Text.StringBuilder();
+                    sb.Append("event: ").Append(cleanEvt).Append('\n');
+                    foreach (var line in lines)
+                    {
+                        sb.Append("data: ").Append(line).Append('\n');
+                    }
+                    sb.Append('\n');
+                    await context.Response.WriteAsync(sb.ToString(), context.RequestAborted).ConfigureAwait(false);
                     await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
                 });
 

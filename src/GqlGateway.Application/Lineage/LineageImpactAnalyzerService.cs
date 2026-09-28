@@ -56,7 +56,11 @@ public sealed class LineageImpactAnalyzerService : ILineageImpactAnalyzerService
         using var activity = GatewayDiagnostics.Source.StartActivity("Lineage.Traverse");
 
         var consent = await _consentRepo.GetConsentByIdAsync(consentId, ct).ConfigureAwait(false);
-        if (consent == null)
+        // BOLA / Cross-tenant protection: reject if consent belongs to a different tenant
+        if (consent == null || 
+            (consent.TenantId != tenant && 
+             consent.TenantId != TenantId.LegacySingleTenant && 
+             !callerContext.IsClusterAdmin))
         {
             throw new KeyNotFoundException($"Consent mit ID '{consentId}' nicht gefunden.");
         }

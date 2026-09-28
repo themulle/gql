@@ -272,7 +272,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         return allRows.ToList();
     }
 
-    private string BuildUrl(
+    internal string BuildUrl(
         HttpEndpointDescriptor descriptor,
         IReadOnlyDictionary<string, object?> arguments,
         ClaimsPrincipal principal)
@@ -291,7 +291,13 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             var placeholder = "{" + k + "}";
             if (expandedPath.Contains(placeholder, StringComparison.OrdinalIgnoreCase))
             {
-                expandedPath = expandedPath.Replace(placeholder, Uri.EscapeDataString(v?.ToString() ?? string.Empty), StringComparison.OrdinalIgnoreCase);
+                var strVal = v?.ToString() ?? string.Empty;
+                // SEC-5: Disallow directory traversal sequences in path placeholder parameters
+                if (strVal.Contains("..") || strVal.Contains('/') || strVal.Contains('\\'))
+                {
+                    throw new System.Security.SecurityException($"Potenzieller Path-Traversal-Angriff im Parameter '{k}': Pfadtrennzeichen und '..' sind verboten.");
+                }
+                expandedPath = expandedPath.Replace(placeholder, Uri.EscapeDataString(strVal), StringComparison.OrdinalIgnoreCase);
                 usedArgs.Add(k);
             }
         }
@@ -302,6 +308,15 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         {
             if (!usedArgs.Contains(k) && v != null && v is not IEnumerable<object>)
             {
+                // SEC-5: Disallow injection of sensitive security or tenant context parameter names
+                if (k.Equals("tenant_id", StringComparison.OrdinalIgnoreCase) ||
+                    k.Equals("tid", StringComparison.OrdinalIgnoreCase) ||
+                    k.Equals("tenant", StringComparison.OrdinalIgnoreCase) ||
+                    k.Equals("isAdmin", StringComparison.OrdinalIgnoreCase) ||
+                    k.Equals("role", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
                 queryParams.Add($"{Uri.EscapeDataString(k)}={Uri.EscapeDataString(v.ToString() ?? string.Empty)}");
             }
         }

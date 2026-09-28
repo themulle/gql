@@ -67,25 +67,11 @@ public sealed class ClientTierResolver : IClientTierResolver
 
     private (string SubjectId, ClientTier Tier) ResolveApiKey(string apiKey)
     {
-        if (apiKey.Contains("enterprise", StringComparison.OrdinalIgnoreCase))
-        {
-            return ("api_enterprise", ClientTier.Enterprise);
-        }
-        if (apiKey.Contains("internal", StringComparison.OrdinalIgnoreCase))
-        {
-            return ("api_internal", ClientTier.Internal);
-        }
-        if (apiKey.Contains("standard", StringComparison.OrdinalIgnoreCase))
-        {
-            return ("api_standard", ClientTier.Standard);
-        }
-        if (apiKey.Contains("free", StringComparison.OrdinalIgnoreCase))
-        {
-            return ("api_free", ClientTier.Free);
-        }
-
+        // SEC-1: Cryptographically hash the API key to ensure a unique, deterministic SubjectId
+        // and eliminate shared-identity collision and substring-based tier privilege escalation.
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(apiKey));
-        var subjectId = "key_" + Convert.ToHexString(hashBytes)[..16].ToLowerInvariant();
+        var hexHash = Convert.ToHexString(hashBytes).ToLowerInvariant();
+        var subjectId = "key_" + hexHash[..16];
 
         var now = DateTimeOffset.UtcNow;
         if (_apiKeyCache.TryGetValue(subjectId, out var cached) && cached.Expiry > now)
@@ -93,6 +79,8 @@ public sealed class ClientTierResolver : IClientTierResolver
             return (subjectId, cached.Tier);
         }
 
+        // Unregistered / untrusted API keys default to Standard tier.
+        // Enterprise or Internal tiers must never be granted via client-supplied substring keywords.
         var tier = ClientTier.Standard;
         _apiKeyCache[subjectId] = (tier, now.AddMinutes(10));
         return (subjectId, tier);

@@ -746,6 +746,12 @@ public partial class SqliteGovernanceRepository
                 throw new InvalidOperationException($"Request {requestId} is in status '{currentStatus}' and cannot be approved.");
             }
 
+            // Four-eyes principle / Separation of duties check at repository layer
+            if (req.RequesterSid == approverSid)
+            {
+                throw new InvalidOperationException("Funktionstrennung verletzt: Der Antragsteller kann den eigenen Consent-Antrag nicht genehmigen.");
+            }
+
             bool isAuthorized = await IsAuthorizedApproverForTableInternalAsync(req.TableIdentifier, approverSid, ct);
             if (!isAuthorized)
             {
