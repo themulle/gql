@@ -68,3 +68,20 @@ public sealed record DbtSyncResult(
     IReadOnlyList<string> Warnings,
     string? ErrorMessage = null
 );
+
+public sealed record DbtContractBreakingChange(
+    TableIdentifier Table,
+    string ColumnName,
+    string ChangeType, // "DROPPED_COLUMN", "DATA_TYPE_MISMATCH"
+    string? ExistingType,
+    string? ProposedType,
+    string Description
+);
+
+public sealed record DbtContractValidationResult(
+    bool IsCompatible,
+    int ValidatedModelsCount,
+    IReadOnlyList<DbtContractBreakingChange> BreakingChanges,
+    IReadOnlyList<string> Warnings
+);
+

@@ -608,6 +608,71 @@ public static class GatewayApplicationBuilderExtensions
             return Results.Content(yaml, "text/yaml; charset=utf-8");
         }).RequireAuthorization();
 
+        app.MapGet("/api/extensions/dbt/proposals", async (
+            IDbtMetadataIngestionService dbtService,
+            HttpContext context) =>
+        {
+            TableIdentifier? table = null;
+            if (context.Request.Query.TryGetValue("database", out var db) &&
+                context.Request.Query.TryGetValue("schema", out var schema) &&
+                context.Request.Query.TryGetValue("table", out var tableName))
+            {
+                table = new TableIdentifier(db!, schema!, tableName!);
+            }
+
+            var proposals = await dbtService.GetPendingProposalsAsync(table, context.RequestAborted);
+            return Results.Ok(proposals);
+        }).RequireAuthorization();
+
+        app.MapPost("/api/extensions/dbt/proposals/{id:guid}/approve", async (
+            Guid id,
+            IDbtMetadataIngestionService dbtService,
+            HttpContext context) =>
+        {
+            var user = context.User.Identity?.Name ?? context.User.GetUserSid()?.Value ?? "system_admin";
+            try
+            {
+                var approved = await dbtService.ApproveProposalAsync(id, user, context.RequestAborted);
+                return Results.Ok(approved);
+            }
+            catch (System.Collections.Generic.KeyNotFoundException)
+            {
+                return Results.NotFound(new { error = $"Proposal '{id}' not found." });
+            }
+        }).RequireAuthorization();
+
+        app.MapPost("/api/extensions/dbt/proposals/{id:guid}/reject", async (
+            Guid id,
+            IDbtMetadataIngestionService dbtService,
+            HttpContext context) =>
+        {
+            var user = context.User.Identity?.Name ?? context.User.GetUserSid()?.Value ?? "system_admin";
+            try
+            {
+                var rejected = await dbtService.RejectProposalAsync(id, user, context.RequestAborted);
+                return Results.Ok(rejected);
+            }
+            catch (System.Collections.Generic.KeyNotFoundException)
+            {
+                return Results.NotFound(new { error = $"Proposal '{id}' not found." });
+            }
+        }).RequireAuthorization();
+
+
+        app.MapPost("/api/extensions/dbt/validate-contract", async (
+            HttpContext context,
+            IDbtContractValidator validator) =>
+        {
+            if (context.Request.ContentLength > 100 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Manifest size exceeds maximum allowed size (100 MB)." });
+            }
+
+            var result = await validator.ValidateContractsStreamAsync(context.Request.Body, context.RequestAborted);
+            return result.IsCompatible ? Results.Ok(result) : Results.UnprocessableEntity(result);
+        }).RequireAuthorization();
+
+
         // OData v4 / Power BI & Excel Direct Adapter Endpoints
         app.MapGet("/odata/v4", async (
             IODataHandler odataHandler,

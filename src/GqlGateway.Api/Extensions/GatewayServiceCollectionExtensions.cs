@@ -411,9 +411,19 @@ public static class GatewayServiceCollectionExtensions
 
         // Modern Lakehouse Apache Iceberg Connector (P4 / ADR-015)
         services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.LocalStorageProvider>();
-        services.AddHttpClient<GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider>();
-        services.AddHttpClient<GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider>();
+        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider));
+        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider));
+        services.AddSingleton(sp => new GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider(
+            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider>>()));
+        services.AddSingleton(sp => new GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider(
+            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
+            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider>>()));
         services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.CompositeLakehouseStorageProvider>();
+
+
         services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.ILakehouseStorageProvider>(sp => sp.GetRequiredService<GqlGateway.Extensions.Lakehouse.Services.CompositeLakehouseStorageProvider>());
         services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.IIcebergMetadataReader, GqlGateway.Extensions.Lakehouse.Services.IcebergMetadataReader>();
         services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.IIcebergPartitionPruner, GqlGateway.Extensions.Lakehouse.Services.IcebergPartitionPruner>();

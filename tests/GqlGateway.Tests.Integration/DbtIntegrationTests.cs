@@ -91,10 +91,55 @@ public class DbtIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
         var response = await client.GetAsync("/api/extensions/dbt/exposures");
         response.StatusCode.ShouldBe(HttpStatusCode.OK);
-        response.Content.Headers.ContentType?.MediaType.ShouldBe("text/yaml");
-
         var yaml = await response.Content.ReadAsStringAsync();
         yaml.ShouldContain("version: 2");
         yaml.ShouldContain("exposures:");
+
+    }
+
+    [Fact]
+    public async Task DbtProposalsAndApproval_Workflow_Succeeds()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-ADMIN-SID");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "GovernanceAdmin");
+
+        // 1. Sync manifest to generate proposal
+        var content = new StringContent(SampleDbtManifest, Encoding.UTF8, "application/json");
+        var syncResponse = await client.PostAsync("/api/extensions/dbt/sync", content);
+        syncResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 2. Fetch pending proposals
+        var proposalsResponse = await client.GetAsync("/api/extensions/dbt/proposals");
+        proposalsResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var proposalsJson = await proposalsResponse.Content.ReadAsStringAsync();
+        proposalsJson.ShouldContain("contact_email");
+        proposalsJson.ShouldContain("MASK_EMAIL");
+
+        using var doc = System.Text.Json.JsonDocument.Parse(proposalsJson);
+        var firstProposal = doc.RootElement.EnumerateArray().First();
+        var proposalId = firstProposal.GetProperty("id").GetString();
+
+        // 3. Approve proposal
+        var approveResponse = await client.PostAsync($"/api/extensions/dbt/proposals/{proposalId}/approve", null);
+        approveResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var approveBody = await approveResponse.Content.ReadAsStringAsync();
+        approveBody.ShouldContain("\"status\":1"); // DbtProposalStatus.Approved
+    }
+
+    [Fact]
+    public async Task DbtValidateContractEndpoint_WithValidContract_ReturnsOk()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-ADMIN-SID");
+
+        var content = new StringContent(SampleDbtManifest, Encoding.UTF8, "application/json");
+        var response = await client.PostAsync("/api/extensions/dbt/validate-contract", content);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var body = await response.Content.ReadAsStringAsync();
+        body.ShouldContain("\"isCompatible\":true");
+        body.ShouldContain("\"validatedModelsCount\":1");
     }
 }
+

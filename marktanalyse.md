@@ -23,7 +23,9 @@ Der Markt für Enterprise GraphQL und API Gateways wird 2025/2026 durch drei fun
 4. **Enterprise Customizing, C#-Ökosystem & Sonderfreigabe-Workflows:**
    * In Enterprise-Landschaften dominiert C#/.NET im Backend. Etablierte Gateways (Apollo in Rust/Rhai, Kong in Lua, Tyk/Envoy in Go/C++) erzwingen Fremdsprachen oder bestrafen Anpassungen mit hohen gRPC-Sidecar-Latenzen. Zudem agieren sie rein binär (Allow/Deny), während Enterprises dynamische Sonderfreigaben (JIT, 4-Augen, Break-Glass) fordern.
    * **Unsere Marktposition:** GqlGateway schließt diese Lücke durch ein **Dual-Mode Extensibility Framework** (native C# In-Process DLLs/NuGet im Hot Path für Zero-IPC-Latenz sowie out-of-process gRPC) und transformiert das Gateway zur aktiven **Governance-Workflow-Engine**, die Sonderfreigaben direkt im Ingress/Egress-Lifecycle mit ServiceNow/Jira verzahnt.
-
+5. **dbt Data-Mesh & Data-Contract Governance (Zero-Fault Data Quality):**
+   * dbt hat sich de facto als Standard für Datenmodellierung und Transformationen in modernen Data Warehouses und Lakehouses etabliert. Konkurrierende Gateways (Apollo, Hasura, Cosmo) agieren blind gegenüber dem Upstream-Zustand: Sie wissen weder, ob `dbt test` erfolgreich war, noch ob dbt Model Contracts eingehalten werden.
+   * **Unsere Marktposition:** GqlGateway schlägt die Brücke zwischen Data Engineering und API-Konsumenten: Automatisierte Data-Health-Prüfung (`run_results.json`) mit Circuit-Breaker-Quarantäne, CI/CD Breaking-Change Detection für dbt Model Contracts vor dem Deployment und Live-Telemetrie-Rückspiegelung in dbt Exposures.
 
 ---
 
@@ -34,6 +36,7 @@ Bestandsaufnahme aller Gateway-Module zur Dokumentation der Marktreife (General 
 | Modul / Feature | Zustand im Repository | Reifegrad | Status & verbleibende Roadmap-Gaps |
 | :--- | :--- | :---: | :--- |
 | **Data Catalog Connectors (P1)** | Vollständig implementiert ([`PurviewDataCatalogClient`](file:///root/gql/src/GqlGateway.Infrastructure/DataCatalog/PurviewDataCatalogClient.cs), [`CollibraDataCatalogClient`](file:///root/gql/src/GqlGateway.Infrastructure/DataCatalog/CollibraDataCatalogClient.cs), [`OpenMetadataDataCatalogClient`](file:///root/gql/src/GqlGateway.Infrastructure/DataCatalog/OpenMetadataDataCatalogClient.cs), [`DataCatalogClientFactory`](file:///root/gql/src/GqlGateway.Infrastructure/DataCatalog/DataCatalogClientFactory.cs), [`DataCatalogSyncService`](file:///root/gql/src/GqlGateway.Application/DataCatalog/Services/DataCatalogSyncService.cs), Webhook HMAC-Validierung). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Native REST-Clients mit Polly 8 Resilienz, Entra ID OAuth, PII- & DSGVO-Art.-9-Mapping und Epoch-Invalidierung aktiv. |
+| **dbt Governance & Lineage (F-DBT)** | Streaming Parser ([`DbtArtifactStreamingParser`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtArtifactStreamingParser.cs)), Ingestion Service ([`DbtMetadataIngestionService`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtMetadataIngestionService.cs)), Proposal Repository ([`InMemoryDbtProposalRepository`](file:///root/gql/src/GqlGateway.Infrastructure/Persistence/InMemoryDbtProposalRepository.cs)), Lineage Graph Store ([`ILineageGraphStore`](file:///root/gql/src/GqlGateway.Application/Interfaces/ILineageGraphStore.cs)), Exposures Export ([`DbtExposurePublisher`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtExposurePublisher.cs)). | **90% (GA)** | 🟢 **Manifest-Ingestion & Lineage GA.** Ausbau Phase 1: `run_results.json` Health Circuit Breaker, Model Contract Breaking-Change CI Gate und Live-Telemetrie Exposures. |
 | **Client Quotas & Cost Telemetrie (P2)** | Vollständig implementiert ([`ClientTierResolver`](file:///root/gql/src/GqlGateway.Application/Caching/Services/ClientTierResolver.cs), [`CostAndQuotaMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/CostAndQuotaMiddleware.cs), [`RedisRateLimiterService`](file:///root/gql/src/GqlGateway.Infrastructure/RateLimiting/RedisRateLimiterService.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Client-Tiering (`Free`, `Standard`, `Enterprise`, `Internal`), atomares Lua Token Bucket in Redis, Response-Header (`X-Query-Cost`, `X-RateLimit-*`) und `extensions.cost`. |
 | **CDN Cache-Tag Headers & Edge Invalidation (P3)** | Vollständig implementiert ([`CdnCacheTagVisitor`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/CdnCacheTagVisitor.cs), [`CdnCacheTagMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/CdnCacheTagMiddleware.cs), [`CloudflareCdnPurgeService`](file:///root/gql/src/GqlGateway.Infrastructure/Cdn/CloudflareCdnPurgeService.cs), [`FastlyCdnPurgeService`](file:///root/gql/src/GqlGateway.Infrastructure/Cdn/FastlyCdnPurgeService.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** AST-Tag-Extraktion, Zero-Trust Cache Isolation (`private, no-store` bei RLS/Maskierung) und asynchrone Mutation-Invalidierung via Outbox. |
 | **Subgraph Federation Router (P7)** | Vollständig implementiert ([`SubgraphSecurityDelegatingHandler`](file:///root/gql/src/GqlGateway.GraphQL/Federation/SubgraphSecurityDelegatingHandler.cs), [`SubgraphResultMaskingMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Federation/SubgraphResultMaskingMiddleware.cs), [`FusionGatewayExtensions`](file:///root/gql/src/GqlGateway.GraphQL/Federation/FusionGatewayExtensions.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Hot Chocolate Fusion Subgraph Router mit Zero-Trust Client Token Forwarding und In-Memory Result Masking auf aggregierten Daten. |
@@ -299,6 +302,69 @@ flowchart TD
 
 ---
 
+### 3.5 Strategische Differenzierung: dbt Data Mesh & Contract Governance Moat (Zero-Fault Data Quality & Breaking-Change Prevention)
+
+In modernen Enterprise-Datenarchitekturen ist dbt der De-facto-Standard für Datenmodellierung, Transformationen und Qualitätsprüfung im Data Warehouse und Lakehouse. Konkurrierende API- und GraphQL-Gateways (Apollo GraphOS, Hasura DDN, WunderGraph Cosmo) besitzen keinerlei Verständnis für Upstream-Data-Pipelines. Sie agieren blind gegenüber Datenfehlern und Schema-Brüchen.
+
+GqlGateway schließt diese kritische Lücke durch die **tiefe bidirektionale Verzahnung mit dem dbt-Ökosystem**:
+
+```mermaid
+flowchart TD
+    subgraph DbtEcosystem ["dbt Ecosystem & Data Platform"]
+        MANIFEST["manifest.json (Models, Contracts, Lineage)"]
+        RUN["run_results.json (Execution & Test Status)"]
+        CATALOG["catalog.json (Physical Column Types & Stats)"]
+        SEMANTIC["Semantic Models & Metrics (MetricFlow)"]
+    end
+
+    subgraph GatewayCore ["GqlGateway dbt Mesh Engine"]
+        INGEST["DbtMetadataIngestionService"]
+        CIRCUIT["Data Quality Circuit Breaker (Quarantäne)"]
+        VALIDATOR["DbtContractValidator (CI/CD Breaking Change Gate)"]
+        EXPOSURE["Live-Telemetry Exposure Publisher"]
+        CASBIN_SYNC["Policy & RLS Auto-Sync (meta.casbin / meta.rls)"]
+    end
+
+    MANIFEST --> INGEST
+    RUN --> INGEST --> CIRCUIT
+    CATALOG --> INGEST
+    SEMANTIC --> INGEST
+    VALIDATOR <-->|Pre-Merge CI Check| MANIFEST
+    EXPOSURE -.->|Live Ops, Latency & Consumers| DbtEcosystem
+```
+
+#### Die 7 Säulen der GqlGateway dbt Governance:
+
+1. **`run_results.json` Data Health Ingestion & Circuit Breaker (F-DBT-1):**
+   * *Problem bei Mitbewerbern:* Schlägt ein dbt-Test (`dbt test`, z. B. `not_null`, `unique`, Relationship-Integrität) fehl oder bricht ein Modellbau ab, liefern Apollo oder Hasura veraltete oder fehlerhafte Daten an Clients aus.
+   * *GqlGateway Moat:* Ingestion von `run_results.json` nach Pipeline-Läufen. Schlägt ein Modell oder kritischer Test fehl, aktiviert das Gateway automatisch eine Quarantäne: Anfragen werden entweder fail-closed blockiert oder mit aussagekräftigen GraphQL Execution Warnings (`extensions.dbt_health: { status: "DEGRADED", failed_tests: [...] }`) beantwortet.
+
+2. **dbt Model Contract Enforcement & Breaking-Change CI Gate (F-DBT-2):**
+   * *Problem bei Mitbewerbern:* Wenn Data Engineers in dbt Spalten umbenennen, löschen oder Typen ändern, brechen GraphQL-Clients erst zur Laufzeit in Produktion.
+   * *GqlGateway Moat:* `IDbtContractValidator` und Endpoint `POST /api/extensions/dbt/validate-contract`. Im PR-CI-Workflow wird das neue dbt-Manifest gegen das aktive GraphQL-Schema und registrierte Client-Queries geprüft. Breaking Changes werden gemeldet, bevor der Code in Produktion gemergt wird.
+
+3. **Live Telemetry-Driven Exposures (F-DBT-3):**
+   * *Problem bei Mitbewerbern:* dbt Exposures müssen manuell gepflegt werden und veralten sofort.
+   * *GqlGateway Moat:* Das Gateway reichert das generierte `exposures.yaml` automatisch mit realen Telemetriedaten an: Welche GraphQL-Operationen und Konsumenten (z. B. `ExecutiveDashboard`, `PartnerPortal`) fragen ein Modell ab? Inklusive 30-Tage Abfragehäufigkeit und P99-Latenz. Data Engineers sehen vor Refactorings in den dbt Docs sofort den Impact auf reale Applikationen.
+
+4. **Zero-Touch dbt Cloud & Orchestrator Webhook Integration (F-DBT-4):**
+   * *Problem bei Mitbewerbern:* Erfordert manuelle API-Skripte und periodisches Polling.
+   * *GqlGateway Moat:* Nativer Webhook-Receiver für dbt Cloud (`job.run.completed`) und Airflow/Dagster mit HMAC-SHA256 Signaturprüfung und automatischem Artefakt-Download.
+
+5. **dbt Semantic Layer / Metrics Auto-Mapping (F-DBT-5):**
+   * *Problem bei Mitbewerbern:* Aggregationen müssen mühsam manuell in GraphQL-Resolvern nachprogrammiert werden.
+   * *GqlGateway Moat:* Automatische Generierung typisierter analytischer GraphQL-Abfragen direkt aus dbt `semantic_models` und `metrics` (Dimensions, Time Grains, Aggregations) unter voller Wahrung aller Casbin-ABAC- und Maskierungsregeln.
+
+6. **Policy & RLS Auto-Sync aus dbt Metadaten (F-DBT-6):**
+   * *Problem bei Mitbewerbern:* Berechtigungsregeln müssen doppelt gepflegt werden: im dbt-Repo und im Gateway.
+   * *GqlGateway Moat:* Übersetzung von `meta.casbin_roles` und `meta.rls_filter` in Gateway-Vorschläge mit Zero-Trust 4-Augen-Freigabe-Workflow.
+
+7. **dbt Mesh Multi-Project Cross-Model Federation (F-DBT-7):**
+   * *Problem bei Mitbewerbern:* Monolithischer Ansatz scheitert in dezentralen Data-Mesh-Organisationen.
+   * *GqlGateway Moat:* Unterstützung multipler dbt-Manifeste pro Domäne (`manifest_finance.json`, `manifest_sales.json`) mit automatischem Cross-Project Lineage Stitching im `ILineageGraphStore`.
+
+---
+
 ## 4. Priorisierungs-Framework: Aktualisierte RICE-C Matrix
 
 Mit dem erfolgreichen Abschluss aller Kernkomponenten (P1, P2, P3, P4, P5, P7, P8, P9 sowie Casbin Hot-Reload, MCP Stdio/HTTP, ITSM Clients und GDPR PDF/OpenLineage) priorisiert das RICE-C Modell die neuen Enterprise-Differenzierungsinitiativen:
@@ -315,14 +381,21 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **P9: Ingress/Egress Extensibility SDK & Workflow Interceptors** | 8 | 2.5 | 90% | 1.6 | 3 W | **9.6** | ✅ **100% Abgeschlossen (GA)** |
 | **P8: Schema Registry & CI/CD Checks (`rover`-Pendant)** | 6 | 1.8 | 85% | 1.2 | 3.5 W | **3.1** | ✅ **100% Abgeschlossen (GA)** |
 | **P4: Modern Lakehouse Connector (Iceberg / Parquet)** | 6 | 3.0 | 90% | 1.3 | 4 W | **4.3** | ✅ **100% Abgeschlossen (GA)** |
+| **F-DBT-1: `run_results.json` Health Telemetry & Circuit Breaker** | 9 | 2.5 | 95% | 1.8 | 1.0 W | **38.4** | 🚀 **Top-Priorität (Wave 1)** |
+| **F-DBT-3: Live Telemetry-Driven Exposures (Ops, P99, Consumers)** | 7 | 2.0 | 90% | 1.2 | 0.8 W | **18.9** | 🚀 **Top-Priorität (Wave 1)** |
+| **F-DBT-2: dbt Model Contract Enforcement & Breaking Change Gate** | 8 | 2.5 | 90% | 1.5 | 1.5 W | **18.0** | 🚀 **Top-Priorität (Wave 1)** |
 | **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | 🟢 **Höchste Priorität (Wave 1)** |
 | **P11: Smart Schema Deprecation & Sunsetting Engine** | 9 | 2.2 | 95% | 1.4 | 2 W | **13.2** | 🟢 **Top Priorität (Wave 1)** |
+| **F-DBT-4: dbt Cloud & Orchestrator HMAC Webhook Receiver** | 8 | 1.5 | 90% | 1.2 | 1.0 W | **12.9** | 🟢 **Top Priorität (Wave 1)** |
 | **P12: Differential Privacy & Dynamic Perturbation** | 7 | 3.0 | 85% | 2.0 | 3 W | **11.9** | 🟢 **Top Priorität (Wave 1)** |
+| **F-DBT-6: Policy & RLS Auto-Sync aus dbt Metadaten** | 7 | 2.0 | 85% | 1.5 | 1.5 W | **11.9** | 🟢 **Top Priorität (Wave 1)** |
 | **P13: Data Contract & FinOps Chargeback Engine** | 8 | 2.0 | 90% | 1.3 | 2 W | **9.4** | 🟡 **Mittlere Priorität (Wave 2)** |
-| **P14: Zero-Trust Lakehouse Arrow Flight Governor** | 6 | 2.8 | 85% | 1.4 | 3.5 W | **5.7** | 🟡 **Mittlere Priorität (Wave 2)** |
-| **P15: Confidential Compute Enclave Support (SGX/SEV)** | 5 | 2.8 | 80% | 1.8 | 3 W | **6.7** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P16: Post-Quantum Cryptography (ML-KEM / PQC)** | 6 | 2.0 | 85% | 1.6 | 2 W | **8.2** | 🟡 **Mittlere Priorität (Wave 2)** |
+| **P15: Confidential Compute Enclave Support (SGX/SEV)** | 5 | 2.8 | 80% | 1.8 | 3 W | **6.7** | 🟡 **Mittlere Priorität (Wave 2)** |
+| **F-DBT-5: dbt Semantic Layer & MetricFlow Auto-Mapping** | 6 | 3.0 | 80% | 1.0 | 2.5 W | **5.7** | 🟡 **Mittlere Priorität (Wave 2)** |
+| **P14: Zero-Trust Lakehouse Arrow Flight Governor** | 6 | 2.8 | 85% | 1.4 | 3.5 W | **5.7** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P6: Data Steward Studio & Policy Simulator UI** | 7 | 2.2 | 90% | 1.6 | 4 W | **5.5** | ⚪ *UI-Komponente (Separat geführt)* |
+| **F-DBT-7: dbt Mesh Multi-Project Cross-Model Federation** | 5 | 2.0 | 75% | 1.0 | 2.0 W | **3.7** | 🔭 **Wave 2 / Wave 3** |
 
 ---
 
@@ -344,21 +417,27 @@ flowchart TD
         D10["MCP Stdio/HTTP Runner & Semantic AI Guardrails"]
         D11["ITSM Outbound REST Clients (ServiceNow / Jira) & Recertification"]
         D12["DSGVO Art. 15 PDF Export & OpenLineage RunEvents"]
+        D13["dbt Streaming Ingestion & Lineage Graph Integration"]
     end
 
-    subgraph Wave1["Wave 1: Enterprise Governance & Zero-Leakage (Q2/Q3 2026)"]
+    subgraph Wave1["Wave 1: Enterprise Governance, dbt Quality & Zero-Leakage (Q2/Q3 2026)"]
         direction TB
-        W1_1["P10 Policy Simulation Sandbox (What-If Replay via Audit Logs)"]
-        W1_2["P11 Smart Schema Deprecation & Automated Client Sunsetting"]
-        W1_3["P12 Federated Differential Privacy & Dynamic Epsilon Perturbation"]
+        W1_1["F-DBT-1 run_results Data Health Circuit Breaker & Quarantäne"]
+        W1_2["F-DBT-2/3 dbt Model Contract CI Gate & Live Telemetry Exposures"]
+        W1_3["P10 Policy Simulation Sandbox (What-If Replay via Audit Logs)"]
+        W1_4["P11 Smart Schema Deprecation & Automated Client Sunsetting"]
+        W1_5["P12 Federated Differential Privacy & Dynamic Epsilon Perturbation"]
+        W1_6["F-DBT-4/6 dbt Cloud Webhooks & Policy Auto-Sync"]
     end
 
-    subgraph Wave2["Wave 2: FinOps, Lakehouse Acceleration & Post-Quantum (Q4 2026 / 2027)"]
+    subgraph Wave2["Wave 2: FinOps, Lakehouse Acceleration, Semantic Layer & Post-Quantum (Q4 2026 / 2027)"]
         direction TB
-        W2_1["P13 Data Contract & FinOps Chargeback Engine"]
-        W2_2["P14 Zero-Trust Arrow Flight Governor für Iceberg/Parquet"]
-        W2_3["P15 Confidential Compute Enclave Support (Intel SGX / AMD SEV)"]
-        W2_4["P16 Post-Quantum Cryptography Hybrid TLS (ML-KEM)"]
+        W2_1["F-DBT-5 dbt Semantic Layer / MetricFlow GraphQL Resolvers"]
+        W2_2["P13 Data Contract & FinOps Chargeback Engine"]
+        W2_3["P14 Zero-Trust Arrow Flight Governor für Iceberg/Parquet"]
+        W2_4["P15 Confidential Compute Enclave Support (Intel SGX / AMD SEV)"]
+        W2_5["P16 Post-Quantum Cryptography Hybrid TLS (ML-KEM)"]
+        W2_6["F-DBT-7 dbt Mesh Cross-Project Federation"]
     end
 
     Delivered --> Wave1
@@ -367,11 +446,13 @@ flowchart TD
 
 ### Konkrete Handlungsempfehlungen für die strategische Umsetzung:
 
-1. **P10 Policy Simulation Sandbox (Score: 14.5):**
-   * Höchster RICE-C-Score: Beseitigt die größte Adoptionshürde in regulierten Großkonzernen, indem Sicherheits- und Berechtigungsänderungen im Gateway vor der Freigabe risikofrei gegen Produktions-Auditlogs simuliert werden.
-2. **P11 Smart Schema Deprecation Engine (Score: 13.2):**
+1. **F-DBT-1 & F-DBT-2 dbt Data Health Circuit Breaker & Contract Gate (Scores: 38.4 & 18.0):**
+   * Mit Abstand die höchsten RICE-C-Scores: Schützen GraphQL-Clients vor verunreinigten oder fehlerhaften Daten (`dbt test` Failures) und verhindern Breaking Changes durch dbt Model Refactorings bereits vor dem Deployment im PR-CI-Gate.
+2. **P10 Policy Simulation Sandbox (Score: 14.5):**
+   * Beseitigt die größte Adoptionshürde in regulierten Großkonzernen, indem Sicherheits- und Berechtigungsänderungen im Gateway vor der Freigabe risikofrei gegen Produktions-Auditlogs simuliert werden.
+3. **P11 Smart Schema Deprecation Engine (Score: 13.2):**
    * Schließt die gravierende Lücke zwischen Schema-Evolution und Client-Abbrüchen durch ein automatisiertes 3-Stufen-Sunsetting (Warning -> Brownout -> Sunset) mit direkter ITSM-Benachrichtigung an API-Consumer.
-3. **P12 Federated Differential Privacy (Score: 11.9):**
+4. **P12 Federated Differential Privacy (Score: 11.9):**
    * Schafft ein unschlagbares Alleinstellungsmerkmal bei Enterprise-Data-Mesh- und Analytics-Initiativen (DSGVO Erwägungsgrund 26), indem Aggregationsabfragen mathematisch garantiert de-anonymisiert werden.
-4. **P13 & P14 FinOps & Arrow Flight Lakehouse (Scores: 9.4 & 5.7):**
+5. **P13 & P14 FinOps & Arrow Flight Lakehouse (Scores: 9.4 & 5.7):**
    * Erlaubt transparente interne Verrechnung von API-Rechenkosten und beschleunigt analytische GraphQL-Queries auf Objektspeichern um ein Vielfaches.

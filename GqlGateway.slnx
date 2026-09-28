@@ -5,6 +5,7 @@
     <Project Path="src/GqlGateway.Domain/GqlGateway.Domain.csproj" />
     <Project Path="src/GqlGateway.GraphQL/GqlGateway.GraphQL.csproj" />
     <Project Path="src/GqlGateway.Infrastructure/GqlGateway.Infrastructure.csproj" />
+    <Project Path="../gql_extensions/src/GqlGateway.Extensions/GqlGateway.Extensions.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/GqlGateway.Benchmarks/GqlGateway.Benchmarks.csproj" />
@@ -13,5 +14,7 @@
     <Project Path="tests/GqlGateway.Tests.Architecture/GqlGateway.Tests.Architecture.csproj" />
     <Project Path="tests/GqlGateway.Tests.Integration/GqlGateway.Tests.Integration.csproj" />
     <Project Path="tests/GqlGateway.Tests.Unit/GqlGateway.Tests.Unit.csproj" />
+    <Project Path="../gql_extensions/tests/GqlGateway.Extensions.Tests/GqlGateway.Extensions.Tests.csproj" />
   </Folder>
+
 </Solution>
