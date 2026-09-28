@@ -250,7 +250,35 @@ sequenceDiagram
 ### 8.5 Modern Identity Abstraction, M2M Service Principals & Insecure Modes
 - **Hybrid Identity Provider Abstraction (`IIdentityProvider`)**: Allows simultaneous operation of on-prem Active Directory (Kerberos) and cloud-native Microsoft Entra ID (Azure AD / OIDC) without coupling domain components to concrete IdPs.
 - **Machine-to-Machine (M2M) Service Principals**: Client-credentials and mTLS authentication for background batch jobs and downstream services, issuing dedicated service principal consents (`SP-<client_id>` SIDs).
-- **Explicit Insecure Modes (`warn_` and `danger_`)**: Pragmatic developer onboarding and webhook integration controls with risk-labeled flags (`warn_` for medium impact, `danger_` for critical impact) that fail-closed by default and emit conspicuous operational alerts when engaged.
+### 8.6 Apache Iceberg Lakehouse Connector & Parquet Metadata Pruning
+- **Apache Iceberg v2 Lakehouse Engine**: Direct querying of tabular datasets stored in open table formats on object storage (Amazon S3 with SigV4, Azure Blob, and local filesystems).
+- **Vectorized Partition & Stats Pruning**: Evaluates table snapshot manifests and column min/max statistics to prune unneeded Parquet files prior to data loading.
+- **Lakehouse Metadata Caching**: Two-tier caching of table metadata and manifest lists with configurable TTL (`MetadataCacheTtlMinutes`).
+- **Pushdown Zero-Trust Governance**: Applies column-level masking and Casbin ABAC row-level security pushdown directly to lakehouse execution plans.
+
+### 8.7 Realtime Event Subscriptions & In-Stream Casbin RLS
+- **GraphQL Subscriptions Engine**: WebSocket (`graphql-transport-ws`) and Server-Sent Events (SSE) streaming.
+- **In-Stream Casbin RLS Policy Enforcement**: `StreamRlsPolicyEnforcer` evaluates dynamic ABAC rules per emitted event; unconsented events are dropped in real-time.
+- **Debezium & Kafka CDC Ingestion**: `DebeziumCdcParser` decodes relational change-data-capture payloads (`op: c, u, d`) into typed subscription channels with strict tenant isolation.
+
+### 8.8 Hot Chocolate Fusion Subgraph Federation
+- **Federated Query Router**: Composes distributed microservice subgraphs into a unified supergraph schema.
+- **Zero-Trust Context Forwarding**: `SubgraphSecurityDelegatingHandler` securely forwards caller identity and SIDs to downstream subgraphs.
+- **In-Memory Result Masking**: `SubgraphResultMaskingMiddleware` enforces masking rules across aggregated federated response trees.
+
+### 8.9 Model Context Protocol (MCP) AI Gateway & Semantic Guardrails
+- **Model Context Protocol Server**: Exposes GraphQL schemas and parameterized queries as AI Agent Tools via Stdio and Streamable HTTP/SSE (`/mcp`, `/mcp/sse`).
+- **Semantic Prompt Injection Defense**: `SemanticPromptGuardrail` inspects tool arguments against OWASP LLM01 prompt injection patterns, ChatML delimiters, and Base64 evasion techniques.
+- **AI Data Guardrail Engine**: Dynamic PII scrubbing, token consumption budgeting, query cost limits, and session ownership enforcement.
+
+### 8.10 dbt Data Mesh & Contract Governance
+- **Streaming Artifact Parsing**: High-throughput zero-buffer parser for `manifest.json`, `catalog.json`, and `run_results.json`.
+- **Data Health Circuit Breaker**: Tables with failing upstream `dbt test` executions are quarantined (`CircuitBreaker: Open`) to prevent serving dirty data.
+- **Model Contract Breaking-Change CI Gate**: Validates dbt model contracts against active schemas before deployment.
+
+### 8.11 Dual-Mode Enterprise Extensibility Framework
+- **In-Process C# Middlewares**: High-performance `.dll` / NuGet middlewares plugged into ASP.NET Core DI pipeline with direct AST access, zero IPC latency (< 0.1ms), and zero-copy `ReadOnlySpan<T>`.
+- **Out-of-Process gRPC Coprocess**: Polyglot gRPC interceptors for isolated microservice lifecycles.
 
 ---
 
@@ -268,13 +296,16 @@ sequenceDiagram
 - [ADR-011: Modern Hybrid Identity Abstraction & M2M Service Principals](../adr/ADR-011-modern-identity-abstraction-and-service-principals.md)
 - [ADR-012: Insecure Modes & Pragmatic Onboarding Governance](../adr/ADR-012-insecure-modes-and-getting-started-governance.md)
 - [ADR-013: Graph Lineage Downstream Impact & GDPR Art. 15 Disclosure](../adr/ADR-013-data-lineage-and-gdpr-art15-disclosure.md)
+- [ADR-014: Enterprise Model Context Protocol & AI Data Guardrails](../adr/ADR-014-enterprise-model-context-protocol-and-ai-data-guardrails.md)
+- [ADR-015: Apache Iceberg Lakehouse Connector & Zero-Trust Pushdown](../adr/ADR-015-apache-iceberg-lakehouse-connector-and-zero-trust-pushdown.md)
+- [ADR-016: Security Findings Remediation & Hardening](../adr/ADR-016-security-findings-remediation.md)
 
 ---
 
 ## 10. Quality Requirements
 - **Quality Gate 1 (Zero Warnings & Strict Typing)**: Solution compiles with zero warnings under `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>`.
 - **Quality Gate 2 (Architecture Integrity)**: NetArchTest asserts Domain and Application have zero inward or improper dependencies, isolating Hot Chocolate to GraphQL.
-- **Quality Gate 3 (TDD Verification)**: 100% test pass rate (513 / 513 tests green across 401 Unit, 5 Architecture, 83 Integration, and 24 Extensions tests).
+- **Quality Gate 3 (TDD Verification)**: 100% test pass rate (735 / 735 tests green across 589 Unit, 5 Architecture, 98 Integration, and 43 Extensions tests).
 - **Quality Gate 4 (Walking Skeleton End-to-End)**: Integration tests verify full request pipeline, Traefik ForwardAuth Ingress, Basic Auth login, consent resolution, and graceful drain.
 
 ---

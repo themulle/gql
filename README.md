@@ -4,11 +4,18 @@
 [![HotChocolate](https://img.shields.io/badge/GraphQL-HotChocolate%2014-F00E2B?logo=graphql)](https://chillicream.com/)
 [![Architecture](https://img.shields.io/badge/Architecture-Clean%20%2F%20Onion-blue)](docs/architecture/arc42.md)
 [![Security](https://img.shields.io/badge/Security-Zero%20Trust-green)](docs/threat-model/threat-model.md)
+[![Features](https://img.shields.io/badge/Features-featurelist.md-blueviolet)](featurelist.md)
+[![Comparison](https://img.shields.io/badge/Wettbewerb-featurecomparison.md-orange)](featurecomparison.md)
 [![License](https://img.shields.io/badge/License-Proprietary%20%2F%20Internal-lightgrey)](#)
 
-GqlGateway is a high-performance, secure, centralized enterprise GraphQL gateway built with **.NET 10** and **Hot Chocolate 14**. It provides unified GraphQL access to heterogeneous enterprise databases (**Microsoft SQL Server / MSSQL, SQLite, PostgreSQL, Databricks, Oracle**) while enforcing a strict **Zero-Trust Data-Owner-Consent** governance model.
+GqlGateway is a high-performance, secure, centralized enterprise GraphQL gateway built with **.NET 10** and **Hot Chocolate 14**. It provides unified GraphQL access to heterogeneous enterprise databases (**Microsoft SQL Server / MSSQL, SQLite, PostgreSQL, Databricks, Oracle**), modern **Apache Iceberg Lakehouses**, REST APIs, and federated **Hot Chocolate Fusion Subgraphs** while enforcing a strict **Zero-Trust Data-Owner-Consent** governance model.
 
 Instead of traditional coarse-grained role-based access control (RBAC), access to tables, rows, and columns requires explicitly granted, time-bounded, and auditable consents governed directly by data owners.
+
+> 📚 **Produkt- & Strategie-Dokumente**:
+> - [📋 Vollständige Feature-Liste (featurelist.md)](featurelist.md) — Detailliertes Inventar aller Enterprise-Funktionen.
+> - [⚖️ Wettbewerbs- & Marktvergleich (featurecomparison.md)](featurecomparison.md) — GqlGateway vs. Apollo Federation v2, Hasura DDN, WunderGraph Cosmo, StepZen, Immuta und Tyk/Kong/Envoy.
+> - [📊 Marktanalyse & RICE-C Roadmap (marktanalyse.md)](marktanalyse.md) — Umfassende Markt- und Gap-Analyse.
 
 ---
 
@@ -30,11 +37,30 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
 - **Heterogeneous Multi-Source Data Architecture & Real SQL Execution**:
   - Dynamic type projection and schema generation based on the active governance catalog.
   - **Native SQL Execution with RLS Pushdown**: Direct ADO.NET execution via `ISqlConnectionFactory` supporting **MSSQL (SQL Server)**, **SQLite**, **PostgreSQL**, **Databricks**, and **Oracle**. Row-Level Security (RLS) filters are pushed down directly into generated SQL queries (`CombinedRowFilterSql`), preventing unauthorized rows from ever leaving the database engine.
+  - **Modern Apache Iceberg v2 Lakehouse Connector (Pattern 4)**: Direct querying of Iceberg v2 tables on Amazon S3 (SigV4), Azure Blob Storage, and local filesystems with vectorized partition pruning, Min/Max statistics filtering, and L1 metadata caching.
   - **Declarative REST Data Source Engine (Pattern 3)**: Expose external REST APIs with URL-template parameter substitution (`/api/v1/customers/{id}`), header/query pushdown (`X-Tenant-Id`, `X-User-Sid`), bearer token forwarding / API keys, JSONPath extraction, and adaptive batching (`QueryParameterList`, `JsonBodyArray`, `ParallelSingleRequests` throttled via `SemaphoreSlim`). Integrated **SSRF Defense** with DNS pre-resolution (blocking RFC 1918, link-local, loopback, and cloud metadata) and hop-by-hop HTTP redirect protection (`AllowAutoRedirect = false`).
+  - **Hot Chocolate Fusion Subgraph Router**: Composes distributed microservice subgraphs into a unified supergraph schema with zero-trust client token forwarding and in-memory result masking.
   - **Isolated C# Plugin System (Pattern 4)**: Host specialized HTTP/data connectors in isolated, collectible `AssemblyLoadContext` instances (`IHttpDataSourcePlugin`) preventing dependency collisions with host packages.
-  - **Central Zero-Trust Pipeline**: Regardless of source (SQL, REST, or Plugin), all data passes through central consent evaluation (`GatewayExecutionService`), in-memory RLS post-filtering, central column masking, response budgeting, and audit logging.
+  - **Dual-Mode Enterprise Extensibility**: Native in-process C# DLL/NuGet middlewares for the high-performance hot path (<0.1ms overhead, zero IPC) alongside decoupled out-of-process gRPC coprocess interceptors.
+  - **Central Zero-Trust Pipeline**: Regardless of source (SQL, Lakehouse, REST, Plugin, or Subgraph), all data passes through central consent evaluation (`GatewayExecutionService`), in-memory RLS post-filtering, central column masking, response budgeting, and audit logging.
   - Efficient DataLoader-based batching and selective child relation loading with chunking to protect underlying database parameter limits (e.g. SQLite 999, Oracle 1000, MSSQL 2100, PostgreSQL/Databricks 10000).
   - Introspection and Banana Cake Pop (Nitro) UI configurable per environment.
+
+- **Realtime Event Streaming & CDC (Change Data Capture)**:
+  - **GraphQL Subscriptions**: Full WebSocket (`graphql-transport-ws`) and Server-Sent Events (SSE) support with `WebSocketAuthInterceptor` token validation during `connection_init`.
+  - **In-Stream Row-Level Security**: `StreamRlsPolicyEnforcer` validates dynamic Casbin ABAC permissions per emitted event, ensuring immediate drop of unconsented data.
+  - **Debezium / Kafka CDC Ingestion**: `DebeziumCdcParser` decodes change events (`op: c, u, d`) with strict tenant stream isolation and in-stream column masking.
+
+- **Agentic AI & Model Context Protocol (MCP) Gateway**:
+  - Native MCP server exposing GraphQL queries and schema as AI Agent Tools via Stdio (`McpStdioRunner`) and Streamable HTTP/SSE (`/mcp`, `/mcp/sse`).
+  - **Semantic Prompt Injection Defense**: `SemanticPromptGuardrail` inspects tool arguments against OWASP LLM01 prompt injection patterns, ChatML delimiters, and Base64 evasion techniques.
+  - **AI Data Guardrail Engine**: Dynamic PII scrubbing, token consumption budgeting, query cost limits, and session ownership enforcement.
+
+- **dbt Data Mesh & Contract Governance**:
+  - High-throughput streaming parser for dbt `manifest.json`, `catalog.json`, and `run_results.json`.
+  - **Data Health Circuit Breaker**: Tables with failing upstream `dbt test` executions are quarantined (`CircuitBreaker: Open`) to prevent serving dirty data.
+  - **Model Contract Breaking-Change CI Gate**: Validates dbt model contracts against active schemas before deployment.
+  - **Live-Telemetrie in dbt Exposures**: Spiegelt reale GraphQL-Abfrage-Frequenzen und Consumer-Metadaten zurück in dbt `exposure`-Deklarationen.
 
 - **Distributed Multi-Instance Clustering (Redis)**:
   - **Redis Pub/Sub Event Bus (`RedisEventBus`)**: Real-time cross-pod propagation of catalog and policy epoch increments, invalidating distributed caches across all cluster nodes simultaneously.
@@ -89,7 +115,6 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - **ITSM Webhook Integration**: Bi-directional integration with **ServiceNow** and **Jira** for approval workflows. Webhooks secured with timing-safe HMAC-SHA256 verification and 5-minute replay prevention.
   - **AI-Assisted Justification Triage**: Evaluates business justifications via `OpenJevClient` with prompt-injection defense, strict 500-character limits, and token-bucket rate limiting.
   - **Casbin ABAC/RBAC Engine**: Dynamic policy evaluation (`sub_rule`) with standalone policy validation tool (`tools/casbin-policy-lint`).
-  - **dbt Integration**: Ingests dbt `manifest.json` and `catalog.json` to extract models, sources, column classifications, and exposure lineage.
 
 - **Enterprise Network & Edge Protection**:
   - Pre-Authentication IP Rate Limiting and Post-Authentication SID Token-Bucket Concurrency Limiting.
@@ -114,13 +139,13 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
                   └──────────────┬────────────────┘
                                  │
                   ┌──────────────▼────────────────┐
-                  │      GqlGateway.GraphQL       │  Hot Chocolate Schema, Types,
-                  │                               │  DataLoaders, Query/Mutation Resolvers
+                  │      GqlGateway.GraphQL       │  Hot Chocolate Schema, Types, Subscriptions,
+                  │                               │  Fusion Router, DataLoaders, MCP Server
                   └──────────────┬────────────────┘
                                  │
                   ┌──────────────▼────────────────┐
-                  │     GqlGateway.Application    │  Use Cases, Consent Resolution,
-                  │                               │  Masking, RLS Generation, OpenMetadata DTOs
+                  │     GqlGateway.Application    │  Use Cases, Consent Resolution, Masking,
+                  │                               │  Casbin ABAC, RLS Generation, Streaming RLS
                   └──────────────┬────────────────┘
                                  │
          ┌───────────────────────┴───────────────────────┐
@@ -138,16 +163,16 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 | Project | Target | Description |
 |---|---|---|
 | [`GqlGateway.Domain`](src/GqlGateway.Domain) | `net10.0` | Value Objects (`Sid`, `TableIdentifier`, `CompositeKey`), Models, Options, Enums |
-| [`GqlGateway.Application`](src/GqlGateway.Application) | `net10.0` | Central execution engine (`GatewayExecutionService`, `IGatewayExecutionService`), business services (`ConsentResolutionService`, `ColumnMaskingProvider`, `RlsFilterGenerator`, `ChunkedQueryExecutor`), data sources (`SqlDataSourceExecutor`, `DeclarativeHttpDataSourceExecutor`), OpenMetadata models & interfaces |
-| [`GqlGateway.Infrastructure`](src/GqlGateway.Infrastructure) | `net10.0` | Persistence (`SqliteGovernanceRepository`, `SqlConnectionFactory`), Caching (`ConsentCacheService`), Multi-Instance Messaging (`RedisEventBus`, `InProcessChannelEventBus`), Rate Limiting (`RedisRateLimiterService`), Idempotency (`RedisIdempotencyStore`), Health (`GatewayHealthCheckService`), Security Handlers (`ForwardAuthAuthenticationHandler`, `BasicAuthenticationHandler`, `EnterpriseClaimsTransformation`) |
-| [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 14 GraphQL engine, dynamic schemas, types, queries (`tableConsumers`, `gdprDataDisclosureReport`), mutations (`syncDataCatalog`), DataLoader execution |
-| [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Host, Basic Auth Login (`/api/auth/login`), ForwardAuth header security, rate limiting, anti-CSRF, health probes, ITSM webhooks |
-| [`GqlGateway.Extensions`](/root/gql_extensions/src/GqlGateway.Extensions) | `net10.0` | Enterprise Data Catalog connectors (Purview, Collibra, Alation, OpenMetadata), dbt manifest ingestion, ITSM handlers (ServiceNow, Jira), OData |
+| [`GqlGateway.Application`](src/GqlGateway.Application) | `net10.0` | Central execution engine (`GatewayExecutionService`), business services (`ConsentResolutionService`, `ColumnMaskingProvider`, `RlsFilterGenerator`), streaming RLS (`StreamRlsPolicyEnforcer`), MCP services |
+| [`GqlGateway.Infrastructure`](src/GqlGateway.Infrastructure) | `net10.0` | Persistence (`SqliteGovernanceRepository`, `SqlConnectionFactory`), Caching (`ConsentCacheService`), Multi-Instance Messaging (`RedisEventBus`), Rate Limiting (`RedisRateLimiterService`), Security Handlers (`ForwardAuthAuthenticationHandler`, `BasicAuthenticationHandler`) |
+| [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 14 GraphQL engine, dynamic schemas, Subscriptions, Fusion Router (`FusionGatewayExtensions`), MCP Server, queries & mutations |
+| [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Host, Basic Auth Login (`/api/auth/login`), ForwardAuth header security, rate limiting, anti-CSRF, health probes, ITSM webhooks, MCP endpoints |
+| [`GqlGateway.Extensions`](/root/gql_extensions/src/GqlGateway.Extensions) | `net10.0` | Apache Iceberg Lakehouse connector, Enterprise Data Catalogs (Purview, Collibra, Alation, OpenMetadata), dbt manifest ingestion, ITSM handlers, OData |
 | [`GqlGateway.Benchmarks`](benchmarks/GqlGateway.Benchmarks) | `net10.0` | BenchmarkDotNet suites for throughput, cache hit/miss, and masking allocations |
-| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 401 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
+| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 589 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
 | [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | 5 NetArchTest rules enforcing Clean Architecture dependency directions |
-| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 83 End-to-end integration tests using `WebApplicationFactory<Program>` |
-| [`GqlGateway.Extensions.Tests`](/root/gql_extensions/tests/GqlGateway.Extensions.Tests) | `net10.0` | 24 Unit & Integration tests for Data Catalog adapters, dbt, ITSM, and OData |
+| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 98 End-to-end integration tests using `WebApplicationFactory<Program>` |
+| [`GqlGateway.Extensions.Tests`](/root/gql_extensions/tests/GqlGateway.Extensions.Tests) | `net10.0` | 43 Unit & Integration tests for Iceberg Lakehouse, Data Catalogs, dbt, ITSM, and OData |
 
 ---
 
@@ -172,11 +197,11 @@ dotnet build /root/gql_extensions/GqlExtensions.slnx -c Release
 dotnet test GqlGateway.sln -c Release
 dotnet test /root/gql_extensions/GqlExtensions.slnx -c Release
 ```
-Currently passes **513 / 513 tests (100% green)** across all test suites:
-- **401 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure)
+Currently passes **735 / 735 tests (100% green)** across all test suites:
+- **589 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure, MCP Guardrails, Differential Privacy)
 - **5 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application)
-- **83 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails)
-- **24 Extensions Tests** (Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion, ServiceNow/Jira webhooks, OData)
+- **98 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
+- **43 Extensions Tests** (Apache Iceberg v2 Lakehouse connector & partition pruning, Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion & contract validation, ServiceNow/Jira webhooks, OData)
 
 ### 3. Run Gateway Locally
 
