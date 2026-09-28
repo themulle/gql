@@ -176,8 +176,8 @@ Um die Marktführerschaft zu sichern, verfolgt das Produktmanagement vier strate
 ### Moat 3: Justification-Driven Access & ITSM Closed Loop
 - Automatisierte Brücke zwischen Datenabfrage und IT-Service-Management: Erfordert ein Zugriff eine Freigabe, stößt das Gateway über Webhooks Tickets in ServiceNow / Jira an. Bei Genehmigung wird der Zugriff kryptographisch verifiziert freigeschaltet.
 
-### Moat 4: Dual Access Exposure: GraphQL + OData v4
-- Konkurrenten bedienen oft nur Web/App-Entwickler. GqlGateway exponiert Daten gleichzeitig als GraphQL und OData v4, wodurch Power BI, Excel und SAP ohne Zusatzwerkzeuge unter denselben Governance-Regeln arbeiten.
+### Moat 4: Dual Access Exposure: GraphQL + OData v4 & Dynamic OpenAPI 3.1 (REST via HTTP GET)
+- Konkurrenten bedienen oft nur Web/App-Entwickler mit GraphQL. GqlGateway exponiert Datenobjekte gleichzeitig als GraphQL, OData v4 und dynamisch generierte OpenAPI 3.1 Spezifikation (mit interaktiver Swagger UI) per einfachem HTTP GET. Dadurch arbeiten Power BI, Excel, SAP, Python/Data Science (Pandas), Low-Code (PowerApps/Retool) und B2B-Partner nahtlos unter exakt denselben Casbin-ABAC- und Maskierungsregeln.
 
 ### Moat 5: Dual-Mode Enterprise Customizing (In-Process C# & Out-of-Process gRPC)
 - **Die Konkurrenzlücke schließen**: Apollo Router (Rust/Rhai), Kong (Lua/Go) und Envoy (C++/WASM) zwingen Enterprise-Teams in fremde Sprachen oder bestrafen sie mit gRPC-Sidecar-Latenzen (Tyk Coprocess).
@@ -252,8 +252,12 @@ Als Product Manager treibst du folgende Kerninitiativen voran:
    - GraphQL Subscriptions mit dynamischer Row-Level Security Filterung im Event-Stream.
 3. **Self-Service Governance UI & Policy Simulator**:
    - Web-Interface für Data Stewards zur visuellen Definition von Richtlinien und Live-Testen ("Was sieht Analyst X bei Query Y?").
-4. **AI / Model Context Protocol (MCP) Agent Gateway**:
-   - Bereitstellung von GraphQL-Tools für KI-Agenten mit strikten Token-Limits, PII-Maskierung und Kostenbegrenzung.
+4. **Enterprise AI / MCP Agent Governance & Semantic Suite (`F-AI-02` bis `F-AI-08`)**:
+   - Bereitstellung einer ganzheitlichen Tool-Infrastruktur für autonome KI-Agenten:
+     - *Semantik & Grounding (`F-AI-02`)*: Auto-Ingestion von dbt-Doc-Blocks und OpenMetadata Business Glossaries in MCP-Tool-Beschreibungen und On-Demand Resources.
+     - *Cost & Safety Guard (`F-AI-04`)*: `simulate_query` zur Vorab-Berechnung von Lakehouse-Scans und Token-Limits vor der Ausführung.
+     - *Explainable AI & Audit (`F-AI-06`)*: Lückenloses Provenance- & Lineage-Footnoting für EU-AI-Act-Compliance.
+     - *Precision & Scale (`F-AI-03`, `F-AI-05`, `F-AI-07`)*: Dynamic Few-Shot Golden Queries aus Auditlogs, Human-in-the-Loop Step-Up Approvals via MCP und Vektor-unterstütztes Dynamic Tool Pruning für 1.000+ Modelle.
 5. **Ingress/Egress Extensibility SDK (Dual-Mode: C# In-Process DLLs & gRPC Coprocess)**:
    - Bereitstellung einer Plugin-Architektur für Custom-Middlewares (Ingress-Auth, Egress-Masking, Custom-Audit-Sinks) sowohl in-process als C#-DLL/NuGet als auch out-of-process per standardisiertem gRPC-Contract.
 
