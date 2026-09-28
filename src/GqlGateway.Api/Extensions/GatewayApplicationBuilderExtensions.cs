@@ -208,7 +208,7 @@ public static class GatewayApplicationBuilderExtensions
                 status = "Live",
                 timestamp = DateTimeOffset.UtcNow
             });
-        });
+        }).AllowAnonymous();
 
         app.MapGet("/health/ready", async (
             ITrafficDrainController controller,
@@ -261,7 +261,7 @@ public static class GatewayApplicationBuilderExtensions
                 status = "Ready",
                 timestamp = DateTimeOffset.UtcNow
             });
-        });
+        }).AllowAnonymous();
 
         var endpoint = gatewayOptions.GraphQL.EndpointPath.StartsWith('/')
             ? gatewayOptions.GraphQL.EndpointPath
@@ -558,7 +558,8 @@ public static class GatewayApplicationBuilderExtensions
         // CDC & Realtime Streaming Ingestion Endpoint (P5)
         app.MapPost("/api/v1/cdc/events", async (
             HttpRequest request,
-            ICdcEventIngestionService ingestionService) =>
+            ICdcEventIngestionService ingestionService,
+            ILoggerFactory loggerFactory) =>
         {
             using var reader = new StreamReader(request.Body);
             var body = await reader.ReadToEndAsync(request.HttpContext.RequestAborted);
@@ -575,9 +576,11 @@ public static class GatewayApplicationBuilderExtensions
             }
             catch (Exception ex)
             {
-                return Results.BadRequest(new { error = "Invalid CDC event format", details = ex.Message });
+                var logger = loggerFactory.CreateLogger("GqlGateway.CdcEndpoint");
+                logger.LogWarning(ex, "Failed to parse or ingest CDC event payload.");
+                return Results.BadRequest(new { error = "Invalid CDC event format" });
             }
-        });
+        }).RequireAuthorization();
 
         // dbt Ingestion & Exposure Endpoints (F-DATA-11)
         app.MapPost("/api/extensions/dbt/sync", async (
@@ -1116,13 +1119,30 @@ public static class GatewayApplicationBuilderExtensions
         app.MapPost("/api/schema-registry/publish", async (
             SchemaRegistrationRequest request,
             ISchemaRegistryService registry,
+            ClaimsPrincipal principal,
             CancellationToken ct) =>
         {
+            if (request.ForceIfBreaking)
+            {
+                var isPrivileged = principal.IsInRole("GovernanceAdmin") ||
+                                   principal.IsInRole("SchemaAdmin") ||
+                                   principal.IsInRole("GatewayAdmin") ||
+                                   principal.IsInRole("PlatformAdmin") ||
+                                   principal.IsInRole("ClusterAdmin") ||
+                                   principal.HasClaim(c => (c.Type == "role" || c.Type == ClaimTypes.Role) &&
+                                       (c.Value == "GovernanceAdmin" || c.Value == "SchemaAdmin" || c.Value == "GatewayAdmin" || c.Value == "PlatformAdmin" || c.Value == "ClusterAdmin"));
+
+                if (!isPrivileged)
+                {
+                    return Results.Json(new { error = "ForceIfBreaking requires administrative privileges (GovernanceAdmin, SchemaAdmin, or ClusterAdmin)." }, statusCode: StatusCodes.Status403Forbidden);
+                }
+            }
+
             var response = await registry.RegisterSchemaAsync(request, ct);
             return response.Success
                 ? Results.Ok(response)
                 : Results.BadRequest(response);
-        });
+        }).RequireAuthorization();
 
         app.MapPost("/api/schema-registry/check", async (
             SchemaRegistrationRequest request,
@@ -1140,7 +1160,7 @@ public static class GatewayApplicationBuilderExtensions
                 safeCount = diff.SafeCount,
                 changes = diff.Changes
             });
-        });
+        }).RequireAuthorization();
 
         app.MapGet("/api/schema-registry/{service}/latest", async (
             string service,
@@ -1149,7 +1169,7 @@ public static class GatewayApplicationBuilderExtensions
         {
             var latest = await registry.GetLatestSchemaAsync(service, ct);
             return latest != null ? Results.Ok(latest) : Results.NotFound(new { error = $"No active schema found for service '{service}'." });
-        });
+        }).RequireAuthorization();
 
         app.MapGet("/api/schema-registry/{service}/history", async (
             string service,
@@ -1158,7 +1178,7 @@ public static class GatewayApplicationBuilderExtensions
         {
             var history = await registry.GetSchemaHistoryAsync(service, ct);
             return Results.Ok(history);
-        });
+        }).RequireAuthorization();
 
         app.MapGet("/api/schema-registry/services", async (
             ISchemaRegistryService registry,
@@ -1166,7 +1186,7 @@ public static class GatewayApplicationBuilderExtensions
         {
             var services = await registry.GetAllServicesAsync(ct);
             return Results.Ok(services);
-        });
+        }).RequireAuthorization();
 
         // GDPR Article 15 PDF Export for Data Protection Officers (DSB)
         app.MapGet("/api/governance/gdpr/export-pdf", async (

@@ -3,6 +3,8 @@ namespace GqlGateway.Domain.Model;
 using System;
 using System.Collections.Generic;
 
+using GqlGateway.Domain.Common;
+
 /// <summary>
 /// Definition of a Model Context Protocol (MCP) tool exposed to AI agents.
 /// </summary>
@@ -10,7 +12,8 @@ public sealed record McpToolDefinition(
     string Name,
     string Description,
     string InputJsonSchema,
-    string TargetGraphQLOperation
+    string TargetGraphQLOperation,
+    TableIdentifier? TargetTable = null
 );
 
 /// <summary>
@@ -46,5 +49,6 @@ public sealed record McpSessionContext(
     DateTimeOffset LastActiveAt,
     string? UserSid = null,
     IReadOnlyList<string>? Roles = null,
-    IReadOnlyList<string>? GroupSids = null
+    IReadOnlyList<string>? GroupSids = null,
+    string? ClientIp = null
 );

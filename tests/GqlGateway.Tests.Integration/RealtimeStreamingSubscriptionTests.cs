@@ -67,6 +67,45 @@ public class RealtimeStreamingSubscriptionTests : IClassFixture<WebApplicationFa
     }
 
     [Fact]
+    public async Task CdcEventIngestEndpoint_Unauthenticated_ReturnsUnauthorized()
+    {
+        // Finding A1 Verification:
+        // /api/v1/cdc/events MUST require authorization (401 Unauthorized when unauthenticated)
+        var client = _factory.CreateClient(); // No auth header
+
+        var payload = """
+        {
+            "op": "c",
+            "source": { "schema": "crm", "table": "customers", "name": "salesdb" },
+            "after": { "id": 200, "name": "Unauthorized Ingest", "tenant_id": "tenant-sales" }
+        }
+        """;
+
+        var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        var response = await client.PostAsync("/api/v1/cdc/events", content);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task CdcEventIngestEndpoint_InvalidJson_ReturnsBadRequest_WithoutLeakingInternalDetails()
+    {
+        // Finding A1 Verification:
+        // /api/v1/cdc/events MUST NOT leak exception details (ex.Message) to caller
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-TEST-ADMIN");
+
+        var content = new StringContent("{ broken json payload ???", Encoding.UTF8, "application/json");
+        var response = await client.PostAsync("/api/v1/cdc/events", content);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        responseBody.ShouldNotContain("details");
+        responseBody.ShouldNotContain("Exception");
+        responseBody.ShouldContain("Invalid CDC event format");
+    }
+
+    [Fact]
     public async Task EventStream_PublishAndSubscribe_DeliversEventsLocally()
     {
         using var scope = _factory.Services.CreateScope();

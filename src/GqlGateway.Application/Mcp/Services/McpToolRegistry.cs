@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using GqlGateway.Application.Mcp.Interfaces;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Options;
@@ -55,7 +56,8 @@ public sealed class McpToolRegistry : IMcpToolRegistry
               }
             }
             """,
-            TargetGraphQLOperation: "query GetCustomers($customerId: String, $limit: Int) { customers(customerId: $customerId, limit: $limit) { id name email iban createdDate } }"
+            TargetGraphQLOperation: "query GetCustomers($customerId: String, $limit: Int) { customers(customerId: $customerId, limit: $limit) { id name email iban createdDate } }",
+            TargetTable: new TableIdentifier("finance", "dbo", "customers")
         ));
 
         // 2. Built-in tool: Query Invoices
@@ -71,7 +73,8 @@ public sealed class McpToolRegistry : IMcpToolRegistry
               }
             }
             """,
-            TargetGraphQLOperation: "query GetInvoices($invoiceId: String, $currency: String) { invoices(invoiceId: $invoiceId, currency: $currency) { invoiceId amount currency status } }"
+            TargetGraphQLOperation: "query GetInvoices($invoiceId: String, $currency: String) { invoices(invoiceId: $invoiceId, currency: $currency) { invoiceId amount currency status } }",
+            TargetTable: new TableIdentifier("finance", "dbo", "invoices")
         ));
 
         // 3. Built-in tool: Query Data Catalog Metadata
@@ -86,7 +89,8 @@ public sealed class McpToolRegistry : IMcpToolRegistry
               }
             }
             """,
-            TargetGraphQLOperation: "query GetCatalogMetadata($tableName: String) { catalogAssets(tableName: $tableName) { tableName sensitivity classification owner tags } }"
+            TargetGraphQLOperation: "query GetCatalogMetadata($tableName: String) { catalogAssets(tableName: $tableName) { tableName sensitivity classification owner tags } }",
+            TargetTable: new TableIdentifier("governance", "catalog", "assets")
         ));
 
         // Register any explicitly declared operations

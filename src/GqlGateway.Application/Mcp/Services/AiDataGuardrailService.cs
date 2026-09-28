@@ -165,9 +165,11 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         }
 
         // 2. Pre-Execution Policy Check: Casbin ABAC Enforcement
-        var targetTable = ParseTableIdentifierFromTool(tool);
-        if (_policyEnforcementService != null && targetTable != null && !_options.Value.IsMcpAuthBypassed)
+        if (_policyEnforcementService != null && !_options.Value.IsMcpAuthBypassed)
         {
+            var targetTable = ParseTableIdentifierFromTool(tool);
+            var effectiveTable = targetTable ?? new TableIdentifier("mcp", "tool", tool.Name.ToLowerInvariant());
+
             var userSidStr = !string.IsNullOrWhiteSpace(sessionContext.UserSid)
                 ? sessionContext.UserSid
                 : sessionContext.ServicePrincipalId;
@@ -175,13 +177,19 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
                 ? sessionContext.GroupSids.Select(s => new Sid(s)).ToArray()
                 : [];
 
+            var clientIp = System.Net.IPAddress.Loopback;
+            if (!string.IsNullOrWhiteSpace(sessionContext.ClientIp) && System.Net.IPAddress.TryParse(sessionContext.ClientIp, out var parsedIp))
+            {
+                clientIp = parsedIp;
+            }
+
             var secContext = new SecurityEvaluationContext(
                 UserSid: new Sid(userSidStr),
                 GroupSids: groupSids,
                 Tenant: new TenantId(sessionContext.TenantId),
-                TargetTable: targetTable.Value,
+                TargetTable: effectiveTable,
                 RequestedColumns: [],
-                ClientIp: System.Net.IPAddress.Loopback,
+                ClientIp: clientIp,
                 Timestamp: DateTimeOffset.UtcNow,
                 PurposeId: "MCP_AI_AGENT_QUERY"
             );
@@ -192,8 +200,8 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
                 activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
                 McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, false, false);
 
-                _logger.LogWarning("Casbin ABAC policy denied AI Agent '{Principal}' tool call '{ToolName}' in tenant '{TenantId}'. Reasons: {Reasons}",
-                    sessionContext.ServicePrincipalId, tool.Name, sessionContext.TenantId, string.Join("; ", policyDecision.DeniedReasons));
+                _logger.LogWarning("Casbin ABAC policy denied AI Agent '{Principal}' tool call '{ToolName}' (target: '{TargetTable}') in tenant '{TenantId}'. Reasons: {Reasons}",
+                    sessionContext.ServicePrincipalId, tool.Name, effectiveTable, sessionContext.TenantId, string.Join("; ", policyDecision.DeniedReasons));
 
                 await RecordAuditEventAsync(
                     tool.Name,
@@ -214,22 +222,23 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         }
 
         // 3. Four-Eyes Justification Gate
-        if (targetTable != null && _tableMetadataRepository != null)
+        var resolvedTable = ParseTableIdentifierFromTool(tool);
+        if (resolvedTable != null && _tableMetadataRepository != null)
         {
-            var meta = await _tableMetadataRepository.GetTableMetadataAsync(targetTable.Value, cancellationToken).ConfigureAwait(false);
+            var meta = await _tableMetadataRepository.GetTableMetadataAsync(resolvedTable.Value, cancellationToken).ConfigureAwait(false);
             if (meta?.Table.RequiresFourEyes == true)
             {
                 activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
                 McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, false, false);
 
                 _logger.LogWarning("Tool '{ToolName}' targets table '{Table}' which requires Four-Eyes approval. Denying automated AI agent execution.",
-                    tool.Name, targetTable);
+                    tool.Name, resolvedTable);
 
                 await RecordAuditEventAsync(
                     tool.Name,
                     sessionContext,
                     decision: "DENY",
-                    details: $"Tool execution denied: table {targetTable} requires interactive Four-Eyes justification approval.",
+                    details: $"Tool execution denied: table {resolvedTable} requires interactive Four-Eyes justification approval.",
                     isMasked: false,
                     truncated: false,
                     estimatedTokens: 0,
@@ -364,10 +373,31 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
     private static TableIdentifier? ParseTableIdentifierFromTool(McpToolDefinition tool)
     {
+        if (tool.TargetTable != null)
+            return tool.TargetTable;
+
         if (tool.Name.Equals("query_customers", StringComparison.OrdinalIgnoreCase))
             return new TableIdentifier("finance", "dbo", "customers");
         if (tool.Name.Equals("query_invoices", StringComparison.OrdinalIgnoreCase))
             return new TableIdentifier("finance", "dbo", "invoices");
+        if (tool.Name.Equals("query_data_catalog", StringComparison.OrdinalIgnoreCase))
+            return new TableIdentifier("governance", "catalog", "assets");
+
+        if (!string.IsNullOrWhiteSpace(tool.TargetGraphQLOperation))
+        {
+            var match = Regex.Match(tool.TargetGraphQLOperation, @"\{\s*([a-zA-Z0-9_]+)", RegexOptions.None, DefaultRegexTimeout);
+            if (match.Success)
+            {
+                var fieldName = match.Groups[1].Value.ToLowerInvariant();
+                return new TableIdentifier("default", "dbo", fieldName);
+            }
+        }
+
+        if (tool.Name.StartsWith("query_", StringComparison.OrdinalIgnoreCase) && tool.Name.Length > 6)
+        {
+            return new TableIdentifier("default", "dbo", tool.Name[6..].ToLowerInvariant());
+        }
+
         return null;
     }
 

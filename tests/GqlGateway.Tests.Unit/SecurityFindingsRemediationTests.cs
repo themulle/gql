@@ -18,6 +18,8 @@ using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using GqlGateway.Infrastructure.Persistence;
 using GqlGateway.Infrastructure.Security;
+using GqlGateway.Application.Mcp.Interfaces;
+using GqlGateway.Application.Mcp.Services;
 using GqlGateway.Application.Streaming.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
@@ -550,5 +552,140 @@ public class SecurityFindingsRemediationTests
 
         decision.IsAllowed.ShouldBeFalse();
         decision.FilterReason.ShouldBe("Tenant mismatch");
+    }
+
+    // =========================================================================
+    // Finding B2: MCP Tools Fail-Closed & Casbin ABAC Enforcement
+    // =========================================================================
+
+    [Fact]
+    public async Task AiDataGuardrailService_UnmappedTool_WhenPolicyDenies_FailsClosedAndReturnsError()
+    {
+        // Finding B2 Verification:
+        // A generic tool with no physical table mapping MUST NOT bypass Casbin ABAC.
+        // It must evaluate tool-level permission and fail closed if denied.
+        var registry = new McpToolRegistry();
+        var unmappedTool = new McpToolDefinition(
+            Name: "unmapped_generic_tool",
+            Description: "A generic tool without direct table mapping",
+            InputJsonSchema: "{}",
+            TargetGraphQLOperation: "query UnknownOp { randomData { val } }"
+        );
+        registry.RegisterTool(unmappedTool);
+
+        var policyService = new TestPolicyEnforcementService(ctx =>
+            TableAccessDecision.Denied(ctx.TargetTable, "Access denied by ABAC policy for tool"));
+
+        var options = Options.Create(new GatewayOptions { Mcp = new McpOptions { Enabled = true } });
+        var guardrail = new AiDataGuardrailService(
+            registry,
+            options,
+            NullLogger<AiDataGuardrailService>.Instance,
+            policyEnforcementService: policyService);
+
+        var session = new McpSessionContext("sess-b2", "agent-unauthorized", "tenant-test", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var request = new McpToolCallRequest("unmapped_generic_tool", "{}");
+
+        var result = await guardrail.ExecuteToolWithGuardrailAsync(request, session);
+
+        result.IsSuccess.ShouldBeFalse();
+        result.ErrorMessage.ShouldNotBeNull();
+        result.ErrorMessage.ShouldContain("Access denied to tool 'unmapped_generic_tool'");
+    }
+
+    [Fact]
+    public async Task AiDataGuardrailService_CustomClientIp_PassedToSecurityContext()
+    {
+        // Finding B2 / F-03 Verification:
+        // ClientIp in McpSessionContext must be passed to SecurityEvaluationContext rather than hardcoded 127.0.0.1.
+        var registry = new McpToolRegistry();
+        SecurityEvaluationContext? capturedContext = null;
+
+        var policyService = new TestPolicyEnforcementService(ctx =>
+        {
+            capturedContext = ctx;
+            return TableAccessDecision.Allowed(ctx.TargetTable, new System.Collections.Generic.Dictionary<string, ColumnAccessLevel>(), hasUnconstrainedColumnAllow: true);
+        });
+
+        var options = Options.Create(new GatewayOptions { Mcp = new McpOptions { Enabled = true } });
+        var guardrail = new AiDataGuardrailService(
+            registry,
+            options,
+            NullLogger<AiDataGuardrailService>.Instance,
+            policyEnforcementService: policyService);
+
+        var session = new McpSessionContext(
+            SessionId: "sess-ip-test",
+            ServicePrincipalId: "agent-remote",
+            TenantId: "tenant-ip",
+            CreatedAt: DateTimeOffset.UtcNow,
+            LastActiveAt: DateTimeOffset.UtcNow,
+            ClientIp: "198.51.100.42");
+
+        var request = new McpToolCallRequest("query_customers", "{}");
+
+        var result = await guardrail.ExecuteToolWithGuardrailAsync(request, session);
+
+        result.IsSuccess.ShouldBeTrue();
+        capturedContext.ShouldNotBeNull();
+        capturedContext.ClientIp.ToString().ShouldBe("198.51.100.42");
+    }
+
+    [Fact]
+    public async Task AiDataGuardrailService_ExplicitToolTargetTable_CheckedByPolicy()
+    {
+        // Finding B2 Verification:
+        // McpToolDefinition with explicit TargetTable must pass that TableIdentifier to the policy engine.
+        var registry = new McpToolRegistry();
+        var explicitTable = new TableIdentifier("sales", "crm", "deals");
+        var dealTool = new McpToolDefinition(
+            Name: "query_deals",
+            Description: "Deals query tool",
+            InputJsonSchema: "{}",
+            TargetGraphQLOperation: "query Deals { deals { id amount } }",
+            TargetTable: explicitTable);
+        registry.RegisterTool(dealTool);
+
+        TableIdentifier? evaluatedTable = null;
+        var policyService = new TestPolicyEnforcementService(ctx =>
+        {
+            evaluatedTable = ctx.TargetTable;
+            return TableAccessDecision.Allowed(ctx.TargetTable, new System.Collections.Generic.Dictionary<string, ColumnAccessLevel>(), hasUnconstrainedColumnAllow: true);
+        });
+
+        var options = Options.Create(new GatewayOptions { Mcp = new McpOptions { Enabled = true } });
+        var guardrail = new AiDataGuardrailService(
+            registry,
+            options,
+            NullLogger<AiDataGuardrailService>.Instance,
+            policyEnforcementService: policyService);
+
+        var session = new McpSessionContext("sess-deals", "agent-deals", "tenant-sales", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        var request = new McpToolCallRequest("query_deals", "{}");
+
+        var result = await guardrail.ExecuteToolWithGuardrailAsync(request, session);
+
+        result.IsSuccess.ShouldBeTrue();
+        evaluatedTable.ShouldBe(explicitTable);
+    }
+
+    private sealed class TestPolicyEnforcementService : IPolicyEnforcementService
+    {
+        private readonly Func<SecurityEvaluationContext, TableAccessDecision> _decider;
+
+        public TestPolicyEnforcementService(Func<SecurityEvaluationContext, TableAccessDecision> decider)
+        {
+            _decider = decider;
+        }
+
+        public ValueTask<TableAccessDecision> EvaluatePolicyAsync(SecurityEvaluationContext context, System.Threading.CancellationToken ct = default)
+        {
+            return ValueTask.FromResult(_decider(context));
+        }
+
+        public bool HasPolicies(TenantId tenant) => true;
+        public Task ReloadPoliciesAsync(TenantId tenant, System.Threading.CancellationToken ct = default) => Task.CompletedTask;
+        public void LoadPolicyFromText(TenantId tenant, string policyText) { }
+        public void LoadPolicyFromFile(TenantId tenant, string filePath, bool watchFile = false) { }
     }
 }
