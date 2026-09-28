@@ -9,6 +9,7 @@ using GqlGateway.Infrastructure.Streaming;
 using GqlGateway.Application.SchemaRegistry;
 using GqlGateway.Extensions.OData;
 using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Builder;
@@ -812,6 +813,64 @@ public static class GatewayApplicationBuilderExtensions
                 messageEndpoint.RequireAuthorization();
             }
 
+            // 2b. Streamable HTTP Transport (MCP 2024-11-05 Specification)
+            // Allows developer CLIs and HTTP clients to directly stream JSON-RPC requests via POST /mcp or POST /mcp/stream
+            var streamableHttpEndpoint = app.MapPost(mcpBasePath, async (
+                IMcpProtocolHandler mcpHandler,
+                HttpContext context) =>
+            {
+                var sessionId = context.Request.Headers["X-MCP-Session-Id"].FirstOrDefault()
+                    ?? context.Request.Headers["Mcp-Session-Id"].FirstOrDefault()
+                    ?? context.Request.Query["sessionId"].FirstOrDefault();
+
+                McpSessionContext? session = null;
+                if (!string.IsNullOrWhiteSpace(sessionId))
+                {
+                    session = mcpHandler.GetSession(sessionId);
+                }
+
+                if (session == null)
+                {
+                    var principal = context.User;
+                    var principalId = principal.FindFirst("client_id")?.Value
+                        ?? principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                        ?? principal.FindFirst("sub")?.Value
+                        ?? principal.FindFirst("appid")?.Value
+                        ?? principal.Identity?.Name
+                        ?? (gatewayOptions.IsMcpAuthBypassed ? "anonymous-ai-agent" : "cli-developer");
+
+                    var tenantId = principal.FindFirst("tenant_id")?.Value
+                        ?? principal.FindFirst("tid")?.Value
+                        ?? "default";
+
+                    var userSid = principal.GetUserSid()?.Value;
+                    var roles = principal.GetUserRoles().ToList();
+                    var groupSids = principal.GetGroupSids().Select(s => s.Value).ToList();
+
+                    session = mcpHandler.CreateSession(principalId, tenantId, userSid, roles, groupSids);
+                }
+
+                using var reader = new System.IO.StreamReader(context.Request.Body);
+                var payload = await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
+
+                if (string.IsNullOrWhiteSpace(payload))
+                {
+                    return Results.BadRequest(new { error = "Empty JSON-RPC payload." });
+                }
+
+                context.Response.Headers["X-MCP-Session-Id"] = session.SessionId;
+                context.Response.Headers["Mcp-Session-Id"] = session.SessionId;
+
+                var responseJson = await mcpHandler.HandleMessageAsync(session.SessionId, payload, context.RequestAborted).ConfigureAwait(false);
+                return Results.Content(responseJson, "application/json; charset=utf-8");
+            });
+
+            if (!gatewayOptions.IsMcpAuthBypassed)
+            {
+                streamableHttpEndpoint.RequireAuthorization();
+            }
+
+
             // 3. Session Teardown
             var sessionEndpoint = app.MapDelete($"{mcpBasePath}/session/{{id}}", (
                 string id,
@@ -905,6 +964,44 @@ public static class GatewayApplicationBuilderExtensions
             return Results.Ok(services);
         });
 
+        // GDPR Article 15 PDF Export for Data Protection Officers (DSB)
+        app.MapGet("/api/governance/gdpr/export-pdf", async (
+            string? domain,
+            string? schema,
+            string? table,
+            string? subjectSid,
+            int? timeWindowDays,
+            ILineageImpactAnalyzerService lineageService,
+            IGdprAuditReportExporter pdfExporter,
+            HttpContext context,
+            CancellationToken ct) =>
+        {
+            TableIdentifier? tableId = !string.IsNullOrWhiteSpace(domain) && !string.IsNullOrWhiteSpace(schema) && !string.IsNullOrWhiteSpace(table)
+                ? new TableIdentifier(domain, schema, table)
+                : null;
+            Sid? sid = !string.IsNullOrWhiteSpace(subjectSid) ? new Sid(subjectSid) : (Sid?)null;
+
+            var report = await lineageService.GetGdprDataDisclosureReportAsync(tableId, sid, timeWindowDays ?? 365, null, ct);
+            var exportResult = pdfExporter.ExportReportToPdf(report);
+
+            context.Response.Headers["X-Audit-Seal-SHA256"] = exportResult.Sha256AuditSeal;
+            return Results.File(exportResult.DocumentBytes, exportResult.ContentType, exportResult.FileName);
+        });
+
+        // OpenLineage Lineage Push Trigger
+        app.MapPost("/api/lineage/openlineage/sync", async (
+            IOpenLineageClient openLineageClient,
+            HttpContext context,
+            CancellationToken ct) =>
+        {
+            var tenantId = context.User.FindFirst("tenant_id")?.Value ?? "default";
+            var success = await openLineageClient.PushLineageGraphAsync(new TenantId(tenantId), ct);
+            return success
+                ? Results.Ok(new { message = "OpenLineage sync completed successfully." })
+                : Results.StatusCode(StatusCodes.Status502BadGateway);
+        });
+
         return app;
     }
 }
+

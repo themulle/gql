@@ -7,9 +7,12 @@ using Xunit;
 
 namespace GqlGateway.Tests.Unit;
 
-public class CasbinAbacPropertyTests
+public class CasbinAbacPropertyTests : IDisposable
 {
     private readonly CasbinEnforcementService _service = new();
+
+    public void Dispose() => _service.Dispose();
+
 
     [Fact]
     public async Task TenantIsolation_FailsDeterministically_WhenRequestTenantDiffersFromPolicyTenant()

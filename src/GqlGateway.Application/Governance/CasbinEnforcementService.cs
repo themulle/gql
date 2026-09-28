@@ -18,14 +18,19 @@ using GqlGateway.Domain.Diagnostics;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 
-public sealed class CasbinEnforcementService : IPolicyEnforcementService
+public sealed class CasbinEnforcementService : IPolicyEnforcementService, IDisposable
 {
     private readonly ConcurrentDictionary<string, Enforcer> _tenantEnforcers = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, List<CasbinRuleMetadata>> _tenantRules = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, TableAccessDecision> _decisionCache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, string> _tenantPolicyFiles = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, FileSystemWatcher> _fileWatchers = new(StringComparer.OrdinalIgnoreCase);
     private readonly IRlsFilterGenerator _rlsFilterGenerator;
     private readonly string _modelText;
     private long _policyEpoch = 1;
+
+    public event Action<TenantId>? OnPolicyReloaded;
+
 
     public sealed record CasbinRuleMetadata(
         string Sub,
@@ -373,12 +378,150 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         return false;
     }
 
-    public Task ReloadPoliciesAsync(TenantId tenant, CancellationToken ct = default)
+    public void LoadPolicyFromText(TenantId tenant, string policyText)
     {
-        Interlocked.Increment(ref _policyEpoch);
+        ArgumentNullException.ThrowIfNull(policyText);
+
         _decisionCache.Clear();
         _tenantEnforcers.TryRemove(tenant.Value, out _);
         _tenantRules.TryRemove(tenant.Value, out _);
+
+        var lines = policyText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith('#') || string.IsNullOrWhiteSpace(line)) continue;
+
+            var parts = line.Split(',', StringSplitOptions.TrimEntries);
+            if (parts.Length == 0) continue;
+
+            var type = parts[0].ToLowerInvariant();
+            if (type == "p")
+            {
+                // p, sub, tenant, obj, act, [subRule], [eft], [rlsFilter]
+                if (parts.Length >= 4)
+                {
+                    var sub = parts[1];
+                    var ruleTenant = parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2]) ? parts[2] : tenant.Value;
+                    var obj = parts.Length > 3 ? parts[3] : "*";
+                    var act = parts.Length > 4 ? parts[4] : "read";
+                    var subRule = parts.Length > 5 && !string.IsNullOrWhiteSpace(parts[5]) ? parts[5] : "true";
+                    var eft = parts.Length > 6 && !string.IsNullOrWhiteSpace(parts[6]) ? parts[6] : "allow";
+                    var rlsFilter = parts.Length > 7 && !string.IsNullOrWhiteSpace(parts[7]) ? parts[7] : null;
+
+                    AddPolicy(new TenantId(ruleTenant), sub, obj, act, subRule, eft, rlsFilter);
+                }
+            }
+            else if (type == "g")
+            {
+                // g, user, role
+                if (parts.Length >= 3)
+                {
+                    AddRoleForUser(tenant, parts[1], parts[2]);
+                }
+            }
+        }
+
+        Interlocked.Increment(ref _policyEpoch);
+        OnPolicyReloaded?.Invoke(tenant);
+    }
+
+    public void LoadPolicyFromFile(TenantId tenant, string filePath, bool watchFile = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        if (!File.Exists(filePath))
+        {
+            throw new FileNotFoundException($"Casbin policy file not found: {filePath}", filePath);
+        }
+
+        _tenantPolicyFiles[tenant.Value] = Path.GetFullPath(filePath);
+        var content = File.ReadAllText(filePath);
+        LoadPolicyFromText(tenant, content);
+
+        if (watchFile)
+        {
+            EnableFileWatcher(tenant, filePath);
+        }
+    }
+
+    private void EnableFileWatcher(TenantId tenant, string filePath)
+    {
+        var fullPath = Path.GetFullPath(filePath);
+        var dir = Path.GetDirectoryName(fullPath) ?? Directory.GetCurrentDirectory();
+        var fileName = Path.GetFileName(fullPath);
+
+        if (_fileWatchers.TryGetValue(tenant.Value, out var existingWatcher))
+        {
+            existingWatcher.Dispose();
+        }
+
+        var watcher = new FileSystemWatcher(dir, fileName)
+        {
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName | NotifyFilters.CreationTime,
+            EnableRaisingEvents = true
+        };
+
+        var debounceTimer = new System.Timers.Timer(100) { AutoReset = false };
+        debounceTimer.Elapsed += (_, _) =>
+        {
+            try
+            {
+                if (File.Exists(fullPath))
+                {
+                    var text = File.ReadAllText(fullPath);
+                    LoadPolicyFromText(tenant, text);
+                }
+            }
+            catch
+            {
+                // Ignore transient file lock during write
+            }
+        };
+
+        void OnFileEvent(object sender, FileSystemEventArgs e)
+        {
+            debounceTimer.Stop();
+            debounceTimer.Start();
+        }
+
+        watcher.Changed += OnFileEvent;
+        watcher.Created += OnFileEvent;
+        watcher.Renamed += (_, _) =>
+        {
+            debounceTimer.Stop();
+            debounceTimer.Start();
+        };
+
+        _fileWatchers[tenant.Value] = watcher;
+
+    }
+
+    public Task ReloadPoliciesAsync(TenantId tenant, CancellationToken ct = default)
+    {
+        if (_tenantPolicyFiles.TryGetValue(tenant.Value, out var filePath) && File.Exists(filePath))
+        {
+            var text = File.ReadAllText(filePath);
+            LoadPolicyFromText(tenant, text);
+        }
+        else
+        {
+            Interlocked.Increment(ref _policyEpoch);
+            _decisionCache.Clear();
+            _tenantEnforcers.TryRemove(tenant.Value, out _);
+            _tenantRules.TryRemove(tenant.Value, out _);
+            OnPolicyReloaded?.Invoke(tenant);
+        }
+
         return Task.CompletedTask;
     }
+
+    public void Dispose()
+    {
+        foreach (var watcher in _fileWatchers.Values)
+        {
+            watcher.Dispose();
+        }
+        _fileWatchers.Clear();
+    }
 }
+

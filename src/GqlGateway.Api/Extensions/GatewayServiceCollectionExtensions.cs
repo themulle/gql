@@ -339,17 +339,28 @@ public static class GatewayServiceCollectionExtensions
         // Casbin ABAC Engine
         services.AddSingleton<IPolicyEnforcementService, CasbinEnforcementService>();
 
-        // ITSM Dispatcher & Inbound Webhooks (Outbound clients in GqlGateway.Extensions)
+        // ITSM Dispatcher, Outbound REST Clients (ServiceNow & Jira) & Inbound Webhooks
+        services.AddHttpClient<ServiceNowTableApiClient>();
+        services.AddHttpClient<JiraCloudRestClient>();
+        services.AddScoped<IItsmWorkflowClient, ServiceNowTableApiClient>();
+        services.AddScoped<IItsmWorkflowClient, JiraCloudRestClient>();
         services.AddScoped<ItsmWorkflowDispatcher>();
         services.AddScoped<IItsmWebhookHandler, ItsmWebhookHandler>();
+        services.AddScoped<IConsentRecertificationService, ConsentRecertificationWorkflowService>();
         if (gatewayOptions.Itsm.Enabled)
         {
             services.AddHostedService<ItsmOutboxDispatcherHostedService>();
+            services.AddHostedService<ConsentRecertificationHostedService>();
         }
 
-        // Lineage Graph Store & Impact Analyzer
+
+        // Lineage Graph Store, Impact Analyzer & External Lineage / GDPR Exporters
         services.AddSingleton<ILineageGraphStore, LineageGraphStore>();
         services.AddScoped<ILineageImpactAnalyzerService, LineageImpactAnalyzerService>();
+        services.AddSingleton<IGdprAuditReportExporter, GdprAuditReportPdfExporter>();
+        services.AddHttpClient<OpenLineageClient>();
+        services.AddScoped<IOpenLineageClient, OpenLineageClient>();
+
 
         // AI Assisted Governance (OpenJEV & Triage)
         services.AddHttpClient("OpenJev");
@@ -376,12 +387,15 @@ public static class GatewayServiceCollectionExtensions
         services.AddScoped<IGatewayExecutionService>(sp => sp.GetRequiredService<GatewayExecutionService>());
 
         // Model Context Protocol (MCP) Server & AI Data Guardrails
+        services.AddSingleton<ISemanticPromptGuardrail, SemanticPromptGuardrail>();
         services.AddSingleton<IMcpSessionStore, McpSessionStore>();
         services.AddSingleton<IMcpToolRegistry, McpToolRegistry>();
         services.AddScoped<IMcpQueryExecutor, GqlGateway.GraphQL.Mcp.GatewayMcpQueryExecutor>();
         services.AddScoped<IAiDataGuardrailService, AiDataGuardrailService>();
         services.AddScoped<IMcpProtocolHandler, McpProtocolHandler>();
+        services.AddScoped<IMcpStdioRunner, McpStdioRunner>();
         services.AddHostedService<GqlGateway.GraphQL.Mcp.McpSchemaDiscoveryService>();
+
 
         // HA & Traffic Drain
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();

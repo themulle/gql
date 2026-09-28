@@ -16,7 +16,10 @@ public interface IConsentRepository
     Task<Consent> CreateConsentAsync(Consent consent, CancellationToken ct = default);
     Task<Consent?> GetConsentByIdAsync(Guid consentId, CancellationToken ct = default);
     Task RevokeConsentAsync(Guid consentId, Sid revokedBySid, string reason, CancellationToken ct = default);
+    Task<IReadOnlyList<Consent>> GetExpiringConsentsAsync(DateTimeOffset threshold, CancellationToken ct = default);
+    Task ExtendConsentExpiryAsync(Guid consentId, DateTimeOffset newValidTo, CancellationToken ct = default);
 }
+
 
 public interface IAuditLogRepository
 {

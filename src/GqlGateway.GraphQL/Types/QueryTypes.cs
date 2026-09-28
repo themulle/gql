@@ -251,6 +251,23 @@ public sealed class Query
         return await lineageService.GetGdprDataDisclosureReportAsync(tableId, effectiveSid, timeWindowDays, callerContext, ct);
     }
 
+    public async Task<string> ExportGdprDataDisclosureReportPdfBase64Async(
+        string? domain = null,
+        string? schema = null,
+        string? tableName = null,
+        string? subjectSid = null,
+        int timeWindowDays = 365,
+        [Service] ILineageImpactAnalyzerService lineageService = null!,
+        [Service] IGdprAuditReportExporter pdfExporter = null!,
+        [Service] IHttpContextAccessor httpContextAccessor = null!,
+        CancellationToken ct = default)
+    {
+        var report = await GetGdprDataDisclosureReportAsync(domain, schema, tableName, subjectSid, timeWindowDays, lineageService, httpContextAccessor, ct);
+        var exportResult = pdfExporter.ExportReportToPdf(report);
+        return Convert.ToBase64String(exportResult.DocumentBytes);
+    }
+
+
     private static CallerSecurityContext GetCallerSecurityContext(IHttpContextAccessor httpContextAccessor)
     {
         var httpContext = httpContextAccessor?.HttpContext;

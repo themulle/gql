@@ -490,13 +490,22 @@ public sealed class ItsmOptions
     public bool Enabled { get; init; }
     public ItsmSystemType DefaultSystem { get; init; } = ItsmSystemType.ServiceNow;
     public string ServiceNowBaseUrl { get; init; } = string.Empty;
+    public string ServiceNowUsername { get; init; } = string.Empty;
+    public string ServiceNowPassword { get; init; } = string.Empty;
+    public string ServiceNowTable { get; init; } = "change_request";
     public string JiraBaseUrl { get; init; } = string.Empty;
+    public string JiraEmail { get; init; } = string.Empty;
+    public string JiraApiToken { get; init; } = string.Empty;
+    public string JiraProjectKey { get; init; } = "SEC";
+    public string JiraIssueType { get; init; } = "Task";
+    public int RecertificationWarningDays { get; init; } = 3;
     public Dictionary<string, string> InstanceToTenantMap { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public bool danger_bypass_webhook_signature_validation { get; init; } = false;
     public bool warn_ignore_webhook_timestamp_tolerance { get; init; } = false;
     public bool warn_fallback_default_tenant_for_webhooks { get; init; } = false;
     public bool warn_mock_external_systems_if_unreachable { get; init; } = false;
     public bool danger_allow_untrusted_certificates { get; init; } = false;
+
 
     public TenantId? GetTenantForInstance(string instanceId)
     {
@@ -544,6 +553,10 @@ public sealed class DataCatalogOptions
     public PurviewOptions Purview { get; init; } = new();
     public CollibraOptions Collibra { get; init; } = new();
     public AlationOptions Alation { get; init; } = new();
+
+    public string OpenLineageEndpoint { get; init; } = "http://localhost:5000/api/v1/lineage";
+    public string OpenLineageApiKey { get; init; } = string.Empty;
+
 
     public Dictionary<string, string> TagToMaskingRuleMap { get; init; } = new(StringComparer.OrdinalIgnoreCase)
     {

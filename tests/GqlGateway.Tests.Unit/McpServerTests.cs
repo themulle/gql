@@ -341,7 +341,10 @@ public sealed class McpServerTests
 
         public bool HasPolicies(TenantId tenant) => true;
         public Task ReloadPoliciesAsync(TenantId tenant, System.Threading.CancellationToken ct = default) => Task.CompletedTask;
+        public void LoadPolicyFromText(TenantId tenant, string policyText) { }
+        public void LoadPolicyFromFile(TenantId tenant, string filePath, bool watchFile = false) { }
     }
+
 
     [Fact]
     public async Task AiDataGuardrailService_ShouldEmitGenAiOpenTelemetrySpanAndAttributes()

@@ -1137,4 +1137,108 @@ public partial class SqliteGovernanceRepository
         }
     }
 
+    public async Task<IReadOnlyList<Consent>> GetExpiringConsentsAsync(DateTimeOffset threshold, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var consents = new List<Consent>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
+                                       c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
+                                       c.is_revoked, c.revoked_by_sid, c.revoked_at, c.revoke_reason,
+                                       c.tenant_id, t.source_name, t.schema_name, t.table_name
+                                FROM CONSENTS c
+                                JOIN TABLES t ON c.table_id = t.id
+                                WHERE c.is_revoked = 0
+                                  AND c.valid_to > @now
+                                  AND c.valid_to <= @threshold";
+            cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString("O"));
+            cmd.Parameters.AddWithValue("@threshold", threshold.ToString("O"));
+
+            using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                var id = Guid.Parse(reader.GetString(0));
+                var tableId = Guid.Parse(reader.GetString(1));
+                Guid? requestId = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2));
+                var effect = (ConsentEffect)reader.GetInt32(3);
+                var granteeType = (GranteeType)reader.GetInt32(4);
+                Sid? granteeSid = reader.IsDBNull(5) ? (Sid?)null : new Sid(reader.GetString(5));
+                Guid? roleId = reader.IsDBNull(6) ? null : Guid.Parse(reader.GetString(6));
+                var roleName = reader.IsDBNull(7) ? null : reader.GetString(7);
+                var validFrom = DateTimeOffset.Parse(reader.GetString(8), System.Globalization.CultureInfo.InvariantCulture);
+                var validTo = DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture);
+                var isRevoked = reader.GetInt32(10) == 1;
+                var tenantId = reader.IsDBNull(14) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(14));
+                var domain = reader.GetString(15);
+                var schema = reader.GetString(16);
+                var tableName = reader.GetString(17);
+
+                consents.Add(new Consent
+                {
+                    Id = id,
+                    TableId = tableId,
+                    TableIdentifier = new TableIdentifier(domain, schema, tableName),
+                    ConsentRequestId = requestId,
+                    Effect = effect,
+                    GranteeType = granteeType,
+                    GranteeSid = granteeSid,
+                    RoleId = roleId,
+                    RoleName = roleName,
+                    ValidFrom = validFrom,
+                    ValidTo = validTo,
+                    IsRevoked = isRevoked,
+                    TenantId = tenantId
+                });
+            }
+            return consents;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task ExtendConsentExpiryAsync(Guid consentId, DateTimeOffset newValidTo, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            TableIdentifier? tableId = null;
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = @"SELECT t.source_name, t.schema_name, t.table_name
+                                    FROM CONSENTS c
+                                    JOIN TABLES t ON c.table_id = t.id
+                                    WHERE c.id = @id";
+                cmd.Parameters.AddWithValue("@id", consentId.ToString());
+                using var reader = await cmd.ExecuteReaderAsync(ct);
+                if (await reader.ReadAsync(ct))
+                {
+                    tableId = new TableIdentifier(reader.GetString(0), reader.GetString(1), reader.GetString(2));
+                }
+            }
+
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = @"UPDATE CONSENTS
+                                    SET valid_to = @validTo
+                                    WHERE id = @id";
+                cmd.Parameters.AddWithValue("@id", consentId.ToString());
+                cmd.Parameters.AddWithValue("@validTo", newValidTo.ToString("O"));
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            if (tableId.HasValue)
+            {
+                await IncrementTableEpochInternalAsync(tableId.Value, ct);
+            }
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
 }
+

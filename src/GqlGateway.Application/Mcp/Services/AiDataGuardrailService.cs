@@ -31,6 +31,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
     private readonly IPolicyEnforcementService? _policyEnforcementService;
     private readonly ITableMetadataRepository? _tableMetadataRepository;
     private readonly IMcpSessionStore? _sessionStore;
+    private readonly ISemanticPromptGuardrail _promptGuardrail;
 
     private static readonly TimeSpan DefaultRegexTimeout = TimeSpan.FromMilliseconds(250);
 
@@ -58,7 +59,8 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         IAuditLogRepository? auditLogRepository = null,
         IPolicyEnforcementService? policyEnforcementService = null,
         ITableMetadataRepository? tableMetadataRepository = null,
-        IMcpSessionStore? sessionStore = null)
+        IMcpSessionStore? sessionStore = null,
+        ISemanticPromptGuardrail? promptGuardrail = null)
     {
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -68,7 +70,9 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         _policyEnforcementService = policyEnforcementService;
         _tableMetadataRepository = tableMetadataRepository;
         _sessionStore = sessionStore;
+        _promptGuardrail = promptGuardrail ?? new SemanticPromptGuardrail();
     }
+
 
     public async ValueTask<McpToolCallResult> ExecuteToolWithGuardrailAsync(
         McpToolCallRequest request,
@@ -115,7 +119,35 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             );
         }
 
+        // Semantic Prompt Injection & Jailbreak Guardrail Check
+        var promptEvaluation = _promptGuardrail.EvaluatePrompt(request.ToolName, request.ArgumentsJson);
+        if (!promptEvaluation.IsAllowed)
+        {
+            activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+            McpDiagnostics.RecordGuardrailVerdict("deny", request.ToolName, false, false);
+
+            _logger.LogWarning("Semantic prompt injection or jailbreak detected for tool '{ToolName}': {Reason}",
+                request.ToolName, promptEvaluation.Reason);
+
+            await RecordAuditEventAsync(
+                request.ToolName,
+                sessionContext,
+                decision: "DENY",
+                details: $"Execution blocked by prompt injection guardrail ({promptEvaluation.AttackType}): {promptEvaluation.Reason}",
+                isMasked: false,
+                truncated: false,
+                estimatedTokens: 0,
+                cancellationToken).ConfigureAwait(false);
+
+            return new McpToolCallResult(
+                IsSuccess: false,
+                ContentJson: "{}",
+                ErrorMessage: $"Execution blocked: Prompt injection or jailbreak pattern detected ({promptEvaluation.AttackType})."
+            );
+        }
+
         // 1. Notify client via SSE progress notification if stream is open
+
         if (_sessionStore != null)
         {
             var progressData = JsonSerializer.Serialize(new

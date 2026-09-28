@@ -26,4 +26,15 @@ public interface IPolicyEnforcementService
     /// Synchronizes updated policies from Redis event bus invalidations (<= 50 ms).
     /// </summary>
     Task ReloadPoliciesAsync(TenantId tenant, CancellationToken ct = default);
+
+    /// <summary>
+    /// Loads or reloads policies for the specified tenant from CSV or policy definition text.
+    /// </summary>
+    void LoadPolicyFromText(TenantId tenant, string policyText);
+
+    /// <summary>
+    /// Loads policies from a file and optionally watches the file for changes to hot-reload without restarting the host.
+    /// </summary>
+    void LoadPolicyFromFile(TenantId tenant, string filePath, bool watchFile = false);
 }
+
