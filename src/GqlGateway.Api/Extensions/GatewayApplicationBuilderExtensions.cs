@@ -38,6 +38,17 @@ public static class GatewayApplicationBuilderExtensions
         app.UseForwardedHeaders();
         app.UseCors();
 
+        // HTTP Security Response Headers (MED-01)
+        app.Use(async (context, next) =>
+        {
+            context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+            context.Response.Headers.Append("X-Frame-Options", "DENY");
+            context.Response.Headers.Append("Referrer-Policy", "strict-origin-when-cross-origin");
+            context.Response.Headers.Append("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+            context.Response.Headers.Append("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';");
+            await next();
+        });
+
         if (!app.Environment.IsDevelopment())
         {
             app.UseHsts();

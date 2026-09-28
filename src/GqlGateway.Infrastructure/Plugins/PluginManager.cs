@@ -4,8 +4,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security;
+using System.Security.Cryptography;
+using System.Text.Json;
 using GqlGateway.Application.Plugins;
+using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace GqlGateway.Infrastructure.Plugins;
 
@@ -13,14 +18,19 @@ public sealed class PluginManager : IPluginManager, IDisposable
 {
     private readonly ILogger<PluginManager> _logger;
     private readonly IServiceProvider? _serviceProvider;
+    private readonly IOptions<GatewayOptions>? _options;
     private readonly ConcurrentDictionary<string, PluginEntry> _plugins = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record PluginEntry(IHttpDataSourcePlugin Plugin, PluginAssemblyLoadContext? Context);
 
-    public PluginManager(ILogger<PluginManager> logger, IServiceProvider? serviceProvider = null)
+    public PluginManager(
+        ILogger<PluginManager> logger,
+        IServiceProvider? serviceProvider = null,
+        IOptions<GatewayOptions>? options = null)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
+        _options = options;
     }
 
     public IReadOnlyCollection<IHttpDataSourcePlugin> GetAllPlugins() =>
@@ -52,8 +62,25 @@ public sealed class PluginManager : IPluginManager, IDisposable
             return 0;
         }
 
-        int loadedCount = 0;
         var dllFiles = Directory.GetFiles(fullDirectoryPath, "*.dll", SearchOption.AllDirectories);
+        if (dllFiles.Length == 0)
+        {
+            return 0;
+        }
+
+        // CRIT-01: Cryptographic Integrity Verification via manifest.json
+        var manifestPath = Path.Combine(fullDirectoryPath, "manifest.json");
+        Dictionary<string, string>? manifest = null;
+        if (File.Exists(manifestPath))
+        {
+            manifest = LoadManifest(manifestPath);
+        }
+        else if (_options?.Value.Plugins.RequireIntegrityManifest == true)
+        {
+            throw new SecurityException($"Sicherheitsfehler: Kein Integrity-Manifest (manifest.json) in '{fullDirectoryPath}' vorhanden.");
+        }
+
+        int loadedCount = 0;
 
         foreach (var dllFile in dllFiles)
         {
@@ -62,6 +89,12 @@ public sealed class PluginManager : IPluginManager, IDisposable
             {
                 _logger.LogWarning("Skipping plugin DLL outside configured directory: '{DllPath}'", dllFile);
                 continue;
+            }
+
+            // Verify integrity against manifest if present or required
+            if (manifest != null)
+            {
+                VerifyPluginIntegrity(fullDllPath, manifest);
             }
 
             try
@@ -126,5 +159,64 @@ public sealed class PluginManager : IPluginManager, IDisposable
             entry.Context?.Unload();
         }
         _plugins.Clear();
+    }
+
+    private static Dictionary<string, string> LoadManifest(string manifestPath)
+    {
+        var json = File.ReadAllText(manifestPath);
+        using var doc = JsonDocument.Parse(json);
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (doc.RootElement.ValueKind == JsonValueKind.Object)
+        {
+            if (doc.RootElement.TryGetProperty("plugins", out var pluginsElem))
+            {
+                if (pluginsElem.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in pluginsElem.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("file", out var fileProp) && item.TryGetProperty("sha256", out var hashProp))
+                        {
+                            result[fileProp.GetString()!] = hashProp.GetString()!;
+                        }
+                    }
+                }
+                else if (pluginsElem.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in pluginsElem.EnumerateObject())
+                    {
+                        result[prop.Name] = prop.Value.GetString()!;
+                    }
+                }
+            }
+            else
+            {
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    result[prop.Name] = prop.Value.GetString()!;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static void VerifyPluginIntegrity(string dllPath, Dictionary<string, string> manifest)
+    {
+        var filename = Path.GetFileName(dllPath);
+
+        if (!manifest.TryGetValue(filename, out var expectedHash) || string.IsNullOrWhiteSpace(expectedHash))
+        {
+            throw new SecurityException($"Sicherheitsfehler: Plugin '{filename}' ist nicht im Integrity-Manifest verzeichnet.");
+        }
+
+        var actualBytes = File.ReadAllBytes(dllPath);
+        var actualHash = Convert.ToHexString(SHA256.HashData(actualBytes));
+        if (!CryptographicOperations.FixedTimeEquals(
+                Convert.FromHexString(expectedHash.Trim()),
+                Convert.FromHexString(actualHash)))
+        {
+            throw new SecurityException($"Sicherheitsfehler: Integritätsprüfung fehlgeschlagen für Plugin '{filename}'. Erwarteter SHA-256: {expectedHash}, Tatsächlich: {actualHash}");
+        }
     }
 }

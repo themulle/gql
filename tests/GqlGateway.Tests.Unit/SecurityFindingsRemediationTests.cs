@@ -669,6 +669,165 @@ public class SecurityFindingsRemediationTests
         evaluatedTable.ShouldBe(explicitTable);
     }
 
+    // =========================================================================
+    // Security Review Remediation Tests (CRIT-01, CRIT-02, HIGH-01, HIGH-02, HIGH-03, MED-02)
+    // =========================================================================
+
+    [Fact]
+    public void CRIT01_PluginIntegrityVerification_TamperedHash_ThrowsSecurityException()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "plugin_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var dllPath = Path.Combine(tempDir, "TestPlugin.dll");
+            File.WriteAllBytes(dllPath, [0x4D, 0x5A, 0x90, 0x00]);
+
+            var manifestPath = Path.Combine(tempDir, "manifest.json");
+            File.WriteAllText(manifestPath, "{\"plugins\": [{\"file\": \"TestPlugin.dll\", \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"}]}");
+
+            var manager = new GqlGateway.Infrastructure.Plugins.PluginManager(NullLogger<GqlGateway.Infrastructure.Plugins.PluginManager>.Instance);
+            var ex = Should.Throw<System.Security.SecurityException>(() => manager.LoadPluginsFromDirectory(tempDir));
+            ex.Message.ShouldContain("Integritätsprüfung fehlgeschlagen");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public void CRIT01_DynamicPluginALC_TamperedHash_ThrowsSecurityException()
+    {
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(tempFile, [0x4D, 0x5A, 0x90, 0x00]);
+            var ex = Should.Throw<System.Security.SecurityException>(() =>
+                new GqlGateway.Application.Extensibility.DynamicPluginAssemblyLoadContext(tempFile, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
+            ex.Message.ShouldContain("Integritätsprüfung fehlgeschlagen");
+        }
+        finally
+        {
+            File.Delete(tempFile);
+        }
+    }
+
+    [Theory]
+    [InlineData("Finance') OR ('1'='1")]
+    [InlineData("HR'; DROP TABLE CONSENTS; --")]
+    [InlineData("Sales' UNION SELECT * FROM secrets --")]
+    [InlineData("Ops<script>alert(1)</script>")]
+    public async Task CRIT02_InterpolateRlsFilter_MaliciousClaimValue_ThrowsSecurityException(string maliciousClaim)
+    {
+        var casbin = new CasbinEnforcementService();
+        var tenant = new TenantId("tenant-finance");
+        var table = new TableIdentifier("finance", "dbo", "invoices");
+
+        casbin.AddPolicy(tenant, "attacker", table.ToString(), "read", "true", "allow", rlsFilter: "dept = '${department}'");
+
+        var context = new SecurityEvaluationContext(
+            UserSid: new Sid("attacker"),
+            GroupSids: [],
+            Tenant: tenant,
+            TargetTable: table,
+            RequestedColumns: ["id"],
+            ClientIp: System.Net.IPAddress.Loopback,
+            Timestamp: DateTimeOffset.UtcNow,
+            PurposeId: "AUDIT",
+            Attributes: new System.Collections.Generic.Dictionary<string, object?> { ["department"] = maliciousClaim });
+
+        var ex = await Should.ThrowAsync<System.Security.SecurityException>(async () =>
+            await casbin.EvaluatePolicyAsync(context));
+        ex.Message.ShouldContain("Sicherheitsfehler");
+        ex.Message.ShouldContain("department");
+    }
+
+    [Fact]
+    public void HIGH01_UntrustedCertificatesAllowed_InProduction_ThrowsValidationException()
+    {
+        var options = new GatewayOptions
+        {
+            Insecure = new InsecureGettingStartedOptions
+            {
+                danger_allow_untrusted_certificates = true
+            }
+        };
+
+        var prodEnv = Substitute.For<IHostEnvironment>();
+        prodEnv.EnvironmentName.Returns(Environments.Production);
+
+        var ex = Should.Throw<ValidationException>(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, prodEnv));
+        ex.Message.ShouldContain("danger_allow_untrusted_certificates");
+    }
+
+    [Fact]
+    public void HIGH02_WildcardCors_InProduction_ThrowsValidationException()
+    {
+        var options = new GatewayOptions
+        {
+            DataMasking = new DataMaskingOptions
+            {
+                HmacSecretKeyVaultRef = "vault://keys/prod-hmac"
+            },
+            GraphQL = new GraphQLOptions
+            {
+                TrustedOrigins = ["*"]
+            }
+        };
+
+        var prodEnv = Substitute.For<IHostEnvironment>();
+        prodEnv.EnvironmentName.Returns(Environments.Production);
+
+        var ex = Should.Throw<ValidationException>(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, prodEnv));
+        ex.Message.ShouldContain("TrustedOrigins '*' (Wildcard-CORS) ist außerhalb der Development-Umgebung aus Sicherheitsgründen (CSRF-Schutz) verboten");
+    }
+
+    [Theory]
+    [InlineData("http://169.254.169.254/latest/meta-data/")]
+    [InlineData("http://100.100.100.200/latest/meta-data/")]
+    [InlineData("http://metadata.google.internal/")]
+    [InlineData("http://127.0.0.1:8080/internal/admin")]
+    [InlineData("http://192.168.1.1/admin")]
+    public async Task HIGH03_SsrfProtectionHandler_OutboundRequestToRestrictedAddress_ThrowsSecurityException(string restrictedUrl)
+    {
+        var handler = new SsrfProtectionHandler();
+        var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, restrictedUrl);
+        var invoker = new System.Net.Http.HttpMessageInvoker(handler);
+
+        var ex = await Should.ThrowAsync<System.Security.SecurityException>(async () =>
+            await invoker.SendAsync(request, System.Threading.CancellationToken.None));
+        ex.Message.ShouldContain("strictly forbidden");
+    }
+
+    [Fact]
+    public void MED02_Casbin_SubRule_ExceedingLength_ThrowsArgumentException()
+    {
+        var casbin = new CasbinEnforcementService();
+        var tenant = new TenantId("tenant-core");
+        var longSubRule = new string('a', 501);
+
+        var ex = Should.Throw<ArgumentException>(() =>
+            casbin.AddPolicy(tenant, "user1", "table1", "read", longSubRule, "allow"));
+        ex.Message.ShouldContain("überschreitet die maximale Länge von 500 Zeichen");
+    }
+
+    [Theory]
+    [InlineData("true; eval(unescape('hack'))")]
+    [InlineData("ctx.Clearance == 'ADMIN' \0 nullbyte")]
+    [InlineData("sub_rule || `cat /etc/passwd`")]
+    public void MED02_Casbin_SubRule_IllegalCharacters_ThrowsArgumentException(string illegalSubRule)
+    {
+        var casbin = new CasbinEnforcementService();
+        var tenant = new TenantId("tenant-core");
+
+        var ex = Should.Throw<ArgumentException>(() =>
+            casbin.AddPolicy(tenant, "user1", "table1", "read", illegalSubRule, "allow"));
+        ex.Message.ShouldContain("enthält nicht erlaubte Zeichen");
+    }
+
     private sealed class TestPolicyEnforcementService : IPolicyEnforcementService
     {
         private readonly Func<SecurityEvaluationContext, TableAccessDecision> _decider;

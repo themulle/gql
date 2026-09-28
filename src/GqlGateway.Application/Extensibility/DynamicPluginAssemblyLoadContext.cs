@@ -5,6 +5,9 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.Loader;
 
+using System.Security;
+using System.Security.Cryptography;
+
 /// <summary>
 /// Collectible AssemblyLoadContext enabling zero-downtime hot-reloading and unloading
 /// of customer C# Ingress/Egress middleware plugins (.dll) without restarting the gateway process.
@@ -16,7 +19,7 @@ public sealed class DynamicPluginAssemblyLoadContext : AssemblyLoadContext
 
     public string PluginPath => _pluginPath;
 
-    public DynamicPluginAssemblyLoadContext(string pluginPath)
+    public DynamicPluginAssemblyLoadContext(string pluginPath, string? expectedSha256 = null)
         : base(name: $"PluginALC_{Path.GetFileNameWithoutExtension(pluginPath)}_{Guid.NewGuid():N}", isCollectible: true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(pluginPath);
@@ -26,6 +29,19 @@ public sealed class DynamicPluginAssemblyLoadContext : AssemblyLoadContext
         }
 
         _pluginPath = Path.GetFullPath(pluginPath);
+
+        if (!string.IsNullOrWhiteSpace(expectedSha256))
+        {
+            var actualBytes = File.ReadAllBytes(_pluginPath);
+            var actualHash = Convert.ToHexString(SHA256.HashData(actualBytes));
+            if (!CryptographicOperations.FixedTimeEquals(
+                    Convert.FromHexString(expectedSha256.Trim()),
+                    Convert.FromHexString(actualHash)))
+            {
+                throw new SecurityException($"Integritätsprüfung fehlgeschlagen für Plugin '{Path.GetFileName(_pluginPath)}'. Erwartet: {expectedSha256}, Tatsächlich: {actualHash}");
+            }
+        }
+
         _resolver = new AssemblyDependencyResolver(_pluginPath);
     }
 

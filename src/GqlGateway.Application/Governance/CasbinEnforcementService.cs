@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Security;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -109,9 +110,29 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         "Diagnostics.", "Compiler", "IO.", "Security.", "Microsoft.", "Configuration", "Registry"
     ];
 
+    private static readonly Regex SafeSubRulePattern = new(
+        @"^[a-zA-Z0-9_.\s()|&!=<>',\[\]""+\-/*]+$",
+        RegexOptions.Compiled);
+
     private static void ValidateSubRuleTokens(string subRule, string? rlsFilter)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(subRule);
+
+        if (subRule.Length > 500)
+        {
+            throw new ArgumentException("Sicherheitsfehler: Casbin sub_rule überschreitet die maximale Länge von 500 Zeichen.", nameof(subRule));
+        }
+
+        if (!SafeSubRulePattern.IsMatch(subRule))
+        {
+            throw new ArgumentException("Sicherheitsfehler: Casbin sub_rule enthält nicht erlaubte Zeichen.", nameof(subRule));
+        }
+
+        if (!string.IsNullOrWhiteSpace(rlsFilter) && rlsFilter.Length > 1000)
+        {
+            throw new ArgumentException("Sicherheitsfehler: Casbin rls_filter überschreitet die maximale Länge von 1000 Zeichen.", nameof(rlsFilter));
+        }
+
         foreach (var token in DangerousSubRuleTokens)
         {
             if (subRule.Contains(token, StringComparison.OrdinalIgnoreCase))
@@ -329,21 +350,40 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         return result;
     }
 
+    private static readonly Regex SafeClaimValueRegex = new(@"^[a-zA-Z0-9\-_.@: ]{1,256}$", RegexOptions.Compiled);
+
+    private static string SanitizeClaimForSql(string? value, string claimName)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        if (!SafeClaimValueRegex.IsMatch(value))
+        {
+            throw new SecurityException($"Sicherheitsfehler: Claim '{claimName}' enthält ungültige Zeichen für SQL-RLS-Interpolation.");
+        }
+        return value.Replace("'", "''");
+    }
+
     private static string InterpolateRlsFilter(string filterTemplate, SecurityEvaluationContext context)
     {
+        var userSid = SanitizeClaimForSql(context.UserSid.Value, "user_sid");
+        var tenant = SanitizeClaimForSql(context.Tenant.Value, "tenant");
+        var department = SanitizeClaimForSql(context.Department, "department");
+        var region = SanitizeClaimForSql(context.Region, "region");
+        var clearance = SanitizeClaimForSql(context.ClearanceLevel, "clearance");
+        var purpose = SanitizeClaimForSql(context.PurposeId, "purpose");
+
         var result = filterTemplate
-            .Replace("${r.sub}", context.UserSid.Value, StringComparison.OrdinalIgnoreCase)
-            .Replace("${user_sid}", context.UserSid.Value, StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.tenant}", context.Tenant.Value, StringComparison.OrdinalIgnoreCase)
-            .Replace("${tenant}", context.Tenant.Value, StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.ctx.Department}", context.Department ?? "", StringComparison.OrdinalIgnoreCase)
-            .Replace("${department}", context.Department ?? "", StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.ctx.Region}", context.Region ?? "", StringComparison.OrdinalIgnoreCase)
-            .Replace("${region}", context.Region ?? "", StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.ctx.ClearanceLevel}", context.ClearanceLevel ?? "", StringComparison.OrdinalIgnoreCase)
-            .Replace("${clearance}", context.ClearanceLevel ?? "", StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.ctx.PurposeId}", context.PurposeId ?? "", StringComparison.OrdinalIgnoreCase)
-            .Replace("${purpose}", context.PurposeId ?? "", StringComparison.OrdinalIgnoreCase);
+            .Replace("${r.sub}", userSid, StringComparison.OrdinalIgnoreCase)
+            .Replace("${user_sid}", userSid, StringComparison.OrdinalIgnoreCase)
+            .Replace("${r.tenant}", tenant, StringComparison.OrdinalIgnoreCase)
+            .Replace("${tenant}", tenant, StringComparison.OrdinalIgnoreCase)
+            .Replace("${r.ctx.Department}", department, StringComparison.OrdinalIgnoreCase)
+            .Replace("${department}", department, StringComparison.OrdinalIgnoreCase)
+            .Replace("${r.ctx.Region}", region, StringComparison.OrdinalIgnoreCase)
+            .Replace("${region}", region, StringComparison.OrdinalIgnoreCase)
+            .Replace("${r.ctx.ClearanceLevel}", clearance, StringComparison.OrdinalIgnoreCase)
+            .Replace("${clearance}", clearance, StringComparison.OrdinalIgnoreCase)
+            .Replace("${r.ctx.PurposeId}", purpose, StringComparison.OrdinalIgnoreCase)
+            .Replace("${purpose}", purpose, StringComparison.OrdinalIgnoreCase);
 
         if (context.Attributes != null)
         {
@@ -351,9 +391,10 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
             {
                 if (v != null)
                 {
+                    var sanitized = SanitizeClaimForSql(v.ToString(), k);
                     result = result
-                        .Replace($"${{attr.{k}}}", v.ToString(), StringComparison.OrdinalIgnoreCase)
-                        .Replace($"${{{k}}}", v.ToString(), StringComparison.OrdinalIgnoreCase);
+                        .Replace($"${{attr.{k}}}", sanitized, StringComparison.OrdinalIgnoreCase)
+                        .Replace($"${{{k}}}", sanitized, StringComparison.OrdinalIgnoreCase);
                 }
             }
         }

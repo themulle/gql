@@ -31,3 +31,13 @@ codebase_review.txt
 src_codebase_review.txt
 full_codebase_review.txt
 
+## Secrets & Certificates
+*.pfx
+*.pem
+*.key
+*.crt
+*.cert
+*.p12
+.env
+.env.*
+

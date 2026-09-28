@@ -104,6 +104,12 @@ public static class GatewayServiceCollectionExtensions
                 environment.IsDevelopment() || !opts.IsAnonymousAccessAllowed,
                 "Sicherheitsverletzung: danger_allow_anonymous_access darf AUSSCHLIESSLICH in der Development-Umgebung true sein!")
             .Validate(opts =>
+                environment.IsDevelopment() || !opts.AreUntrustedCertificatesAllowed,
+                "Sicherheitsverletzung: danger_allow_untrusted_certificates darf AUSSCHLIESSLICH in der Development-Umgebung true sein!")
+            .Validate(opts =>
+                environment.IsDevelopment() || !opts.GraphQL.TrustedOrigins.Contains("*"),
+                "Sicherheitsverletzung: TrustedOrigins '*' (Wildcard-CORS) ist außerhalb der Development-Umgebung aus Sicherheitsgründen (CSRF-Schutz) verboten!")
+            .Validate(opts =>
                 environment.IsDevelopment() || (
                     !string.IsNullOrWhiteSpace(opts.DataMasking.HmacSecretKeyVaultRef) &&
                     opts.DataMasking.HmacSecretKeyVaultRef != "DEV_INSECURE_TEST_KEY_ONLY" &&
@@ -238,9 +244,10 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ISqlFilterProvider>(new SqlFilterProvider(gatewayOptions.GraphQL.MaxInClauseBatchSize));
 
         // Data Catalog Services & Clients (P1)
-        services.AddHttpClient<PurviewDataCatalogClient>();
-        services.AddHttpClient<CollibraDataCatalogClient>();
-        services.AddHttpClient<OpenMetadataDataCatalogClient>();
+        services.AddTransient<SsrfProtectionHandler>();
+        services.AddHttpClient<PurviewDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<CollibraDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<OpenMetadataDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddSingleton<IDataCatalogClientFactory, DataCatalogClientFactory>();
         services.AddSingleton<IDataCatalogSyncService, DataCatalogSyncService>();
 
@@ -347,8 +354,8 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IDifferentialPrivacyEngine, DifferentialPrivacyEngine>();
 
         // ITSM Dispatcher, Outbound REST Clients (ServiceNow & Jira) & Inbound Webhooks
-        services.AddHttpClient<ServiceNowTableApiClient>();
-        services.AddHttpClient<JiraCloudRestClient>();
+        services.AddHttpClient<ServiceNowTableApiClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<JiraCloudRestClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddScoped<IItsmWorkflowClient, ServiceNowTableApiClient>();
         services.AddScoped<IItsmWorkflowClient, JiraCloudRestClient>();
         services.AddScoped<ItsmWorkflowDispatcher>();
@@ -365,12 +372,12 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ILineageGraphStore, LineageGraphStore>();
         services.AddScoped<ILineageImpactAnalyzerService, LineageImpactAnalyzerService>();
         services.AddSingleton<IGdprAuditReportExporter, GdprAuditReportPdfExporter>();
-        services.AddHttpClient<OpenLineageClient>();
+        services.AddHttpClient<OpenLineageClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddScoped<IOpenLineageClient, OpenLineageClient>();
 
 
         // AI Assisted Governance (OpenJEV & Triage)
-        services.AddHttpClient("OpenJev");
+        services.AddHttpClient("OpenJev").AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddSingleton<IOpenJevClient>(sp =>
         {
             var factory = sp.GetRequiredService<IHttpClientFactory>();
@@ -683,8 +690,8 @@ public static class GatewayServiceCollectionExtensions
         var maxCost = gatewayOptions.AreQueryLimitsRelaxed ? 100000 : gatewayOptions.GraphQL.MaxAllowedComplexity;
 
         services.AddScoped<IClientTierResolver, ClientTierResolver>();
-        services.AddHttpClient<CloudflareCdnPurgeService>();
-        services.AddHttpClient<FastlyCdnPurgeService>();
+        services.AddHttpClient<CloudflareCdnPurgeService>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<FastlyCdnPurgeService>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddTransient<ICdnCachePurgeService, CloudflareCdnPurgeService>();
 
         services.AddFusionFederationServices(gatewayOptions);
@@ -821,6 +828,16 @@ public static class GatewayServiceCollectionExtensions
                 throw new ValidationException("Sicherheitsverletzung: OpenMetadata.ServerUrl muss außerhalb von Development zwingend HTTPS verwenden.");
             }
 
+            if (options.AreUntrustedCertificatesAllowed)
+            {
+                throw new ValidationException("Sicherheitsverletzung: danger_allow_untrusted_certificates darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
+            }
+
+            if (options.GraphQL.TrustedOrigins.Contains("*"))
+            {
+                throw new ValidationException("Sicherheitsverletzung: TrustedOrigins '*' (Wildcard-CORS) ist außerhalb der Development-Umgebung aus Sicherheitsgründen (CSRF-Schutz) verboten!");
+            }
+
             if (options.HighAvailability.MultiNodeClusterMode && !options.Caching.Redis.Enabled)
             {
                 throw new ValidationException("NF-HA-02 Verletzung: Im MultiNodeClusterMode erfordert die clusterweite Cache- und Epoch-Invalidierung zwingend Caching.Redis.Enabled = true!");
@@ -850,5 +867,21 @@ public static class GatewayServiceCollectionExtensions
                 }
             }
         }
+    }
+}
+
+/// <summary>
+/// DelegatingHandler enforcing strict SSRF validation via DeclarativeHttpDataSourceExecutor.ValidateUrl
+/// across all outbound HTTP requests made by ITSM, Catalog, Lineage, and CDN purge clients (HIGH-03).
+/// </summary>
+public sealed class SsrfProtectionHandler : DelegatingHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (request.RequestUri != null)
+        {
+            DeclarativeHttpDataSourceExecutor.ValidateUrl(request.RequestUri);
+        }
+        return base.SendAsync(request, cancellationToken);
     }
 }
