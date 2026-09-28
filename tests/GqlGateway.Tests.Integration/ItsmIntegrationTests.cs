@@ -38,9 +38,8 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
     private string ComputeSignature(string payload, DateTimeOffset? timestamp = null)
     {
         var keyBytes = Encoding.UTF8.GetBytes(WebhookSecret);
-        var message = timestamp.HasValue
-            ? $"t={timestamp.Value:O}.v1={payload}"
-            : payload;
+        var ts = timestamp ?? DateTimeOffset.UtcNow;
+        var message = $"t={ts:O}.v1={payload}";
         var hash = HMACSHA256.HashData(keyBytes, Encoding.UTF8.GetBytes(message));
         return Convert.ToHexString(hash);
     }
@@ -76,11 +75,40 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
             Action = "APPROVE"
         });
 
-        var signature = ComputeSignature(payload);
+        var expiredTimestamp = DateTimeOffset.UtcNow.AddMinutes(-10);
+        var signature = ComputeSignature(payload, expiredTimestamp);
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/itsm/status-change");
         request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         request.Headers.Add("X-ITSM-Signature", signature);
-        request.Headers.Add("X-ITSM-Timestamp", DateTimeOffset.UtcNow.AddMinutes(-10).ToString("O"));
+        request.Headers.Add("X-ITSM-Timestamp", expiredTimestamp.ToString("O"));
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Webhook_ReplayAttackWithModifiedTimestamp_Returns401Unauthorized()
+    {
+        // Finding B3 Verification:
+        // An attacker has a legitimate payload and signature signed at T1.
+        // Attacker attempts to replay by changing the timestamp header to T2 (fresh).
+        // Since the HMAC strictly binds the timestamp, this must be rejected with 401 Unauthorized.
+        var client = _factory.CreateClient();
+        var payload = JsonSerializer.Serialize(new
+        {
+            TicketId = "INC9999",
+            InstanceId = "inst-tenant-a",
+            Action = "APPROVE"
+        });
+
+        var t1 = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var validSignatureAtT1 = ComputeSignature(payload, t1);
+
+        var t2 = DateTimeOffset.UtcNow; // Fresh timestamp
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/itsm/status-change");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        request.Headers.Add("X-ITSM-Signature", validSignatureAtT1);
+        request.Headers.Add("X-ITSM-Timestamp", t2.ToString("O"));
 
         var response = await client.SendAsync(request);
         response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
@@ -122,11 +150,12 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
             Action = "APPROVE"
         });
 
-        var signature = ComputeSignature(payload);
+        var timestamp = DateTimeOffset.UtcNow;
+        var signature = ComputeSignature(payload, timestamp);
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/itsm/status-change");
         request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         request.Headers.Add("X-ITSM-Signature", signature);
-        request.Headers.Add("X-ITSM-Timestamp", DateTimeOffset.UtcNow.ToString("O"));
+        request.Headers.Add("X-ITSM-Timestamp", timestamp.ToString("O"));
 
         var response = await client.SendAsync(request);
         response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
@@ -171,12 +200,13 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
             Action = "APPROVE"
         });
 
-        var signature = ComputeSignature(payload);
+        var timestamp = DateTimeOffset.UtcNow;
+        var signature = ComputeSignature(payload, timestamp);
         using (var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/itsm/status-change"))
         {
             request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
             request.Headers.Add("X-ITSM-Signature", signature);
-            request.Headers.Add("X-ITSM-Timestamp", DateTimeOffset.UtcNow.ToString("O"));
+            request.Headers.Add("X-ITSM-Timestamp", timestamp.ToString("O"));
 
             var response = await client.SendAsync(request);
             response.StatusCode.ShouldBe(HttpStatusCode.OK);
@@ -199,7 +229,7 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
         {
             repeatRequest.Content = new StringContent(payload, Encoding.UTF8, "application/json");
             repeatRequest.Headers.Add("X-ITSM-Signature", signature);
-            repeatRequest.Headers.Add("X-ITSM-Timestamp", DateTimeOffset.UtcNow.ToString("O"));
+            repeatRequest.Headers.Add("X-ITSM-Timestamp", timestamp.ToString("O"));
 
             var repeatResponse = await client.SendAsync(repeatRequest);
             repeatResponse.StatusCode.ShouldBe(HttpStatusCode.OK);

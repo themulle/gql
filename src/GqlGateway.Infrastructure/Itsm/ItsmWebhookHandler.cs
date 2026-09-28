@@ -87,7 +87,6 @@ public sealed class ItsmWebhookHandler(
             }
 
             byte[] computedHashWithTimestamp = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes($"t={timestamp:O}.v1={rawPayload}"));
-            byte[] computedHashRaw = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes(rawPayload));
             byte[] providedHash;
             try
             {
@@ -99,9 +98,8 @@ public sealed class ItsmWebhookHandler(
                 return false;
             }
 
-            // 3. Timing-sicherer Signaturvergleich (Timestamp-gebunden oder Roh-Payload mit Header-Timestamp-Validierung)
-            bool signatureValid = CryptographicOperations.FixedTimeEquals(computedHashWithTimestamp, providedHash) ||
-                                  CryptographicOperations.FixedTimeEquals(computedHashRaw, providedHash);
+            // 3. Timing-sicherer Signaturvergleich (Strikte Timestamp-gebundene HMAC-Validierung zur Replay-Abwehr)
+            bool signatureValid = CryptographicOperations.FixedTimeEquals(computedHashWithTimestamp, providedHash);
             if (!signatureValid)
             {
                 logger.LogWarning("Webhook abgelehnt: Ungültige HMAC-SHA256-Signatur.");
@@ -192,7 +190,7 @@ public sealed class ItsmWebhookHandler(
 
             string ticketId = string.Empty;
             string instanceId = headerInstanceId ?? string.Empty;
-            string action = "APPROVE";
+            string action = "REJECT";
             string? reason = null;
             string detectedSystem = "ITSM";
 
@@ -212,7 +210,7 @@ public sealed class ItsmWebhookHandler(
 
             if (root.TryGetProperty("Action", out var aProp) || root.TryGetProperty("action", out aProp))
             {
-                action = aProp.GetString() ?? "APPROVE";
+                action = aProp.GetString() ?? "REJECT";
             }
 
             if (root.TryGetProperty("Reason", out var rProp) || root.TryGetProperty("reason", out rProp))

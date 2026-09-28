@@ -49,9 +49,10 @@ public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
         // 1. Tenant Isolation Check
         var subscriberTenant = subscriber.FindFirst("tenant_id")?.Value
             ?? subscriber.FindFirst("tenant")?.Value
-            ?? "default";
+            ?? subscriber.FindFirst("tid")?.Value
+            ?? TenantId.LegacySingleTenant.Value;
 
-        if (!string.IsNullOrWhiteSpace(cdcEvent.TenantId) &&
+        if (string.IsNullOrWhiteSpace(cdcEvent.TenantId) ||
             !string.Equals(cdcEvent.TenantId, subscriberTenant, StringComparison.OrdinalIgnoreCase))
         {
             _logger.LogDebug(

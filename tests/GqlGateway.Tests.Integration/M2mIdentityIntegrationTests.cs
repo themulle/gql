@@ -60,6 +60,7 @@ public class M2mIdentityIntegrationTests : IClassFixture<WebApplicationFactory<P
                 Effect = ConsentEffect.Allow,
                 GranteeType = GranteeType.ServicePrincipal,
                 GranteeSid = new Sid(appId),
+                TenantId = new TenantId("tenant-alpha"),
                 ValidFrom = DateTimeOffset.UtcNow.AddDays(-1),
                 ValidTo = DateTimeOffset.UtcNow.AddDays(30),
                 ColumnRules = new[]
@@ -126,6 +127,7 @@ public class M2mIdentityIntegrationTests : IClassFixture<WebApplicationFactory<P
                 Effect = ConsentEffect.Allow,
                 GranteeType = GranteeType.ServicePrincipal,
                 GranteeSid = new Sid(appId),
+                TenantId = new TenantId("tenant-alpha"),
                 ValidFrom = DateTimeOffset.UtcNow.AddDays(-1),
                 ValidTo = DateTimeOffset.UtcNow.AddDays(30),
                 ColumnRules = new[]

@@ -64,4 +64,15 @@ public static class ClaimsPrincipalExtensions
             .Select(c => c.Value)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
+
+    public static TenantId GetTenantId(this System.Security.Claims.ClaimsPrincipal? principal)
+    {
+        if (principal == null) return TenantId.LegacySingleTenant;
+
+        var val = principal.FindFirst("tenant_id")?.Value
+            ?? principal.FindFirst("tenant")?.Value
+            ?? principal.FindFirst("tid")?.Value;
+
+        return TenantId.TryParse(val, out var parsed) ? parsed : TenantId.LegacySingleTenant;
+    }
 }

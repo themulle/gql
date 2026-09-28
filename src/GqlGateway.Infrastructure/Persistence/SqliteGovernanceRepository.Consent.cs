@@ -36,7 +36,7 @@ public partial class SqliteGovernanceRepository
             var consents = new List<Consent>();
             using (var cmd = _connection.CreateCommand())
             {
-                var tenantFilter = tenantId != null ? " AND (c.tenant_id = @tenantId OR c.tenant_id = 'default' OR c.tenant_id = 'legacy-single-tenant')" : "";
+                var tenantFilter = tenantId != null ? " AND c.tenant_id = @tenantId" : "";
                 cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
                                            c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
                                            c.is_revoked, c.revoked_by_sid, c.revoked_at, c.revoke_reason,
@@ -127,7 +127,7 @@ public partial class SqliteGovernanceRepository
             var consents = new List<Consent>();
             using (var cmd = _connection.CreateCommand())
             {
-                var tenantFilter = tenantId != null ? " AND (c.tenant_id = @tenantId OR c.tenant_id = 'default' OR c.tenant_id = 'legacy-single-tenant')" : "";
+                var tenantFilter = tenantId != null ? " AND c.tenant_id = @tenantId" : "";
                 cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
                                            c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
                                            c.is_revoked, t.source_name, t.schema_name, t.table_name,
@@ -917,7 +917,7 @@ public partial class SqliteGovernanceRepository
             cmd.Parameters.AddWithValue("@roleName", (object?)consent.RoleName ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@from", consent.ValidFrom.ToString("O"));
             cmd.Parameters.AddWithValue("@to", consent.ValidTo.ToString("O"));
-            cmd.Parameters.AddWithValue("@tenantId", consent.TenantId.Value);
+            cmd.Parameters.AddWithValue("@tenantId", (object?)consent.TenantId.Value ?? TenantId.LegacySingleTenant.Value);
 
             await cmd.ExecuteNonQueryAsync(ct);
 

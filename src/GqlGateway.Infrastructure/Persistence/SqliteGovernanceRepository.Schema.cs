@@ -102,7 +102,7 @@ public partial class SqliteGovernanceRepository
                 revoked_by_sid TEXT,
                 revoked_at TEXT,
                 revoke_reason TEXT,
-                tenant_id TEXT NOT NULL DEFAULT 'legacy-default'
+                tenant_id TEXT NOT NULL DEFAULT 'legacy-single-tenant'
             );
 
             CREATE TABLE IF NOT EXISTS CONSENT_COLUMN_RULES (
@@ -295,7 +295,7 @@ public partial class SqliteGovernanceRepository
         }
 
         string[] requiredCols = {
-            "tenant_id TEXT NOT NULL DEFAULT 'legacy-default'"
+            "tenant_id TEXT NOT NULL DEFAULT 'legacy-single-tenant'"
         };
 
         foreach (var colDef in requiredCols)

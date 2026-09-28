@@ -176,7 +176,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
 
                 // Multi-Tenancy Isolation: Filter active consents strictly for current tenant
                 activeConsents = activeConsents
-                    .Where(c => c.TenantId == tenantId || c.TenantId == TenantId.LegacySingleTenant)
+                    .Where(c => c.TenantId == tenantId)
                     .ToList();
 
                 decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
@@ -625,7 +625,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, DateTimeOffset.UtcNow, tenantId, ct);
 
             activeConsents = activeConsents
-                .Where(c => c.TenantId == tenantId || c.TenantId == TenantId.LegacySingleTenant)
+                .Where(c => c.TenantId == tenantId)
                 .ToList();
 
             decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);

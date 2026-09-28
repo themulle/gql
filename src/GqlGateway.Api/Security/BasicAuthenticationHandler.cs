@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Logging;
@@ -117,7 +118,7 @@ public sealed class BasicAuthenticationHandler : AuthenticationHandler<Authentic
 
         var tenant = !string.IsNullOrWhiteSpace(configuredUser.TenantId)
             ? configuredUser.TenantId
-            : "default";
+            : TenantId.LegacySingleTenant.Value;
 
         var claims = new List<Claim>
         {

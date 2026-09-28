@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
@@ -276,7 +277,7 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
         }
         else
         {
-            tenant = "default";
+            tenant = TenantId.LegacySingleTenant.Value;
         }
 
         claims.Add(new Claim("tenant_id", tenant));

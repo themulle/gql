@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 
 namespace GqlGateway.Api.Security;
@@ -49,7 +50,7 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
                         ? aTidVal.ToString().Trim()
                         : (headers.TryGetValue("X-Tenant-Id", out var aTidAltVal) && !string.IsNullOrWhiteSpace(aTidAltVal)
                             ? aTidAltVal.ToString().Trim()
-                            : "default"));
+                            : TenantId.LegacySingleTenant.Value));
 
                 // Insecure Getting-Started: Allow anonymous access with guest identity (no admin privilege escalation)
                 List<Claim> anonClaims =
@@ -122,7 +123,7 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
                 ? tidVal.ToString().Trim()
                 : (headers.TryGetValue("X-Tenant-Id", out var tidAltVal) && !string.IsNullOrWhiteSpace(tidAltVal)
                     ? tidAltVal.ToString().Trim()
-                    : "default"));
+                    : TenantId.LegacySingleTenant.Value));
 
         claims.Add(new Claim("tenant_id", testTenant));
         claims.Add(new Claim("tenant", testTenant));

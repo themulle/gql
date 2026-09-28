@@ -13,9 +13,12 @@ using GqlGateway.Application.Governance;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.Services;
 using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
+using GqlGateway.Infrastructure.Persistence;
 using GqlGateway.Infrastructure.Security;
+using GqlGateway.Application.Streaming.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -439,5 +442,113 @@ public class SecurityFindingsRemediationTests
 
         result.AutoGrantEligible.ShouldBeFalse();
         result.GrantedDuration.ShouldBeNull();
+    }
+
+    // =========================================================================
+    // Finding B1 & Hardening: Strict Tenant Isolation & TenantId Validation
+    // =========================================================================
+
+    [Fact]
+    public void TenantId_TrailingNewline_ThrowsArgumentException()
+    {
+        Should.Throw<ArgumentException>(() => new TenantId("tenant-alpha\n"));
+        Should.Throw<ArgumentException>(() => new TenantId("tenant-alpha\r\n"));
+    }
+
+    [Fact]
+    public async Task SqliteGovernanceRepository_StrictTenantIsolation_DoesNotCrossLeakConsents()
+    {
+        // Finding B1 Verification:
+        // Consents in tenant-alpha MUST NOT be visible when querying tenant-beta or vice-versa.
+        var epochService = Substitute.For<IEpochValidationService>();
+        using var repo = new SqliteGovernanceRepository(epochService);
+
+        var tableId = new TableIdentifier("sales", "dbo", "orders");
+        var metadata = new TableMetadata
+        {
+            Identifier = tableId,
+            Table = new Table
+            {
+                Id = Guid.NewGuid(),
+                SourceName = "sales",
+                SchemaName = "dbo",
+                TableName = "orders",
+                Sensitivity = "CONFIDENTIAL",
+                IsActive = true
+            },
+            Columns =
+            [
+                new TableColumn { Id = Guid.NewGuid(), ColumnName = "id", DataType = "int" },
+                new TableColumn { Id = Guid.NewGuid(), ColumnName = "amount", DataType = "decimal" }
+            ]
+        };
+        await repo.UpsertTableMetadataAsync(metadata);
+
+        var userSid = new Sid("S-1-5-21-TENANT-USER");
+        var consent = new Consent
+        {
+            Id = Guid.NewGuid(),
+            TableId = metadata.Table.Id,
+            TableIdentifier = tableId,
+            Effect = ConsentEffect.Allow,
+            GranteeType = GranteeType.User,
+            GranteeSid = userSid,
+            ValidFrom = DateTimeOffset.UtcNow.AddMinutes(-5),
+            ValidTo = DateTimeOffset.UtcNow.AddDays(1),
+            TenantId = new TenantId("tenant-alpha")
+        };
+        await repo.CreateConsentAsync(consent);
+
+        // Act & Assert 1: Querying with tenant-alpha returns the consent
+        var alphaConsents = await repo.GetActiveConsentsForSubjectsAsync([userSid], tableId, DateTimeOffset.UtcNow, new TenantId("tenant-alpha"));
+        alphaConsents.Count.ShouldBe(1);
+        alphaConsents[0].TenantId.ShouldBe(new TenantId("tenant-alpha"));
+
+        // Act & Assert 2: Querying with tenant-beta MUST NOT return the consent
+        var betaConsents = await repo.GetActiveConsentsForSubjectsAsync([userSid], tableId, DateTimeOffset.UtcNow, new TenantId("tenant-beta"));
+        betaConsents.Count.ShouldBe(0);
+
+        // Act & Assert 3: Querying all active consents with tenant-beta MUST NOT return the consent
+        var allBetaConsents = await repo.GetAllActiveConsentsForSubjectsAsync([userSid], null, DateTimeOffset.UtcNow, new TenantId("tenant-beta"));
+        allBetaConsents.Count.ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task StreamRlsPolicyEnforcer_EmptyCdcTenantId_ReturnsDenied()
+    {
+        // Finding F-02 Verification:
+        // A CDC event with null or empty TenantId must fail closed and be denied.
+        var policyEnforcement = Substitute.For<IPolicyEnforcementService>();
+        var metadataRepo = Substitute.For<ITableMetadataRepository>();
+        var maskingProvider = Substitute.For<IColumnMaskingProvider>();
+        var epochService = Substitute.For<IEpochValidationService>();
+
+        var enforcer = new StreamRlsPolicyEnforcer(
+            policyEnforcement,
+            metadataRepo,
+            maskingProvider,
+            epochService,
+            NullLogger<StreamRlsPolicyEnforcer>.Instance);
+
+        var table = new TableIdentifier("sales", "crm", "leads");
+        var cdcEvent = new CdcEvent(
+            EventId: "evt-empty-tenant",
+            Table: table,
+            Operation: CdcOperation.Insert,
+            TenantId: null!, // Missing TenantId
+            Before: null,
+            After: new System.Collections.Generic.Dictionary<string, object?> { ["id"] = 1 },
+            Timestamp: DateTimeOffset.UtcNow);
+
+        var subscriber = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", "tenant-alpha"),
+            new Claim(ClaimTypes.PrimarySid, "S-1-5-SUBSCRIBER")
+        }));
+
+        var decision = await enforcer.EvaluateAndMaskAsync(cdcEvent, subscriber);
+
+        decision.IsAllowed.ShouldBeFalse();
+        decision.FilterReason.ShouldBe("Tenant mismatch");
     }
 }

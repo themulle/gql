@@ -10,7 +10,7 @@ using System.Text.RegularExpressions;
 /// </summary>
 public readonly record struct TenantId
 {
-    private static readonly Regex SafeTenantIdRegex = new("^[a-zA-Z0-9_-]{1,64}$", RegexOptions.Compiled);
+    private static readonly Regex SafeTenantIdRegex = new(@"^[a-zA-Z0-9_-]{1,64}\z", RegexOptions.Compiled);
 
     public string Value { get; }
 

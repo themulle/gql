@@ -104,8 +104,9 @@ public sealed class Query
         }
 
         // F-CONS-04: Non-admins only see tables for which they have at least one active ALLOW consent
+        var tenantId = principal.GetTenantId();
         var allSubjects = groupSids.Append(userSid).ToList();
-        var activeConsents = await consentRepository.GetAllActiveConsentsForSubjectsAsync(allSubjects, roles, DateTimeOffset.UtcNow, ct);
+        var activeConsents = await consentRepository.GetAllActiveConsentsForSubjectsAsync(allSubjects, roles, DateTimeOffset.UtcNow, tenantId, ct);
         var allowedTableIds = activeConsents
             .Where(c => c.Effect == ConsentEffect.Allow)
             .Select(c => c.TableIdentifier)
