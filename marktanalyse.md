@@ -81,6 +81,7 @@ Die folgenden Differenzierungs- und Sicherheitsmerkmale sind in GqlGateway berei
 | :--- | :--- | :---: |
 | **Dual-Access Exposure (`F-API-03` & OData v4)** | Durchbricht die „GraphQL-Only Adoption Barrier“: Vollwertiger OData v4 HTTP GET Endpoint mit dynamischer OpenAPI 3.1 Spezifikation (`/odata/v4/$openapi`, `/odata/v4/{domain}/openapi.json|yaml`) und integriertem Swagger UI (`/docs`). Ermöglicht Data Scientists (Python/Pandas), BI-Tools (Power BI) und B2B-Partnern Zero-Tooling REST-Zugriff unter identischer Casbin Zero-Trust Governance. | ✅ **100% GA**<br/>(Integrationstests grün) |
 | **MSSQL & Hierarchischer Parquet Egress (Nested Queries)** | Löst das „Big Data via JSON“-Dilemma für Enterprise-Datenbanken: Nativer Apache Parquet Export direkt aus **Microsoft SQL Server (MSSQL)**, PostgreSQL, SQLite und Apache Iceberg. Unterstützt **verschachtelte GraphQL-Abfragen (1:N Relationen wie Customer -> Orders -> Items)** via Dremel `LIST<STRUCT>`-Serialisierung. Ermöglicht Data Science Teams (DuckDB, Polars, Pandas, PySpark) extrem schnellen, komprimierten Datentransfer unter strikter Einhaltung von SQL-RLS-Pushdown und DSGVO-Spaltenmaskierung – ohne CPU-Parsing-Overhead und ohne teure ETL-Pipelines. | ✅ **100% GA / Wave 2**<br/>(Columnar Engine) |
+| **Governed WebSQL Engine (`F-DATA-02`)** | Ermöglicht sichere HTTP-basierte SQL-Statement-Ausführung (`POST /api/v1/sql`) nach dem Trino-Muster: Clients können gewohntes SQL senden, während ein AST-Linter (`Microsoft.SqlServer.TransactSql.ScriptDom`) unüberwindbar Read-Only erzwingt, Multi-Statements & Systemfunktionen sperrt, dynamisch Casbin-RLS in die `WHERE`-Klausel injiziert, Paging erzwingt und PII-Spalten maskiert. Beseitigt offene DB-Ports (1433/5432) und unkontrollierte DB-User. | 🟡 **Wave 2**<br/>(Security Linter & Rewriter) |
 | **dbt Data Health Circuit Breaker (`F-DBT-1`)** | Schützt Clients vor unbemerkten Upstream-Pipeline-Fehlern: Automatisierte Ingestion von `run_results.json` setzt fehlerhafte Modelle sofort im GraphQL-AST unter Quarantäne (`TABLE_IN_QUARANTINE` Blocker), flankiert durch RBAC-geschützte Endpunkte (`/run-results`, `/health`, `/health/reset`). | ✅ **100% GA**<br/>(100% Testabdeckung) |
 | **Enterprise AI Agent Suite (`F-AI-02`, `04`, `06`)** | Turnkey Model Context Protocol (MCP) Server (Stdio & SSE/Streamable HTTP) mit semantischem Schema-Grounding (`F-AI-02`), AST-basierter Pre-Flight Kostensimulation und Hard-Safety-Limits (`simulate_query` in `F-AI-04`) sowie revisionssicheren `_provenance`-Metadaten-Footnotes für EU-AI-Act-Audits (`F-AI-06`). | ✅ **100% GA**<br/>(MCP Testsuite grün) |
 | **Data Catalog Connectors (`P1`)** | Beseitigt manuelle Policy-Doppelpflege: Vollautomatischer Metadaten-Sync mit Microsoft Purview, Collibra und OpenMetadata via REST-Clients mit Polly 8 Resilienz, Entra ID OAuth, PII/DSGVO-Art.-9-Mapping und HMAC-Webhooks. | ✅ **100% GA**<br/>(Turnkey Connector Suite) |
@@ -633,6 +634,59 @@ GqlGateway löst diesen Konflikt auf elegante Weise: Konsumenten formulieren ihr
 
 ---
 
+#### 3.4.7 Governed WebSQL: Sichere HTTP-SQL-Ausführung via AST-Linter & RLS-Rewriter (Trino-Pattern für Web & REST)
+
+Neben GraphQL und OData fordern Data Scientists, interne Entwickler und Low-Code-Plattformen (Retool, Appsmith, Supabase-Clients) häufig die direkteste Form der Dateninteraktion: **reines SQL**.
+
+In traditionellen Architekturen führt dies zu einem gravierenden Sicherheits- und Compliance-Dilemma:
+1. **Gefahr offener DB-Ports (Port 1433 MSSQL, Port 5432 Postgres):** Entwickler fordern VPN- oder Firewall-Freischaltungen, um per ODBC/JDBC auf Produktionsdatenbanken zuzugreifen.
+2. **Unkontrollierte Zugriffsrechte & Schatten-Accounts:** Direkte DB-User umgehen zentrale Identitätsanbieter (Entra ID, OIDC) und das Zero-Trust-Governance-Modell des Unternehmens.
+3. **Keine RLS- und PII-Garantien:** Wer direkten SQL-Zugriff hat, sieht unmaskierte Rohdaten (Gehälter, IBANs, Kundennamen) ohne Zweckprüfung.
+
+##### Die Lösung: Governed WebSQL (`POST /api/v1/sql` nach dem Trino-Statement-Muster)
+Inspiriert vom REST-Statement-Interface führender Data-Virtualization-Engines wie **Trino** (`POST /v1/statement`) bietet GqlGateway eine **vollständig gehärtete WebSQL-Schnittstelle**. Der Client sendet ein gewohntes SQL-`SELECT` per HTTP-POST; das Gateway garantiert eine unüberwindbare Sicherheits- und Governance-Prüfung:
+
+```mermaid
+flowchart TD
+    REQ["1. Client HTTP Ingress<br/>POST /api/v1/sql<br/>Body: 'SELECT id, email, amount FROM crm.orders WHERE amount > 100'"]
+    --> PARSE["2. SQL AST Parser<br/>(Microsoft.SqlServer.TransactSql.ScriptDom / ANSI Parser)<br/>Wandelt Text in abstrakten Syntaxbaum (AST) um"]
+
+    PARSE --> LINT["3. Security Linter & Whitelist Gate<br/>• NUR SelectStatement erlaubt<br/>• Multi-Statements verboten (kein Semicolon Chaining)<br/>• Keine DDL/DML (DROP, INSERT, UPDATE, DELETE)<br/>• Keine Stored Procedures (EXEC, xp_cmdshell)<br/>• DoS-Schutz: Max. 5 Joins, max. 3 Subquery-Ebenen"]
+
+    LINT --> GOV["4. Zero-Trust Katalog- & Consent-Prüfung<br/>• Extraktion der Tabellen & Spalten (crm.orders)<br/>• Prüfung: Consent/Zweckbindung vorhanden?<br/>• Mandanten-Berechtigung (Casbin ABAC) aktiv?"]
+
+    GOV --> REWRITE["5. AST-Rewriter (RLS & Limits)<br/>• Injektion des Mandanten-RLS-Filters in WHERE<br/>• Injektion / Clamping von TOP/LIMIT (z. B. TOP 1000)"]
+
+    REWRITE --> EXEC["6. Execution Engine<br/>Ausführung auf MSSQL / Postgres / Lakehouse<br/>mit striktem CancellationToken Timeout"]
+
+    EXEC --> MASK["7. In-Flight PII-Maskierung & Streaming<br/>Maskierung sensibler Felder (email -> a***@domain.de)"]
+    --> RESP["8. HTTP 200 OK Response<br/>Content-Type: application/json (oder Parquet!)<br/>Chunked JSON-Row-Stream"]
+```
+
+##### Die 5 Schutzstufen im Detail:
+1. **AST-Parsing & Read-Only Whitelisting:** Strikte Beschränkung auf `SelectStatement`. Blockieren von `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `MERGE` und Multi-Statement-Chaining (`; DROP TABLE ...`).
+2. **Sicherheits-Linter & Anti-DoS:** Ausschluss gefährlicher Built-in-Funktionen (`OPENROWSET`, `xp_cmdshell`, `WAITFOR DELAY`, `pg_sleep`). Automatische Begrenzung von Join-Tiefe und Subqueries.
+3. **Dynamischer AST RLS-Rewriter:** Modifiziert die `WHERE`-Klausel des Syntaxbaums direkt im Memory:
+   `original_where AND (tenant_id = 'TENANT_42' AND region IN ('EMEA'))`. Unüberwindbar für den Anwender.
+4. **Paging-Erzwingung:** Automatisches Ergänzen von `TOP 1000` / `LIMIT 1000`, falls der Client kein Limit angegeben hat.
+5. **In-Flight PII-Maskierung:** Anonymisierung sensibler Attribute vor der JSON-/Parquet-Serialisierung.
+
+##### Technische Komplexität & Aufwandseinschätzung:
+* **Komplexitätsgrad:** **MITTEL (3 von 5 / ca. 1.5 bis 2.5 Entwickler-Wochen / 60–100 Stunden).**
+* **Nutzung vorhandener Kernmodule:** Ca. 70% der Logik (JWT-Auth, Casbin-ABAC, RLS-Filter, Mandanten-Resolution, DataSource-Treiber, PII-Maskierung) existieren bereits voll funktionsfähig im Gateway.
+* **Neubau:**
+  * AST Parser & Read-Only Linter mit `Microsoft.SqlServer.TransactSql.ScriptDom` (3–4 Tage)
+  * AST RLS-Rewriter für `WhereClause` & `TopRowFilter` (3 Tage)
+  * WebSQL Controller & JSON/Parquet Streaming Handler (1–2 Tage)
+  * Pen-Testing & SQL-Injection-Testsuite (2 Tage)
+
+##### Product Manager Bewertung & Wettbewerbsvergleich:
+* **Gegenüber Apollo & Hasura:** Apollo besitzt keinerlei SQL-Verständnis. Hasura verlangt komplexe Konfigurationsdateien für jede Tabelle und bindet Nutzer an GraphQL. GqlGateway erlaubt Data Scientists und BI-Analysten, freies SQL sicher über HTTP abzufeuern.
+* **Gegenüber Trino:** Trino benötigt einen schweren Java-Cluster mit hohem Footprint und bietet keine dynamische PII-Maskierung oder ITSM-Sonderfreigaben im HTTP-Hot-Path. GqlGateway liefert ein schlankes, containerisiertes Single-Binary mit integrierter Zero-Trust-Governance.
+* **Priorisierung:** **Initiative `F-DATA-02: Governed WebSQL Engine`**, RICE-Score: **12.1** (Wave 2 Quick-Win).
+
+---
+
 ### 3.5 Langfristige Enterprise Differenzierungsmerkmale (Wave 2 Moats 2026/2027)
 
 Nachdem die grundlegenden Sicherheits-, Lifecycle- und Privacy-Engines (P10 Policy Simulation, P11 Smart Sunsetting, P12 Differential Privacy) bereits erfolgreich in GA überführt wurden, sichern vier langfristige strategische Alleinstellungsmerkmale die Marktführerschaft für stark regulierte Umgebungen (Banking, Healthcare, Defence, Public Sector) in Wave 2:
@@ -768,6 +822,7 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **F-AI-06: Provenance & Lineage Footnoting (Explainable AI / EU AI Act)** | 7 | 2.5 | 85% | 2.0 | 2.0 W | **14.9** | ✅ **100% Abgeschlossen (GA)** (Revisionssichere `_provenance` Footnotes) |
 | **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DATA-01: Hierarchical Parquet Egress & Nested Query Serialization** | 8 | 2.8 | 90% | 1.5 | 1.5 W | **13.4** | 🟡 **Priorität Wave 2 (Quick-Win Moat)** (Dremel `LIST<STRUCT>` & Flattened Parquet Export via HTTP Content Negotiation) |
+| **F-DATA-02: Governed WebSQL Engine (AST Linter & RLS Rewriter)** | 8 | 2.7 | 90% | 1.4 | 1.6 W | **12.1** | 🟡 **Priorität Wave 2 (Quick-Win Moat)** (Sichere HTTP-SQL-Ausführung nach Trino-Muster mit AST-Whitelisting & RLS-Injektion) |
 | **F-AI-03: Dynamic Few-Shot "Golden Query" Injection (Audit Replay)** | 8 | 2.2 | 90% | 1.1 | 1.3 W | **13.4** | 🟡 **Priorität Wave 2** |
 | **P11: Smart Schema Deprecation & Sunsetting Engine** | 9 | 2.2 | 95% | 1.4 | 2 W | **13.2** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DBT-4: dbt Cloud & Orchestrator HMAC Webhook Receiver** | 8 | 1.5 | 90% | 1.2 | 1.0 W | **12.9** | ✅ **100% Abgeschlossen (GA)** (Timing-safe HMAC-SHA256 Webhook Receiver) |
@@ -847,6 +902,7 @@ flowchart TD
         W2_10["P15 Confidential Compute Enclave Support (Intel SGX / AMD SEV)"]
         W2_11["P16 Post-Quantum Cryptography Hybrid TLS (ML-KEM)"]
         W2_12["F-DATA-01 Hierarchical Parquet Egress & Nested Query Serialization (Dremel LIST<STRUCT>)"]
+        W2_13["F-DATA-02 Governed WebSQL Engine (AST Linter, RLS Rewriter & HTTP Execution)"]
     end
 
     subgraph Wave3["Wave 3: Federation Joins, Closed-Loop Agent Feedback & dbt Mesh"]
