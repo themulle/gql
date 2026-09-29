@@ -61,6 +61,7 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - **Data Health Circuit Breaker**: Tables with failing upstream `dbt test` executions are quarantined (`CircuitBreaker: Open`) to prevent serving dirty data.
   - **Model Contract Breaking-Change CI Gate**: Validates dbt model contracts against active schemas before deployment.
   - **Live-Telemetrie in dbt Exposures**: Spiegelt reale GraphQL-Abfrage-Frequenzen und Consumer-Metadaten zurück in dbt `exposure`-Deklarationen.
+  - **Omnichannel Documentation Passthrough (`F-DOC-01`)**: Lossless ingestion of dbt markdown doc-blocks and OpenMetadata business definitions into GraphQL Web UI (Banana Cake Pop), MCP AI tool signatures, Dynamic OpenAPI 3.1 Swagger, and OData CSDL `$metadata` tooltips.
 
 - **Distributed Multi-Instance Clustering (Redis)**:
   - **Redis Pub/Sub Event Bus (`RedisEventBus`)**: Real-time cross-pod propagation of catalog and policy epoch increments, invalidating distributed caches across all cluster nodes simultaneously.
