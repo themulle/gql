@@ -140,9 +140,7 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
                 var executionResult = await executor.ExecuteAsync(requestBuilder.Build(), cancellationToken).ConfigureAwait(false);
                 if (executionResult is OperationResult op)
                 {
-                    var writer = new System.Buffers.ArrayBufferWriter<byte>();
-                    HotChocolate.Transport.Formatters.JsonResultFormatter.Default.Format(op, writer);
-                    var json = System.Text.Encoding.UTF8.GetString(writer.WrittenSpan);
+                    var json = FormatOperationResult(op);
                     if (op.Errors is null || op.Errors.Count == 0)
                     {
                         return json;
@@ -296,5 +294,12 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
             }
             """
         };
+    }
+
+    private static string FormatOperationResult(OperationResult op)
+    {
+        var writer = new System.Buffers.ArrayBufferWriter<byte>();
+        HotChocolate.Transport.Formatters.JsonResultFormatter.Default.Format(op, writer);
+        return System.Text.Encoding.UTF8.GetString(writer.WrittenSpan);
     }
 }

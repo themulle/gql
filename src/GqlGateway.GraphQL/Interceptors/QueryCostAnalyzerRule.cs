@@ -32,6 +32,27 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
     public static int CalculateCost(DocumentNode document, ISchemaDefinition schema, int defaultListMultiplier = 10, int maxResponseRows = 1000)
     {
         var rule = new QueryCostAnalyzerRule(int.MaxValue, defaultListMultiplier, maxResponseRows);
+        return rule.ComputeCost(document, schema);
+    }
+
+    public void Validate(DocumentValidatorContext context, DocumentNode document)
+    {
+        int totalCost = ComputeCost(document, context.Schema);
+        if (totalCost > _maxAllowedCost)
+        {
+            _onQueryTooComplex?.Invoke();
+            context.ReportError(
+                ErrorBuilder.New()
+                    .SetMessage($"Die Abfrage überschreitet das Komplexitätsbudget von {_maxAllowedCost} (berechnete Kosten: {totalCost}).")
+                    .SetCode("QUERY_TOO_COMPLEX")
+                    .SetExtension("calculatedCost", totalCost)
+                    .SetExtension("maxAllowedCost", _maxAllowedCost)
+                    .Build());
+        }
+    }
+
+    public int ComputeCost(DocumentNode document, ISchemaDefinition schema)
+    {
         var fragments = document.Definitions
             .OfType<FragmentDefinitionNode>()
             .ToDictionary(f => f.Name.Value, f => f, StringComparer.Ordinal);
@@ -50,46 +71,11 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                     _ => schema.QueryType
                 };
 
-                totalCost += rule.CalculateSelectionSetCost(operation.SelectionSet, rootType, fragments, visitedFragments, schema);
+                totalCost += CalculateSelectionSetCost(operation.SelectionSet, rootType, fragments, visitedFragments, schema);
             }
         }
 
         return Math.Max(1, totalCost);
-    }
-
-    public void Validate(DocumentValidatorContext context, DocumentNode document)
-    {
-        var fragments = document.Definitions
-            .OfType<FragmentDefinitionNode>()
-            .ToDictionary(f => f.Name.Value, f => f, StringComparer.Ordinal);
-
-        var visitedFragments = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var def in document.Definitions)
-        {
-            if (def is OperationDefinitionNode operation)
-            {
-                var rootType = operation.Operation switch
-                {
-                    OperationType.Mutation => context.Schema.MutationType,
-                    OperationType.Subscription => context.Schema.SubscriptionType,
-                    _ => context.Schema.QueryType
-                };
-
-                int totalCost = CalculateSelectionSetCost(operation.SelectionSet, rootType, fragments, visitedFragments, context.Schema);
-                if (totalCost > _maxAllowedCost)
-                {
-                    _onQueryTooComplex?.Invoke();
-                    context.ReportError(
-                        ErrorBuilder.New()
-                            .SetMessage($"Die Abfrage überschreitet das Komplexitätsbudget von {_maxAllowedCost} (berechnete Kosten: {totalCost}).")
-                            .SetCode("QUERY_TOO_COMPLEX")
-                            .SetExtension("calculatedCost", totalCost)
-                            .SetExtension("maxAllowedCost", _maxAllowedCost)
-                            .Build());
-                }
-            }
-        }
     }
 
     private int CalculateSelectionSetCost(

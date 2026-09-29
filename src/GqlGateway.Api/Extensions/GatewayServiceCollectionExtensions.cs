@@ -696,12 +696,8 @@ public static class GatewayServiceCollectionExtensions
 
         services.AddFusionFederationServices(gatewayOptions);
 
-        services.AddSingleton(sp => new ErrorSanitizingFilter(
-            sp.GetRequiredService<IHostEnvironment>(),
-            sp.GetRequiredService<ILogger<ErrorSanitizingFilter>>()));
-
-        services.AddSingleton(sp => new WebSocketAuthInterceptor(
-            sp.GetRequiredService<ILogger<WebSocketAuthInterceptor>>()));
+        services.AddSingleton<ErrorSanitizingFilter>();
+        services.AddSingleton<WebSocketAuthInterceptor>();
 
         var gqlBuilder = services
             .AddGraphQLServer()
