@@ -8,6 +8,7 @@ using GqlGateway.Application.Governance.Interfaces;
 using GqlGateway.Application.Streaming.Interfaces;
 using GqlGateway.Infrastructure.Streaming;
 using GqlGateway.Application.SchemaRegistry;
+using GqlGateway.Application.OData.Interfaces;
 using GqlGateway.Extensions.OData;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
@@ -726,6 +727,70 @@ public static class GatewayApplicationBuilderExtensions
             return result.IsCompatible ? Results.Ok(result) : Results.UnprocessableEntity(result);
         }).RequireAuthorization();
 
+        // dbt Health & Circuit Breaker Endpoints (F-DBT-1)
+        app.MapPost("/api/extensions/dbt/run-results", async (
+            HttpContext context,
+            IDbtHealthCircuitBreaker circuitBreaker) =>
+        {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            if (context.Request.ContentLength > 50 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Run results payload exceeds maximum allowed size (50 MB)." });
+            }
+
+            var report = await circuitBreaker.RecordRunResultsAsync(context.Request.Body, context.RequestAborted);
+            return Results.Ok(report);
+        }).RequireAuthorization();
+
+        app.MapGet("/api/extensions/dbt/health", async (
+            HttpContext context,
+            IDbtHealthCircuitBreaker circuitBreaker) =>
+        {
+            if (context.Request.Query.TryGetValue("table", out var tableName) && !string.IsNullOrWhiteSpace(tableName))
+            {
+                var db = context.Request.Query.TryGetValue("database", out var dbVal) && !string.IsNullOrWhiteSpace(dbVal) ? dbVal.ToString() : "default";
+                var schema = context.Request.Query.TryGetValue("schema", out var schemaVal) && !string.IsNullOrWhiteSpace(schemaVal) ? schemaVal.ToString() : "default";
+                var tableId = new TableIdentifier(db, schema, tableName!);
+                var health = await circuitBreaker.GetTableHealthAsync(tableId, context.RequestAborted);
+                return Results.Ok(health);
+            }
+
+            var allStates = await circuitBreaker.GetAllHealthStatesAsync(context.RequestAborted);
+            return Results.Ok(allStates);
+        }).RequireAuthorization();
+
+        app.MapPost("/api/extensions/dbt/health/reset", async (
+            HttpContext context,
+            IDbtHealthCircuitBreaker circuitBreaker) =>
+        {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
+            if (context.Request.Query.TryGetValue("table", out var tableName) && !string.IsNullOrWhiteSpace(tableName))
+            {
+                var db = context.Request.Query.TryGetValue("database", out var dbVal) && !string.IsNullOrWhiteSpace(dbVal) ? dbVal.ToString() : "default";
+                var schema = context.Request.Query.TryGetValue("schema", out var schemaVal) && !string.IsNullOrWhiteSpace(schemaVal) ? schemaVal.ToString() : "default";
+                var tableId = new TableIdentifier(db, schema, tableName!);
+                await circuitBreaker.ResetTableHealthAsync(tableId, context.RequestAborted);
+                return Results.Ok(new { message = $"Table '{tableId}' health reset to healthy." });
+            }
+
+            await circuitBreaker.ResetAllAsync(context.RequestAborted);
+            return Results.Ok(new { message = "All table health states reset to healthy." });
+        }).RequireAuthorization();
+
 
         // P10: Multi-Tenant Policy Simulation Sandbox ("What-If" Replay via Audit Logs)
         app.MapPost("/api/governance/policy-simulation/replay", async (
@@ -885,6 +950,69 @@ public static class GatewayApplicationBuilderExtensions
             var xml = await odataHandler.GetMetadataCsdlAsync(context.RequestAborted);
             return Results.Content(xml, "application/xml;charset=utf-8");
         }).RequireAuthorization();
+
+        // Dynamic OpenAPI 3.1 & Swagger UI Explorer (F-API-03)
+        app.MapGet("/odata/v4/$openapi", async (
+            IDynamicOpenApiGenerator generator,
+            IOpenApiCacheManager cacheManager,
+            HttpContext context) =>
+        {
+            var format = context.Request.Query["format"].ToString();
+            var accept = context.Request.Headers.Accept.ToString();
+            bool isYaml = string.Equals(format, "yaml", StringComparison.OrdinalIgnoreCase) ||
+                          accept.Contains("application/yaml", StringComparison.OrdinalIgnoreCase);
+
+            var bytes = await cacheManager.GetOrAddAsync(
+                domainScope: null,
+                isYaml: isYaml,
+                factory: ct => isYaml ? generator.GenerateOpenApiYamlAsync(null, ct) : generator.GenerateOpenApiJsonAsync(null, ct),
+                ct: context.RequestAborted);
+
+            var contentType = isYaml ? "application/yaml;charset=utf-8" : "application/json;charset=utf-8";
+            return Results.Bytes(bytes, contentType: contentType);
+        }).RequireAuthorization();
+
+        app.MapGet("/odata/v4/{domain}/openapi.json", async (
+            string domain,
+            IDynamicOpenApiGenerator generator,
+            IOpenApiCacheManager cacheManager,
+            HttpContext context) =>
+        {
+            var bytes = await cacheManager.GetOrAddAsync(
+                domainScope: domain,
+                isYaml: false,
+                factory: ct => generator.GenerateOpenApiJsonAsync(domain, ct),
+                ct: context.RequestAborted);
+
+            return Results.Bytes(bytes, contentType: "application/json;charset=utf-8");
+        }).RequireAuthorization();
+
+        app.MapGet("/odata/v4/{domain}/openapi.yaml", async (
+            string domain,
+            IDynamicOpenApiGenerator generator,
+            IOpenApiCacheManager cacheManager,
+            HttpContext context) =>
+        {
+            var bytes = await cacheManager.GetOrAddAsync(
+                domainScope: domain,
+                isYaml: true,
+                factory: ct => generator.GenerateOpenApiYamlAsync(domain, ct),
+                ct: context.RequestAborted);
+
+            return Results.Bytes(bytes, contentType: "application/yaml;charset=utf-8");
+        }).RequireAuthorization();
+
+        app.MapGet("/odata/v4/$swagger", (HttpContext context) =>
+        {
+            context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
+            return Results.Content(SwaggerUiHtml, "text/html;charset=utf-8");
+        });
+
+        app.MapGet("/docs", (HttpContext context) =>
+        {
+            context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
+            return Results.Content(SwaggerUiHtml, "text/html;charset=utf-8");
+        });
 
         app.MapGet("/odata/v4/{domain}/{schema}/{tableName}", async (
             string domain,
@@ -1337,5 +1465,35 @@ public static class GatewayApplicationBuilderExtensions
 
         return app;
     }
+
+    private const string SwaggerUiHtml = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>GqlGateway - OData v4 OpenAPI 3.1 Explorer</title>
+      <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css" crossorigin="anonymous" />
+    </head>
+    <body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js" crossorigin="anonymous"></script>
+    <script>
+      window.onload = () => {
+        window.ui = SwaggerUIBundle({
+          url: '/odata/v4/$openapi',
+          dom_id: '#swagger-ui',
+          presets: [
+            SwaggerUIBundle.presets.apis,
+            SwaggerUIBundle.SwaggerUIStandalonePreset
+          ],
+          layout: "BaseLayout",
+          deepLinking: true
+        });
+      };
+    </script>
+    </body>
+    </html>
+    """;
 }
 

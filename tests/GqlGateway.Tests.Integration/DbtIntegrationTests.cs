@@ -2,6 +2,7 @@ namespace GqlGateway.Tests.Integration;
 
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -140,6 +141,122 @@ public class DbtIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var body = await response.Content.ReadAsStringAsync();
         body.ShouldContain("\"isCompatible\":true");
         body.ShouldContain("\"validatedModelsCount\":1");
+    }
+
+    [Fact]
+    public async Task DbtRunResultsAndHealthWorkflow_Succeeds()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-ADMIN-SID");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "GovernanceAdmin");
+
+        var sampleRunResults = """
+        {
+          "metadata": {
+            "dbt_version": "1.8.0",
+            "generated_at": "2026-09-29T05:00:00Z",
+            "elapsed_time": 1.5
+          },
+          "results": [
+            {
+              "status": "fail",
+              "execution_time": 0.5,
+              "unique_id": "test.analytics.not_null_monthly_revenue_account_id.xyz",
+              "failures": 5,
+              "message": "Got 5 nulls"
+            }
+          ]
+        }
+        """;
+
+        // 1. Post run_results.json
+        var content = new StringContent(sampleRunResults, Encoding.UTF8, "application/json");
+        var postResponse = await client.PostAsync("/api/extensions/dbt/run-results", content);
+        postResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 2. Query health for monthly_revenue
+        var healthResponse = await client.GetAsync("/api/extensions/dbt/health?table=monthly_revenue");
+        healthResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var healthBody = await healthResponse.Content.ReadAsStringAsync();
+        healthBody.ShouldContain("\"status\":2"); // Quarantined
+
+        // 3. Reset health
+        var resetResponse = await client.PostAsync("/api/extensions/dbt/health/reset?table=monthly_revenue", null);
+        resetResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 4. Verify healthy again
+        var recheckResponse = await client.GetAsync("/api/extensions/dbt/health?table=monthly_revenue");
+        recheckResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var recheckBody = await recheckResponse.Content.ReadAsStringAsync();
+        recheckBody.ShouldContain("\"status\":0"); // Healthy
+    }
+
+    [Fact]
+    public async Task GraphQLQuery_QuarantinedTable_BlocksWithTableInQuarantineError()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-ADMIN-SID");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "GovernanceAdmin");
+        client.DefaultRequestHeaders.Add("GraphQL-Preflight", "1");
+
+        // 1. Post failing run_results for finance_table_1
+        var sampleRunResults = """
+        {
+          "metadata": { "dbt_version": "1.8.0", "generated_at": "2026-09-29T05:00:00Z" },
+          "results": [
+            {
+              "status": "fail",
+              "unique_id": "test.analytics.not_null_finance_table_1_id.xyz",
+              "failures": 10,
+              "message": "Found 10 nulls in finance_table_1"
+            }
+          ]
+        }
+        """;
+
+        var content = new StringContent(sampleRunResults, Encoding.UTF8, "application/json");
+        var postResponse = await client.PostAsync("/api/extensions/dbt/run-results", content);
+        postResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 2. Query quarantined table via GraphQL
+        var query = new
+        {
+            query = @"query { table(domain: ""finance"", name: ""finance_table_1"") { tableName totalCount } }"
+        };
+        var gqlResponse = await client.PostAsJsonAsync("/graphql", query);
+        gqlResponse.StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+
+        var body = await gqlResponse.Content.ReadAsStringAsync();
+        body.ShouldContain("TABLE_IN_QUARANTINE");
+        body.ShouldContain("Quarantined");
+
+        // 3. Reset health
+        var resetResponse = await client.PostAsync("/api/extensions/dbt/health/reset?table=finance_table_1", null);
+        resetResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 4. Query again - should no longer be blocked by TABLE_IN_QUARANTINE
+        var recheckResponse = await client.PostAsJsonAsync("/graphql", query);
+        var recheckBody = await recheckResponse.Content.ReadAsStringAsync();
+        recheckBody.ShouldNotContain("TABLE_IN_QUARANTINE");
+    }
+
+    [Fact]
+    public async Task DbtRunResults_UnprivilegedUser_ReturnsForbidden()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-NORMAL-USER");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "Viewer");
+
+        var sampleRunResults = """
+        {
+          "metadata": { "dbt_version": "1.8.0", "generated_at": "2026-09-29T05:00:00Z" },
+          "results": []
+        }
+        """;
+
+        var content = new StringContent(sampleRunResults, Encoding.UTF8, "application/json");
+        var postResponse = await client.PostAsync("/api/extensions/dbt/run-results", content);
+        postResponse.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
     }
 }
 

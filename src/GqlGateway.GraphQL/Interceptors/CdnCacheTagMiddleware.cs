@@ -28,6 +28,7 @@ public sealed class CdnCacheTagMiddleware
         }
 
         var doc = context.OperationDocumentInfo?.Document;
+
         if (httpContext == null || doc == null)
         {
             return;

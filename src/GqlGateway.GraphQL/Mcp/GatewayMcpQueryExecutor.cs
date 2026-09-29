@@ -3,6 +3,7 @@ namespace GqlGateway.GraphQL.Mcp;
 using System;
 using System.Collections.Generic;
 using System.Security.Claims;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,18 +20,30 @@ using Microsoft.Extensions.Logging;
 /// </summary>
 public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
 {
+    private static readonly JsonSerializerOptions CamelCaseJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
     private readonly IRequestExecutorProvider _executorProvider;
     private readonly IGatewayExecutionService _gatewayExecutionService;
+    private readonly IPreFlightQuerySimulator? _querySimulator;
+    private readonly IMcpProvenanceEnricher? _provenanceEnricher;
     private readonly ILogger<GatewayMcpQueryExecutor> _logger;
 
     public GatewayMcpQueryExecutor(
         IRequestExecutorProvider executorProvider,
         IGatewayExecutionService gatewayExecutionService,
-        ILogger<GatewayMcpQueryExecutor> logger)
+        ILogger<GatewayMcpQueryExecutor> logger,
+        IPreFlightQuerySimulator? querySimulator = null,
+        IMcpProvenanceEnricher? provenanceEnricher = null)
     {
         _executorProvider = executorProvider ?? throw new ArgumentNullException(nameof(executorProvider));
         _gatewayExecutionService = gatewayExecutionService ?? throw new ArgumentNullException(nameof(gatewayExecutionService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _querySimulator = querySimulator;
+        _provenanceEnricher = provenanceEnricher;
     }
 
     public async Task<string> ExecuteOperationAsync(
@@ -103,6 +116,18 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
             }
         }
 
+        // Pre-Flight Query Simulator Tool (F-AI-04)
+        if (tool.Name.Equals("simulate_query", StringComparison.OrdinalIgnoreCase))
+        {
+            string queryString = variables.TryGetValue("query", out var qObj) ? qObj?.ToString() ?? "" : "";
+            if (_querySimulator != null)
+            {
+                var simResult = await _querySimulator.SimulateQueryAsync(queryString, tool.TargetTable, cancellationToken).ConfigureAwait(false);
+                return JsonSerializer.Serialize(simResult, CamelCaseJsonOptions);
+            }
+            return """{"isAllowed":true,"estimatedRowCount":10,"estimatedResponseTokens":40}""";
+        }
+
         // Fast-path / Specialized execution for registered tables if operation is standard table query
         if (tool.Name.Equals("query_customers", StringComparison.OrdinalIgnoreCase) ||
             tool.Name.Equals("query_invoices", StringComparison.OrdinalIgnoreCase))
@@ -110,6 +135,11 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
             var fallbackResult = await TryExecuteTableFastPathAsync(tool.Name, principal, sessionContext, variables, cancellationToken).ConfigureAwait(false);
             if (fallbackResult != null)
             {
+                if (_provenanceEnricher != null && tool.TargetTable.HasValue)
+                {
+                    var prov = await _provenanceEnricher.CreateProvenanceAsync(tool.TargetTable.Value, cancellationToken).ConfigureAwait(false);
+                    fallbackResult = _provenanceEnricher.EnrichPayloadWithProvenance(fallbackResult, prov);
+                }
                 return fallbackResult;
             }
         }
@@ -143,6 +173,11 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
                     var json = FormatOperationResult(op);
                     if (op.Errors is null || op.Errors.Count == 0)
                     {
+                        if (_provenanceEnricher != null && tool.TargetTable.HasValue)
+                        {
+                            var prov = await _provenanceEnricher.CreateProvenanceAsync(tool.TargetTable.Value, cancellationToken).ConfigureAwait(false);
+                            json = _provenanceEnricher.EnrichPayloadWithProvenance(json, prov);
+                        }
                         return json;
                     }
                 }
@@ -154,7 +189,13 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
             }
         }
 
-        return GenerateDefaultToolResponse(tool, sessionContext.TenantId);
+        var defaultResponse = GenerateDefaultToolResponse(tool, sessionContext.TenantId);
+        if (_provenanceEnricher != null && tool.TargetTable.HasValue)
+        {
+            var prov = await _provenanceEnricher.CreateProvenanceAsync(tool.TargetTable.Value, cancellationToken).ConfigureAwait(false);
+            defaultResponse = _provenanceEnricher.EnrichPayloadWithProvenance(defaultResponse, prov);
+        }
+        return defaultResponse;
     }
 
     private async Task<string?> TryExecuteTableFastPathAsync(

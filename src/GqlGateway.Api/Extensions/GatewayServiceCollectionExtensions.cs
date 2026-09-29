@@ -30,11 +30,14 @@ using GqlGateway.Application.Governance.Services;
 using GqlGateway.Application.Lineage;
 using GqlGateway.Application.Workflows;
 using GqlGateway.Application.Dbt.Interfaces;
+using GqlGateway.Application.Dbt.Services;
 using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.DataCatalog.Services;
 using GqlGateway.Infrastructure.DataCatalog;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Application.Mcp.Services;
+using GqlGateway.Application.OData.Interfaces;
+using GqlGateway.Application.OData.Services;
 using GqlGateway.Infrastructure.Itsm;
 using GqlGateway.Infrastructure.Lineage;
 using GqlGateway.Infrastructure.Plugins;
@@ -231,6 +234,9 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ITableRelationRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
         services.AddSingleton<IItsmOutboxRepository>(sp => sp.GetRequiredService<SqliteGovernanceRepository>());
         services.AddSingleton<IDbtProposalRepository, InMemoryDbtProposalRepository>();
+        services.AddSingleton<IDbtHealthCircuitBreaker, DbtHealthCircuitBreaker>();
+        services.AddSingleton<IOpenApiCacheManager, OpenApiCacheManager>();
+        services.AddSingleton<IDynamicOpenApiGenerator, DynamicOpenApiGenerator>();
         services.AddHttpClient<IAuditWormExportService, AuditWormExportService>();
         services.AddSingleton<IRlsFilterGenerator, RlsFilterGenerator>();
         services.AddSingleton<IRowFilterSqlBuilder, RowFilterSqlBuilder>();
@@ -402,6 +408,9 @@ public static class GatewayServiceCollectionExtensions
 
         // Model Context Protocol (MCP) Server & AI Data Guardrails
         services.AddSingleton<ISemanticPromptGuardrail, SemanticPromptGuardrail>();
+        services.AddSingleton<ISemanticMcpCompiler, SemanticMcpCompiler>();
+        services.AddTransient<IPreFlightQuerySimulator, PreFlightQuerySimulator>();
+        services.AddSingleton<IMcpProvenanceEnricher, McpProvenanceEnricher>();
         services.AddSingleton<IMcpSessionStore, McpSessionStore>();
         services.AddSingleton<IMcpToolRegistry, McpToolRegistry>();
         services.AddScoped<IMcpQueryExecutor, GqlGateway.GraphQL.Mcp.GatewayMcpQueryExecutor>();
@@ -701,6 +710,7 @@ public static class GatewayServiceCollectionExtensions
 
         var gqlBuilder = services
             .AddGraphQLServer()
+            .UseRequest<GqlGateway.GraphQL.Interceptors.DbtHealthExecutionMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CostAndQuotaMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CdnCacheTagMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Federation.SubgraphResultMaskingMiddleware>()

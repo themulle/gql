@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using GqlGateway.Application.Caching.Interfaces;
 using GqlGateway.Application.Interfaces;
 using HotChocolate.Execution;
+using HotChocolate.Language;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using RequestDelegate = HotChocolate.Execution.RequestDelegate;

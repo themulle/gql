@@ -93,6 +93,22 @@ public sealed class McpToolRegistry : IMcpToolRegistry
             TargetTable: new TableIdentifier("governance", "catalog", "assets")
         ));
 
+        // 4. Built-in tool: simulate_query (F-AI-04 Pre-Flight AST Simulator & Token Guard)
+        RegisterTool(new McpToolDefinition(
+            Name: "simulate_query",
+            Description: "Simulates an enterprise GraphQL query AST to calculate estimated rows, DB scan bytes, and token volume before execution.",
+            InputJsonSchema: """
+            {
+              "type": "object",
+              "required": ["query"],
+              "properties": {
+                "query": { "type": "string", "description": "The GraphQL query string to simulate." }
+              }
+            }
+            """,
+            TargetGraphQLOperation: "simulate_query"
+        ));
+
         // Register any explicitly declared operations
         if (allowedOperations != null)
         {

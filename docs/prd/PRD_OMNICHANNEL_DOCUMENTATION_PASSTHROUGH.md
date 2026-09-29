@@ -68,36 +68,45 @@ flowchart TD
 - **Komponente:** `GqlGateway.GraphQL/DynamicTypes/DynamicTableType.cs`
 - **Verhalten:**
   - Tabellen-Typ: `descriptor.Description(!string.IsNullOrWhiteSpace(_metadata.Table.Description) ? _metadata.Table.Description : _metadata.Table.DisplayName);`
-  - Spalten-Felder: `if (!string.IsNullOrWhiteSpace(col.Description)) { fieldDesc.Description(col.Description); }`
+  - Spalten-Felder: Strukturierte Markdown-Synthese aus `description` und `meta.long_description` / OpenMetadata Extension:
+    ```markdown
+    {col.Description}
+
+    ---
+    **Ausführliche Spezifikation:**
+    {col.Meta["long_description"]}
+    ```
 - **User Experience:**
   - Entwickler sehen in Banana Cake Pop / GraphiQL formatierte CommonMark Markdown-Texte inklusive Formeln, Hyperlinks und Hinweisen beim Hovern über jedes GraphQL-Feld.
 
 ### Kanal 2: Model Context Protocol (MCP) für autonome KI-Agenten
 - **Komponente:** `GqlGateway.GraphQL/Mcp/McpSchemaDiscoveryService.cs` & `GqlGateway.Application/Mcp`
 - **Verhalten:**
-  - Das aus dbt/OpenMetadata stammende Feldwissen wird direkt in das JSON-Schema der generierten MCP-Tools eingespeist.
-  - Parameter-Attribute: `"description": "Nettoumsatz in EUR nach IFRS 15 vor Skonto. Nur für abgeschlossene Belege (status = 1)."`
+  - **Zwei-Stufen-Modell zum Schutz des Token-Budgets:**
+    1. *Kompakte Tool-Signatur:* Kurzbeschreibung (`description`, < 120 Zeichen) direkt im JSON-Schema der MCP-Tool-Parameter (`"description": "Nettoumsatz in EUR nach IFRS 15."`).
+    2. *Tiefenkontext on Demand:* Vollständige `meta.long_description` und OpenMetadata Glossar-Definitionen als abrufbare MCP-Resource (`uri: dbt://models/{table}/columns/{col}/docs`).
 - **User Experience:**
-  - Zero-Shot Präzision: LLMs halluzinieren keine Bedeutungen mehr, sondern wählen zuverlässig die korrekte Spalte und den korrekten Filterwert.
+  - Zero-Shot Präzision: LLMs halluzinieren keine Bedeutungen mehr, sondern wählen zuverlässig die korrekte Spalte und den korrekten Filterwert, ohne durch Token-Overflow zu scheitern.
 
 ### Kanal 3: Dynamic OpenAPI 3.1 & Swagger UI (`F-API-03`)
 - **Komponente:** `GqlGateway.Application/OData/ODataHandler.cs` (`/odata/v4/$openapi`)
 - **Verhalten:**
-  - OpenAPI 3.1 JSON-Spezifikation enthält auf Property-Ebene autoritative Beschreibungen.
+  - OpenAPI 3.1 JSON-Spezifikation enthält auf Property-Ebene autoritative Beschreibungen (`description`) sowie strukturierte Vendor Extensions (`x-dbt-meta`, `x-openmetadata-extension`).
 - **User Experience:**
   - Client-Generatoren (`openapi-generator`) erzeugen typisierte TypeScript-, C#- und Python-Clients mit vollständigen JSDoc-/XML-Kommentaren für IntelliSense.
 
 ### Kanal 4: OData v4 CSDL Metadata & BI-Tools (Power BI, Excel)
 - **Komponente:** `GqlGateway.Extensions/OData/ODataCsdlGenerator.cs` (`/odata/v4/$metadata`)
 - **Verhalten:**
-  - Generiert standardisierte OASIS CSDL Annotationen:
+  - Generiert standardisierte OASIS CSDL Annotationen für Kurz- und Langbeschreibungen:
     ```xml
     <Property Name="revenue_net" Type="Edm.Decimal">
         <Annotation Term="Core.Description" String="Nettoumsatz berechnet nach IFRS15 aus dbt." />
+        <Annotation Term="Core.LongDescription" String="Berechnet aus FactInvoices unter Abzug aller Rahmenrabatte vor Skonto." />
     </Property>
     ```
 - **User Experience:**
-  - Fachanwender in Power BI und Excel erhalten beim Überfahren von Spaltennamen im Datenmodell die offizielle Definition angezeigt.
+  - Fachanwender in Power BI und Excel erhalten beim Überfahren von Spaltennamen im Datenmodell die offizielle Definition und in der Modellansicht die vollständige Dokumentation angezeigt.
 
 ---
 

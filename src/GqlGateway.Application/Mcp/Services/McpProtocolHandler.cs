@@ -18,18 +18,21 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
     private readonly IMcpSessionStore _sessionStore;
     private readonly IMcpToolRegistry _toolRegistry;
     private readonly IAiDataGuardrailService _guardrailService;
+    private readonly ISemanticMcpCompiler? _semanticCompiler;
     private readonly ILogger<McpProtocolHandler> _logger;
 
     public McpProtocolHandler(
         IMcpSessionStore sessionStore,
         IMcpToolRegistry toolRegistry,
         IAiDataGuardrailService guardrailService,
-        ILogger<McpProtocolHandler> logger)
+        ILogger<McpProtocolHandler> logger,
+        ISemanticMcpCompiler? semanticCompiler = null)
     {
         _sessionStore = sessionStore ?? throw new ArgumentNullException(nameof(sessionStore));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _guardrailService = guardrailService ?? throw new ArgumentNullException(nameof(guardrailService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _semanticCompiler = semanticCompiler;
     }
 
     public McpSessionContext CreateSession(string servicePrincipalId, string tenantId)
@@ -97,6 +100,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
             "ping" => HandlePing(rpcId),
             "tools/list" => HandleToolsList(rpcId),
             "tools/call" => await HandleToolsCallAsync(rpcId, root, session, cancellationToken).ConfigureAwait(false),
+            "resources/list" => await HandleResourcesListAsync(rpcId, cancellationToken).ConfigureAwait(false),
+            "resources/read" => await HandleResourcesReadAsync(rpcId, root, cancellationToken).ConfigureAwait(false),
             _ => CreateErrorResponse(rpcId, -32601, $"Method '{method}' not found.")
         };
     }
@@ -114,7 +119,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
               "version": "1.4.0"
             },
             "capabilities": {
-              "tools": { "listChanged": false }
+              "tools": { "listChanged": false },
+              "resources": { "subscribe": false, "listChanged": false }
             }
           }
         }
@@ -258,5 +264,83 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         return serialized.Length >= 2 && serialized[0] == '"' && serialized[^1] == '"'
             ? serialized[1..^1]
             : serialized;
+    }
+
+    private async Task<string> HandleResourcesListAsync(object? id, CancellationToken ct)
+    {
+        if (_semanticCompiler == null)
+        {
+            return $$"""
+            {
+              "jsonrpc": "2.0",
+              "id": {{FormatId(id)}},
+              "result": { "resources": [] }
+            }
+            """;
+        }
+
+        var resources = await _semanticCompiler.GetSemanticResourcesAsync(null, ct).ConfigureAwait(false);
+        var items = new List<string>(resources.Count);
+        foreach (var r in resources)
+        {
+            items.Add($$"""
+            {
+              "uri": "{{r.Uri}}",
+              "name": "{{r.Name}}",
+              "description": "{{EscapeJson(r.Description)}}",
+              "mimeType": "{{r.MimeType}}"
+            }
+            """);
+        }
+
+        return $$"""
+        {
+          "jsonrpc": "2.0",
+          "id": {{FormatId(id)}},
+          "result": {
+            "resources": [{{string.Join(",", items)}}]
+          }
+        }
+        """;
+    }
+
+    private async Task<string> HandleResourcesReadAsync(object? id, JsonElement root, CancellationToken ct)
+    {
+        if (_semanticCompiler == null)
+        {
+            return CreateErrorResponse(id, -32602, "Semantic resources provider not configured.");
+        }
+
+        if (!root.TryGetProperty("params", out var p) ||
+            !p.TryGetProperty("uri", out var uriProp) ||
+            uriProp.ValueKind != JsonValueKind.String)
+        {
+            return CreateErrorResponse(id, -32602, "Invalid params: 'uri' string parameter required.");
+        }
+
+        var uri = uriProp.GetString();
+        var allResources = await _semanticCompiler.GetSemanticResourcesAsync(null, ct).ConfigureAwait(false);
+        var target = allResources.FirstOrDefault(r => string.Equals(r.Uri, uri, StringComparison.OrdinalIgnoreCase));
+
+        if (target == null)
+        {
+            return CreateErrorResponse(id, -32004, $"Resource '{uri}' not found.");
+        }
+
+        return $$"""
+        {
+          "jsonrpc": "2.0",
+          "id": {{FormatId(id)}},
+          "result": {
+            "contents": [
+              {
+                "uri": "{{target.Uri}}",
+                "mimeType": "{{target.MimeType}}",
+                "text": "{{EscapeJson(target.Text)}}"
+              }
+            ]
+          }
+        }
+        """;
     }
 }
