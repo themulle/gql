@@ -699,6 +699,138 @@ Das Gateway synthetisiert die beiden Quellen (fachliche Definition aus OpenMetad
 
 ---
 
+#### 3.8.2 Erweiterte Enterprise-Metadatenquellen in den Extensions (Beyond Table Comments)
+
+Neben dbt und OpenMetadata schlummert in den bereits vorhandenen Konnektoren des `GqlGateway.Extensions`-Ökosystems ein hochkarätiges Geflecht weiterer Metadaten. Ein marktführendes Enterprise Gateway beschränkt sich nicht auf statische Tabellenkommentare, sondern fusioniert **operative, regulatorische und telemetrische Metadaten** zu einem ganzheitlichen semantischen Layer:
+
+```mermaid
+flowchart TD
+    subgraph Catalogs ["1. Enterprise Data Catalogs"]
+        PURVIEW["Microsoft Purview<br/>• MIP Sensitivity Labels (Confidential)<br/>• Atlas Classifications (MICROSOFT.PERSONAL.*)<br/>• Fachexperten (contacts.Expert)"]
+        COLLIBRA["Collibra Data Intelligence<br/>• Certified / Approved Trust Badges<br/>• Governance Operating Model (Community/Domain)<br/>• Data Privacy Classifications"]
+        ALATION["Alation Data Catalog<br/>• Trust Flags (Endorsed / Deprecated)<br/>• Query Popularity & Top Users"]
+    end
+
+    subgraph Lakehouse ["2. Lakehouse Engine"]
+        ICEBERG["Apache Iceberg v2 Connector<br/>• schema.fields[].doc (Spark/Trino Docs)<br/>• properties.comment (Table Comment)<br/>• Snapshot Freshness (last-updated-ms)<br/>• Gesamtzeilen (summary.total-records)"]
+    end
+
+    subgraph ITSM ["3. Operative IT & CMDB"]
+        SERVICENOW["ServiceNow CMDB<br/>• Business Criticality (Tier-1 Mission Critical)<br/>• Change Freeze & geplante Wartungsfenster<br/>• Offene P1/P2 Major Incident Status"]
+        JIRA["Jira Service Management<br/>• Access-Request Ticket-Begründungen<br/>• Verknüpfte Epics & Freigabestatus"]
+    end
+
+    subgraph StreamingObs ["4. Streaming, CDC & Observability"]
+        KAFKA["Debezium & Schema Registry<br/>• Avro / Protobuf / JSON Schema Docs<br/>• Replication Lag Telemetrie (source.ts_ms)"]
+        OPENLINEAGE["OpenLineage & Marquez<br/>• Data Quality Assertion Facets (Soda/GE)<br/>• Code Version Facet (Git-Commit des ETL-Jobs)"]
+    end
+
+    subgraph GatewayCore ["GqlGateway: Unified Semantic Hub"]
+        FUSION["Omnichannel Metadata Synthesizer<br/>(Normalisierung, Konflikt-Resolution, Caching)"]
+    end
+
+    subgraph OutputChannels ["Zielkanäle & Konsumenten"]
+        DEV["GraphQL Web UI & Swagger<br/>• Vertraulichkeits-Badges & Fachexperten<br/>• Live-Freshness & Zeilenanzahl"]
+        AGENT["MCP KI-Agenten (Claude / Cursor)<br/>• Qualitätsbasiertes Routing (Certified Models)<br/>• Warnung bei Change Freezes & P1 Incidents"]
+        AUDITOR["Audit & EU AI Act Compliance<br/>• Lückenlose Code-to-Data Lineage (Git-Commit)"]
+    end
+
+    Catalogs --> FUSION
+    Lakehouse --> FUSION
+    ITSM --> FUSION
+    StreamingObs --> FUSION
+    FUSION --> DEV
+    FUSION --> AGENT
+    FUSION --> AUDITOR
+```
+
+---
+
+##### Die 5 zusätzlichen Metadaten-Quellen im Detail:
+
+##### 1. Enterprise Data Catalogs: Microsoft Purview, Collibra & Alation
+* **Microsoft Purview ([`MicrosoftPurviewCatalogClient`](file:///root/gql_extensions/src/GqlGateway.Extensions/DataCatalog/MicrosoftPurviewCatalogClient.cs)):**
+  * *Metadaten:* Microsoft Information Protection (MIP) Vertraulichkeitslabels (`Confidential`, `Highly Confidential`), Atlas-Klassifikationen (`MICROSOFT.FINANCIAL.IBAN`, `MICROSOFT.PERSONAL.TAX_ID`) und zugewiesene Fachexperten (`contacts.Expert`).
+  * *Mehrwert:* Visuelle Sicherheits-Badges im GraphQL- und Swagger-UI; automatische Zuordnung von Helpdesk- und Fachexperten-Kontakten im Schema.
+* **Collibra Data Intelligence Platform ([`CollibraCatalogClient`](file:///root/gql_extensions/src/GqlGateway.Extensions/DataCatalog/CollibraCatalogClient.cs)):**
+  * *Metadaten:* Zertifizierungsstatus (`Status = Certified / Approved / Candidate`), Data Governance Operating Model (Domain, Community, Data Steward).
+  * *Mehrwert für KI-Agenten:* Autonome LLMs können instruiert werden: *„Nutze für Finanzberichte ausschließlich 'Certified'-Modelle.“* Verhindert die Nutzung veralteter Staging-Tabellen.
+* **Alation Data Catalog ([`AlationCatalogClient`](file:///root/gql_extensions/src/GqlGateway.Extensions/DataCatalog/AlationCatalogClient.cs)):**
+  * *Metadaten:* Trust Flags (`Endorsed`, `Deprecated`, `Caution`), Query-Popularity-Metriken (Abfragehäufigkeit im Gesamtunternehmen).
+  * *Mehrwert:* Automatische Sortierung von GraphQL-Feldern nach geschäftlicher Relevanz; proaktive Warnungen vor abgekündigten Tabellen direkt in der IDE.
+
+##### 2. Apache Iceberg v2 Lakehouse Metadaten ([`IcebergMetadataReader`](file:///root/gql_extensions/src/GqlGateway.Extensions/Lakehouse/Services/IcebergMetadataReader.cs))
+* **Metadaten:**
+  * **Spalten-Docstrings (`schema.fields[].doc`):** Nativ im Parquet/Iceberg-Schema hinterlegte Kommentare aus Upstream-Spark- und Trino-Jobs.
+  * **Tabellenkommentare (`properties.comment`):** Offizielle Tabellendokumentation im Data Lake.
+  * **Snapshot-Historie & Freshness:** `last-updated-ms` (exakter Zeitpunkt der letzten Veränderung), `summary.total-records` (Gesamtzahl Datensätze), `summary.operation` (`append`, `overwrite`).
+* *Mehrwert:* Entwickler, BI-Analysten und KI-Modelle sehen live im GraphQL-Explorer: *„Datenstand: vor 12 Minuten aktualisiert, 18,4 Mio. Zeilen.“* Beseitigt Unsicherheiten über die Aktualität von Data-Lake-Daten.
+
+##### 3. ITSM & CMDB Systeme: ServiceNow & Jira ([`ServiceNowClient`](file:///root/gql_extensions/src/GqlGateway.Extensions/Itsm/ServiceNowClient.cs), [`JiraClient`](file:///root/gql_extensions/src/GqlGateway.Extensions/Itsm/JiraClient.cs))
+* **Metadaten:**
+  * **ServiceNow CMDB (`cmdb_ci_database`, `cmdb_ci_appl`):** Business Criticality (`Tier-1 Mission Critical`, `Tier-2`), Application Owner, geplante Wartungsfenster / Change Freezes (`change_request`), offene Major Incidents (P1/P2).
+  * **Jira Service Management:** Freigabestatus und Begründungstexte von Zugriffs-Tickets (`ticket_justification`).
+* *Mehrwert:* Proaktive Warnung von API-Konsumenten und KI-Agenten bei aktiven Wartungsfenstern (`extensions.maintenance_warning`) und Schutz vor Ausfällen während Datenbank-Patches.
+
+##### 4. Streaming CDC & Schema Registry ([`DebeziumCdcParser`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/DebeziumCdcParser.cs))
+* **Metadaten:**
+  * **Confluent / Karapace Schema Registry:** Auslesen von `doc`-Attributen aus Avro-, Protobuf- und JSON-Schemas von Kafka-Topics.
+  * **Event Replication Lag (`source.ts_ms`):** Zeitstempel der Entstehung in der Quell-DB versus Empfangszeitpunkt.
+* *Mehrwert:* Realtime-Event-Subscriptions erhalten im GraphQL-Header Metadaten über Event-Alter und Pipeline-Verzögerung (z. B. `X-Replication-Lag-Ms: 38`).
+
+##### 5. OpenLineage & Observability ([`OpenLineageClient`](file:///root/gql/src/GqlGateway.Infrastructure/Lineage/OpenLineageClient.cs))
+* **Metadaten:**
+  * **Quality Assertions Facet:** Testergebnisse von Upstream-Qualitätswerkzeugen (Great Expectations, Soda Core).
+  * **Dataset Version Facet:** Git-Commit-Hash des ETL-Codes, der die Tabelle erzeugt hat.
+* *Mehrwert:* Revisionssichere Herkunftsnachweise für EU-AI-Act-Audits (*„Welcher Git-Commit hat die Berechnung dieser Kennzahl in der Pipeline definiert?“*).
+
+---
+
+#### 3.8.3 Upstream Web API & Microservice Federation via OpenAPI/Swagger Ingestion (`F-API-04`)
+
+In modernen Enterprise-Architekturen stammen geschäftskritische Daten nicht mehr ausschließlich aus relationalen Datenbanken oder Data Lakes, sondern zunehmend aus **bestehenden REST-Microservices** (z. B. CRM-, Billing- oder Legacy-ERP-Systemen). GqlGateway unterstützt dies nativ über die deklarative HTTP-Engine ([`DeclarativeHttpDataSourceExecutor`](file:///root/gql/src/GqlGateway.Application/Services/DeclarativeHttpDataSourceExecutor.cs) mit [`HttpEndpointDescriptor`](file:///root/gql/src/GqlGateway.Domain/Model/HttpEndpointDescriptor.cs)).
+
+**Das Problem bei herkömmlichen Lösungen:**
+* Apollo Federation verlangt zwingend, dass Microservices als dedizierte GraphQL-Subgraphen neu geschrieben oder in komplexe BFF-Wrapper gehüllt werden.
+* Klassische API-Gateways (Kong, Tyk) leiten REST-Calls zwar weiter, haben aber keinerlei semantisches Verständnis: Sie können daraus weder GraphQL-Schemata assembliert noch KI-Agenten (MCP) mit Dokumentation versorgen.
+* Entwickler müssen API-Spalten und DTO-Strukturen mühsam manuell in Schema-Dateien duplizieren.
+
+##### Die Lösung: Zero-Touch Schema & Documentation Ingestion via Swagger/OpenAPI
+
+GqlGateway erweitert den [`HttpEndpointDescriptor`](file:///root/gql/src/GqlGateway.Domain/Model/HttpEndpointDescriptor.cs) um eine `OpenApiSpecUrl` (z. B. `https://billing.corp.local/swagger/v1/swagger.json`). Über `Microsoft.OpenApi.Readers` liest das Gateway die Upstream-Spezifikation (Swagger 2.0 / OpenAPI 3.0 / 3.1) dynamisch ein und erzeugt das GraphQL- und MCP-Datenmodell vollautomatisch:
+
+```mermaid
+flowchart TD
+    subgraph Microservice ["Upstream Web API / Microservice (z. B. Billing API)"]
+        SWAGGER["Swagger / OpenAPI Spec (/swagger/v1/swagger.json)<br/>• Operation: summary & description<br/>• Entity Schema (z. B. InvoiceDto)<br/>• Property docstrings & valid enum values<br/>• Vendor Extensions (x-pii, x-owner)"]
+    end
+
+    subgraph GatewayCore ["GqlGateway: OpenApiMetadataReader & Binder"]
+        READER["OpenApiMetadataReader (mit SsrfProtectionHandler)<br/>• Schema Resolution & Datentyp-Mapping<br/>• Extraktion von Feld-Doku, Enums & Constraints"]
+        GEN["Zero-Touch TableMetadata Generator<br/>• Table.Description ◄── schema.Description<br/>• TableColumns ◄── schema.Properties<br/>• Column.Description ◄── prop.Description (inkl. Enums)<br/>• Column.IsSensitive ◄── x-pii / Namensmuster"]
+        READER --> GEN
+    end
+
+    subgraph ConsumerEgress ["Omnichannel Consumer Exposition"]
+        GQL["GraphQL Web UI (Banana Cake Pop)<br/>• Nativer Docstring-Hover aus C# XML-Doku / Javadoc<br/>• Anzeige erlaubter Enum-Werte"]
+        MCP["MCP KI-Agenten (Claude / Cursor)<br/>• Perfektes Tool-Grounding für Microservice-Routen<br/>• Zero Hallucination bei Status-Codes"]
+        EXEC["Runtime Delegation<br/>DeclarativeHttpDataSourceExecutor (Batching & PII-Masking)"]
+    end
+
+    SWAGGER -->|Sicheres Laden via HTTP/SSRF-Guard| READER
+    GEN --> GQL
+    GEN --> MCP
+    GEN --> EXEC
+```
+
+##### Konkreter Mehrwert für das Enterprise:
+1. **Zero-Code Microservice Integration:** Kein manuelles Anlegen von Spalten oder Typen. Die Angabe der Swagger-URL reicht aus, um einen Microservice als vollwertige, dokumentierte GraphQL-Entität und als MCP-Tool bereitzustellen.
+2. **Übernahme von Entwickler-Docstrings:** C# XML-Kommentare (`/// <summary>`), Javadoc oder TypeScript-Kommentare aus dem Quellcode des Microservices landen ohne Bruch direkt im GraphQL-Schema-Browser und in den Tool-Signaturen für KI-Agenten.
+3. **Dokumentation von Enums & Wertebereichen:** Erlaubte Enum-Werte (`["PENDING", "APPROVED", "CANCELLED"]`) und Constraints (`minimum: 0`) werden automatisch in die Feldbeschreibung injiziert.
+4. **Automatisierte Schema-Evolution:** Aktualisiert das Microservice-Team seine API und deployt eine neue Swagger-Version, erkennt das Gateway dies via ETag oder Webhook (`POST /api/catalog/refresh`) und aktualisiert das Schema zur Laufzeit **ohne Gateway-Neustart**.
+
+---
+
 #### Wettbewerbs-Matrix: Omnichannel Metadaten- & Dokumentations-Passthrough
 
 | Kriterium | Apollo GraphOS (Router v2) | Hasura DDN | WunderGraph Cosmo | Tyk / Kong APIM | GqlGateway (`F-DOC-01`) |
@@ -712,6 +844,10 @@ Das Gateway synthetisiert die beiden Quellen (fachliche Definition aus OpenMetad
 | **Swagger / OpenAPI 3.1 Doku** | ❌ Kein OpenAPI für Entitäten | ❌ Nur manuelle REST-Actions | ❌ Kein dynamisches REST | ⚠️ Manuelle OpenAPI-Pflege | **Automatisch in Properties & SDKs** |
 | **OData CSDL Core.Description** | ❌ Kein OData | ❌ Kein OData | ❌ Kein OData | ❌ Kein OData | **Nativ im CSDL XML für Power BI / Excel** |
 | **OData Core.LongDescription** | ❌ Kein OData | ❌ Kein OData | ❌ Kein OData | ❌ Kein OData | **Standardisierter OASIS Vocabulary Support** |
+| **Lakehouse Native Docs & Freshness (Iceberg)** | ❌ Keine Lakehouse-Semantik | ❌ Reine Tabellen-Abfragen | ❌ Nicht vorhanden | ❌ Reiner Proxy | **`schema.doc`, `last-updated` & Record Counts** |
+| **CMDB & Operativer Incident-Status (ServiceNow)** | ❌ Keine ITSM-Anbindung | ❌ Keine ITSM-Anbindung | ❌ Nicht vorhanden | ❌ Nur statische Routen | **Tier-1 Criticality, Change Freezes & P1 Alerts** |
+| **Multi-Katalog Federation (Purview/Collibra/Alation)** | ❌ Keine Kataloganbindung | ❌ Nur proprietäre Metadaten | ❌ Nicht vorhanden | ❌ Nicht vorhanden | **Nativer Sync für MIP-Labels, Badges & Popularity** |
+| **Upstream Web API Swagger/OpenAPI Doc Ingestion** | ❌ Manuelle Wrapper-Subgraphen nötig | ❌ Nur manuelle Actions ohne Doku | ❌ Nur statischer TS-Build | ❌ Reiner Proxy ohne Schema | **Vollautomatische Ingestion & Doku-Spiegelung** |
 | **Documentation Drift Schutz** | ❌ Hochgradig anfällig | ❌ Doppelte Pflege nötig | ❌ Manuelle Synchronisation | ❌ Extrem anfällig | **Zero Drift: Single Source of Truth** |
 
 ---
@@ -731,6 +867,7 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **F-AI-02: Semantic MCP Schema Compiler (dbt & OpenMetadata Ingestion)** | 8 | 3.0 | 90% | 1.6 | 2.0 W | **17.3** | ✅ **100% Abgeschlossen (GA)** (dbt/Katalog Ingestion in Tools & Resources) |
 | **F-API-03: Dynamic OData OpenAPI 3.1 & Swagger UI (`/odata/v4/$openapi`)** | 9 | 2.5 | 95% | 1.2 | 1.5 W | **17.1** | ✅ **100% Abgeschlossen (GA)** (OpenAPI JSON/YAML, Domain-Scope, Swagger UI) |
 | **F-AI-04: Pre-Flight Query Cost & Token Guard (`simulate_query`)** | 9 | 2.5 | 90% | 1.2 | 1.5 W | **16.2** | ✅ **100% Abgeschlossen (GA)** (AST Cost Simulation & Hard-Safety-Limits) |
+| **F-API-04: Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion** | 8 | 2.2 | 90% | 1.2 | 1.2 W | **15.8** | 🚀 **Top-Priorität (Wave 1)** (Zero-Touch Microservice Doku & Enums) |
 | **F-AI-06: Provenance & Lineage Footnoting (Explainable AI / EU AI Act)** | 7 | 2.5 | 85% | 2.0 | 2.0 W | **14.9** | ✅ **100% Abgeschlossen (GA)** (Revisionssichere `_provenance` Footnotes) |
 | **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | ✅ **100% Abgeschlossen (GA)** |
 | **F-AI-03: Dynamic Few-Shot "Golden Query" Injection (Audit Replay)** | 8 | 2.2 | 90% | 1.1 | 1.3 W | **13.4** | 🟡 **Priorität Wave 2** |
@@ -796,6 +933,7 @@ flowchart TD
         W1_3["F-DBT-3 Live Telemetry-Driven Exposures (Ops, P99, Consumers)"]
         W1_4["F-DBT-4 dbt Cloud & Orchestrator HMAC Webhook Receiver"]
         W1_5["F-DBT-6 Policy & RLS Auto-Sync aus dbt Metadaten"]
+        W1_6["F-API-04 Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion"]
     end
 
     subgraph Wave2["Wave 2: FinOps, Lakehouse Acceleration, Agent Scale & Post-Quantum (Q4 2026 / 2027)"]
