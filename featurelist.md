@@ -180,6 +180,10 @@ Die Lösung vereint föderierte GraphQL-Abfragen über relationale Datenbanken, 
 * **OData v4 Dual-Access Schnittstelle**:
   * Parallele Bereitstellung der Datenmodelle als OData v4 Endpoints.
   * Ermöglicht Enterprise-Reporting-Tools (Power BI, Tableau, Microsoft Excel, SAP) den direkten Datenzugriff unter denselben RLS- und Maskierungsregeln wie GraphQL.
+* **Nativer Apache Parquet Analytics Egress**:
+  * Bereitstellung von columnar Apache Parquet Datenauszügen direkt aus relationalen SQL-Datenbanken (MSSQL, PostgreSQL, SQLite) und Lakehouse-Tabellen.
+  * Kompatibel mit modernen Data Science Stacks: Python (Pandas, Polars), DuckDB, R und PySpark.
+  * Vollständige Wahrung der Zero-Trust Consent Governance: RLS-Pushdown und In-Stream Spaltenmaskierung (z. B. PII-Redaction, HMAC-Hashing) greifen auch beim Parquet-Export.
 * **Isoliertes Plugin-System**:
   * Laden von Third-Party-Konnektoren in isolierten, entladbaren `AssemblyLoadContext`-Instanzen (`IHttpDataSourcePlugin`) verhindert Versionskonflikte von Abhängigkeiten mit dem Gateway-Host.
 

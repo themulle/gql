@@ -129,6 +129,25 @@ public class DataPathSecurityTests : IDisposable
     }
 
     [Fact]
+    public async Task Catalog_WhenAllowAuthenticatedCatalogDiscoveryEnabled_AllAuthenticatedUsersSeeAllTables()
+    {
+        var userWithoutRole = new Sid("S-1-5-21-USER-NO-ROLE");
+        var accessorWithoutRole = CreateAccessor(userWithoutRole, roles: new[] { "Auditor" });
+
+        var options = Options.Create(new GatewayOptions
+        {
+            Catalog = new DataCatalogOptions
+            {
+                AllowAuthenticatedCatalogDiscovery = true
+            }
+        });
+
+        var catalog = await _query.GetCatalogAsync(_repository, accessorWithoutRole, options);
+        catalog.ShouldContain(t => t.TableName == "finance_table_2");
+        catalog.ShouldContain(t => t.TableName == "finance_table_1");
+    }
+
+    [Fact]
     public async Task Catalog_DenyColumns_AreExcludedFromCatalogDto()
     {
         var table = new TableIdentifier("finance", "dbo", "finance_table_1");

@@ -20,7 +20,7 @@ Im Jahr 2025/2026 hat sich der Markt für GraphQL- und API-Gateways in drei Haup
 * **Instant-DB-APIs (Hasura DDN, StepZen):** Schneller Zugriff auf Datenbanken, jedoch stark proprietär gekoppelt, mit astronomischen Enterprise-Lizenzkosten und ohne native Integration in ITSM-Freigabeprozesse.
 * **Klassische Ingress-Gateways (Kong, Tyk, Envoy):** Stark im L7-Routing, scheitern jedoch an Deep GraphQL AST-Kontexten, verursachen durch Out-of-Process-Coprozesse (gRPC) massive Latenzstrafen und kennen nur statisches Allow/Deny statt interaktiver Governance.
 
-**GqlGateway besetzt die Leerstelle:** Ein **Zero-Trust Enterprise Data Gateway**, das Subgraph-Föderation (Hot Chocolate Fusion) mit tiefem relationalen SQL-RLS-Pushdown, nativer Apache Iceberg Lakehouse-Unterstützung, unternehmensweiter Metadaten-Synchronisation (Purview, Collibra, Alation), dbt Data-Mesh-Absicherung und nativer KI-Agenten-Governance (Model Context Protocol / MCP) verbindet.
+**GqlGateway besetzt die Leerstelle:** Ein **Zero-Trust Enterprise Data Gateway**, das Subgraph-Föderation (Hot Chocolate Fusion) mit tiefem relationalen SQL-RLS-Pushdown, nativer Apache Iceberg Lakehouse-Unterstützung, **columnar Apache Parquet Analytics-Export**, OData v4 Dual-Access, unternehmensweiter Metadaten-Synchronisation (Purview, Collibra, Alation), dbt Data-Mesh-Absicherung und nativer KI-Agenten-Governance (Model Context Protocol / MCP) verbindet.
 
 ---
 
@@ -52,6 +52,7 @@ Im Jahr 2025/2026 hat sich der Markt für GraphQL- und API-Gateways in drei Haup
 | | Apache Iceberg Lakehouse | **Ja** (v2 Pruning + Cache) | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | Teilweise | ❌ Nein |
 | | Subgraph Föderation | **Ja** (Fusion Router) | **Ja** (Federation v2) | Teilweise | **Ja** (Cosmo) | ❌ Nein | ❌ Nein | ❌ Nein |
 | | OData v4 Dual Access | **Ja** (Power BI/SAP) | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein |
+| | Nativer Apache Parquet Export | **Ja** (Columnar Snappy mit RLS & Masking) | ❌ Nein (Nur JSON) | ❌ Nein (Nur JSON) | ❌ Nein (Nur JSON) | ❌ Nein | ❌ Nein (Nur SQL Proxy) | ❌ Nein (Nur Raw HTTP) |
 | **Echtzeit & Streaming** | GraphQL Subscriptions | **Ja** (WS / SSE) | **Ja** | **Ja** | **Ja** | Teilweise | ❌ Nein | Teilweise |
 | | In-Stream Casbin RLS Filtering | **Ja** (Pro Event) | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein |
 | | Debezium / Kafka CDC Ingestion | **Ja** (Nativ) | ❌ Nein | Teilweise | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein |
@@ -83,8 +84,9 @@ Im Jahr 2025/2026 hat sich der Markt für GraphQL- und API-Gateways in drei Haup
   2. **Lizenz-Falle (ELv2):** Seit Version 1.0 steht der Apollo Router unter der Elastic License v2, was Cloud-Hosting, Managed-Service-Angebote und interne Bereitstellung in Konzernen juristisch verkompliziert.
   3. **Keine Metadaten-Katalog-Integration:** Keine Unterstützung für automatische Synchronisation mit Microsoft Purview, Collibra oder Alation.
   4. **Kein DSGVO-Compliance-Stack:** Fehlen von revisionssicheren HMAC-Audit-Trails, automatisierten DSGVO-Art.-9-Schwärzungen und Art.-15-Auskunftsberichten.
+  5. **Reine JSON-Schnittstelle ohne Analytics Egress:** Apollo ist strikt auf Frontend-JSON beschränkt. Data Science Teams (DuckDB, Pandas, Polars) müssen riesige JSON-Payloads parsen, anstatt typsichere, komprimierte Apache Parquet-Streams unter Einhaltung von Governance zu beziehen.
 
-> **GqlGateway-Vorteil:** Hot Chocolate Fusion Föderation kombiniert mit nativer Data-Owner-Governance, echtem RLS-Pushdown, 100% autarker On-Premises-Betreibbarkeit ohne Lizenzgebühren oder Cloud-Phoning-Home.
+> **GqlGateway-Vorteil:** Hot Chocolate Fusion Föderation kombiniert mit nativer Data-Owner-Governance, echtem RLS-Pushdown, nativer Apache Parquet Bereitstellung für Data Science und 100% autarker On-Premises-Betreibbarkeit ohne Lizenzgebühren.
 
 ---
 
@@ -99,8 +101,9 @@ Im Jahr 2025/2026 hat sich der Markt für GraphQL- und API-Gateways in drei Haup
   2. **Astronomische Lizenzkosten:** Das Preismodell von Hasura Enterprise und Hasura DDN skaliert aggressiv nach CPU-Cores und Datenvolumen, was für Enterprise Data Meshes unbezahlbar wird.
   3. **Fehlen von Enterprise-Workflows:** Keine Unterstützung für temporäre Berechtigungsdelegationen, interaktive 4-Augen-Freigabe-Challenges oder Notfall-Break-Glass-Szenarien.
   4. **Kein dbt Contract Gate:** Hasura ignoriert Upstream-Testfehler (`run_results.json`) und liefert unbemerkt korrupte Daten an API-Consumer aus.
+  5. **Kein nativer Columnar Analytics Egress:** Hasura unterstützt ausschließlich flache JSON-Streams via GraphQL/REST. Analytische Bulk-Exporte in Apache Parquet für Data Warehousing oder Feature Stores existieren nicht.
 
-> **GqlGateway-Vorteil:** Offene, standardisierte Clean Architecture auf .NET 10 Basis, Integration in ServiceNow/Jira, dbt Health Circuit Breaker und drastisch niedrigere TCO ohne Core-Tax.
+> **GqlGateway-Vorteil:** Offene, standardisierte Clean Architecture auf .NET 10 Basis, Integration in ServiceNow/Jira, dbt Health Circuit Breaker, Parquet-Analytics-Egress und drastisch niedrigere TCO ohne Core-Tax.
 
 ---
 
@@ -141,8 +144,9 @@ Im Jahr 2025/2026 hat sich der Markt für GraphQL- und API-Gateways in drei Haup
 * **Kritische Lücken im Enterprise-Einsatz:**
   1. **Kein API- oder GraphQL-Gateway:** Immuta schützt die Datenbank, bietet aber keine Schnittstelle für moderne Web-, Mobile- oder Microservice-Applikationen.
   2. **Hohe Latenz & Komplexität:** Setzt tief als DB-Treiber oder Proxy an; erfordert für jeden Entwickler komplexe SQL-ODBC/JDBC-Verbindungen.
+  3. **Kein HTTP-basierter Parquet-Download für Data Science:** Immuta kontrolliert SQL-Queries in Warehouses, stellt aber keinen API-Endpunkt für On-Demand-Streaming von Parquet-Dateien an moderne Data-Science-Pipelines (Polars, DuckDB) bereit.
 
-> **GqlGateway-Vorteil:** GqlGateway fungiert als **Unified Access Layer**, der Immuta-ähnliche Richtlinien direkt an die GraphQL- und OData-Schnittstelle bringt und dadurch Entwicklern, BI-Tools und KI-Agenten denselben Schutz bietet.
+> **GqlGateway-Vorteil:** GqlGateway fungiert als **Unified Access Layer**, der Immuta-ähnliche Richtlinien direkt an die GraphQL-, OData- und Parquet-Schnittstelle bringt und dadurch Entwicklern, BI-Tools, Data Scientists und KI-Agenten denselben Schutz bietet.
 
 ---
 

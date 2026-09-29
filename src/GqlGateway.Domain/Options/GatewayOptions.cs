@@ -554,6 +554,13 @@ public sealed class DataCatalogOptions
     [Range(1, 1440)] public int SyncIntervalMinutes { get; init; } = 60;
     public string WebhookSecret { get; init; } = string.Empty;
 
+    /// <summary>
+    /// Wenn true, können alle authentifizierten Benutzer den vollständigen Metadaten-Katalog
+    /// einsehen (für Data Discovery und Zugriffsbeantragung). Der Datenzugriff selbst bleibt strikt durch Consents geschützt.
+    /// Standard: false (Zero-Trust: Benutzer sehen im Katalog nur Tabellen, für die sie Consents besitzen).
+    /// </summary>
+    public bool AllowAuthenticatedCatalogDiscovery { get; init; } = false;
+
     public PurviewOptions Purview { get; init; } = new();
     public CollibraOptions Collibra { get; init; } = new();
     public AlationOptions Alation { get; init; } = new();

@@ -4,9 +4,11 @@ using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
+using GqlGateway.Domain.Options;
 using HotChocolate;
 using HotChocolate.Types;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Options;
 
 namespace GqlGateway.GraphQL.Types;
 
@@ -71,13 +73,15 @@ public sealed class Query
     public Task<IReadOnlyList<TableMetadataDto>> GetCatalogAsync(
         [Service] IGovernanceRepository repository,
         [Service] IHttpContextAccessor httpContextAccessor,
+        [Service] IOptions<GatewayOptions>? options = null,
         CancellationToken ct = default)
-        => GetCatalogAsync(repository, repository, httpContextAccessor, ct);
+        => GetCatalogAsync(repository, repository, httpContextAccessor, options, ct);
 
     public async Task<IReadOnlyList<TableMetadataDto>> GetCatalogAsync(
         [Service] ITableMetadataRepository metadataRepository = default!,
         [Service] IConsentRepository consentRepository = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
+        [Service] IOptions<GatewayOptions>? options = null,
         CancellationToken ct = default)
     {
         var principal = httpContextAccessor?.HttpContext?.User;
@@ -103,9 +107,10 @@ public sealed class Query
         var roles = principal.GetUserRoles();
 
         var isGlobalAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
+        var allowDiscovery = options?.Value?.Catalog?.AllowAuthenticatedCatalogDiscovery == true;
 
         var allTables = await metadataRepository.GetAllTablesAsync(ct);
-        if (isGlobalAdmin)
+        if (isGlobalAdmin || allowDiscovery)
         {
             return allTables.Select(t => new TableMetadataDto
             {
@@ -114,6 +119,7 @@ public sealed class Query
                 TableName = t.Table.TableName,
                 DisplayName = t.Table.DisplayName,
                 Sensitivity = t.Table.Sensitivity,
+                Description = t.Table.Description,
                 Columns = t.Columns.Select(c => c.ColumnName).ToList()
             }).ToList();
         }
@@ -174,6 +180,7 @@ public sealed class Query
                     TableName = t.Table.TableName,
                     DisplayName = t.Table.DisplayName,
                     Sensitivity = t.Table.Sensitivity,
+                    Description = t.Table.Description,
                     Columns = visibleColumns
                 };
             }).ToList();
@@ -415,5 +422,6 @@ public sealed class TableMetadataDto
     public string TableName { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
     public string Sensitivity { get; init; } = string.Empty;
+    public string? Description { get; init; }
     public IReadOnlyList<string> Columns { get; init; } = [];
 }
