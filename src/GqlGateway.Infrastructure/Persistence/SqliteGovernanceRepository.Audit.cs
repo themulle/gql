@@ -28,7 +28,7 @@ public partial class SqliteGovernanceRepository
 
     private async Task RecordAuditEventInternalAsync(AuditLogEntry entry, CancellationToken ct)
     {
-        using var tx = _connection.BeginTransaction();
+        using var tx = _connection.BeginTransaction(System.Data.IsolationLevel.Serializable);
 
         // Atomically query latest entry_hash from DB to prevent drift across instances or reconnections
         using (var prevCmd = _connection.CreateCommand())

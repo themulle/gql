@@ -22,7 +22,7 @@ public static class ODataEndpoints
             HttpContext context) =>
         {
             var serviceRoot = $"{context.Request.Scheme}://{context.Request.Host}/odata/v4";
-            var doc = await odataHandler.GetServiceDocumentAsync(serviceRoot, context.RequestAborted);
+            var doc = await odataHandler.GetServiceDocumentAsync(serviceRoot, context.User, context.RequestAborted);
             return Results.Json(doc, contentType: "application/json;odata.metadata=minimal;charset=utf-8");
         }).RequireAuthorization();
 
@@ -30,7 +30,7 @@ public static class ODataEndpoints
             IODataHandler odataHandler,
             HttpContext context) =>
         {
-            var xml = await odataHandler.GetMetadataCsdlAsync(context.RequestAborted);
+            var xml = await odataHandler.GetMetadataCsdlAsync(context.User, context.RequestAborted);
             return Results.Content(xml, "application/xml;charset=utf-8");
         }).RequireAuthorization();
 

@@ -73,6 +73,16 @@ public static class ClaimsPrincipalExtensions
             ?? principal.FindFirst("tenant")?.Value
             ?? principal.FindFirst("tid")?.Value;
 
-        return TenantId.TryParse(val, out var parsed) ? parsed : TenantId.LegacySingleTenant;
+        if (string.IsNullOrWhiteSpace(val))
+        {
+            return TenantId.LegacySingleTenant;
+        }
+
+        if (TenantId.TryParse(val, out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new System.Security.SecurityException($"Invalid tenant claim value '{val}'. Tenant identifier contains illegal characters or does not meet format requirements.");
     }
 }

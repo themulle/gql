@@ -249,6 +249,32 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
 
         try
         {
+            // First check if any deny policy matches for the user or their groups (Deny takes absolute precedence)
+            if (_tenantRules.TryGetValue(context.Tenant.Value, out var tenantRulesList))
+            {
+                lock (tenantRulesList)
+                {
+                    foreach (var rule in tenantRulesList)
+                    {
+                        if (string.Equals(rule.Eft, "deny", StringComparison.OrdinalIgnoreCase) &&
+                            MatchObjectPattern(rule.Obj, tableStr))
+                        {
+                            bool subMatch = string.Equals(rule.Sub, "*", StringComparison.OrdinalIgnoreCase) ||
+                                            string.Equals(rule.Sub, context.UserSid.Value, StringComparison.OrdinalIgnoreCase) ||
+                                            (context.GroupSids != null && context.GroupSids.Any(g => string.Equals(g.Value, rule.Sub, StringComparison.OrdinalIgnoreCase))) ||
+                                            enforcer.HasRoleForUser(context.UserSid.Value, rule.Sub) ||
+                                            (context.GroupSids != null && context.GroupSids.Any(g => enforcer.HasRoleForUser(g.Value, rule.Sub)));
+
+                            if (subMatch && EvaluateSubRule(rule.SubRule, context))
+                            {
+                                allowed = false;
+                                goto PolicyDone;
+                            }
+                        }
+                    }
+                }
+            }
+
             // r = sub, tenant, obj, act, ctx
             if (enforcer.Enforce(context.UserSid.Value, context.Tenant.Value, tableStr, "read", context))
             {
@@ -271,6 +297,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
             allowed = false;
         }
 
+PolicyDone:
         sw.Stop();
         GatewayDiagnostics.PolicyEvaluationDuration.Record(sw.Elapsed.TotalMilliseconds);
 
@@ -354,6 +381,12 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
                     continue;
                 }
 
+                // Check sub_rule condition (Prevent cross-clearance/cross-role filter leak)
+                if (!EvaluateSubRule(rule.SubRule, context))
+                {
+                    continue;
+                }
+
                 // Handle Correlated Row Filter
                 if (rule.CorrelatedRowFilter != null)
                 {
@@ -384,6 +417,35 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         }
 
         return result;
+    }
+
+    private static bool EvaluateSubRule(string? subRule, SecurityEvaluationContext context)
+    {
+        if (string.IsNullOrWhiteSpace(subRule) || string.Equals(subRule.Trim(), "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (string.Equals(subRule.Trim(), "false", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        try
+        {
+            var interpreter = new DynamicExpresso.Interpreter();
+            interpreter.SetVariable("r", new { ctx = context, sub = context.UserSid.Value, tenant = context.Tenant.Value });
+            interpreter.SetVariable("ctx", context);
+            interpreter.SetVariable("context", context);
+
+            var normalized = Regex.Replace(subRule, @"'([^']{2,})'", "\"$1\"");
+            var evalResult = interpreter.Eval(normalized);
+            return evalResult is bool b && b;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static readonly Regex SafeClaimValueRegex = new(@"^[a-zA-Z0-9\-_.@: ]{1,256}$", RegexOptions.Compiled);

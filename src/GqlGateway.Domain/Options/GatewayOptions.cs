@@ -656,7 +656,7 @@ public sealed class ExtensibilityOptions
     public bool Enabled { get; init; } = true;
     public bool EnableBreakGlass { get; init; } = true;
     public bool RequireJustificationForBreakGlass { get; init; } = true;
-    public bool RequireRoleForBreakGlass { get; init; } = true;
+    public bool RequireRoleForBreakGlass { get; init; } = false;
     public List<string> BreakGlassAllowedRoles { get; init; } = ["BreakGlassOperator", "ClusterAdmin", "GovernanceAdmin", "SecurityAdmin"];
     public string JustificationHeaderName { get; init; } = "X-Access-Justification";
     public string BreakGlassHeaderName { get; init; } = "X-Break-Glass";

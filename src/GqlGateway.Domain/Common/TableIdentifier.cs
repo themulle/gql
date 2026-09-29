@@ -13,9 +13,22 @@ public readonly record struct TableIdentifier : IEquatable<TableIdentifier>
         ArgumentException.ThrowIfNullOrWhiteSpace(domain);
         ArgumentException.ThrowIfNullOrWhiteSpace(schema);
         ArgumentException.ThrowIfNullOrWhiteSpace(tableName);
+
+        ValidateComponent(domain, nameof(domain));
+        ValidateComponent(schema, nameof(schema));
+        ValidateComponent(tableName, nameof(tableName));
+
         Domain = domain.Trim();
         Schema = schema.Trim();
         TableName = tableName.Trim();
+    }
+
+    private static void ValidateComponent(string component, string paramName)
+    {
+        if (component.Contains('\0') || component.Contains('\r') || component.Contains('\n') || component.Contains('.'))
+        {
+            throw new ArgumentException($"TableIdentifier component '{paramName}' must not contain null bytes, control characters, or dot separators: '{component}'", paramName);
+        }
     }
 
     public override string ToString() => $"{Domain}.{Schema}.{TableName}";

@@ -14,7 +14,7 @@ public enum DatabaseDialect
 public static class DatabaseDialectExtensions
 {
     private static readonly Regex SafeIdentifierRegex =
-        new(@"^[a-zA-Z_][a-zA-Z0-9_]*$", RegexOptions.Compiled);
+        new(@"\A[a-zA-Z_][a-zA-Z0-9_]*\z", RegexOptions.Compiled);
 
     public static void ValidateIdentifier(string id, string paramName = "Identifier")
     {

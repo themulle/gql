@@ -123,7 +123,7 @@ public class RedTeamPromptInjectionTests
     public async Task TenantBackfillMigration_VerifyThrows_WhenUnmigratedRowsExistInMultiTenantMode()
     {
         // Arrange
-        using var conn = new SqliteConnection("Data Source=:memory:;Mode=Memory;Cache=Shared");
+        using var conn = new SqliteConnection("Data Source=InMemoryDb_" + Guid.NewGuid().ToString("N") + ";Mode=Memory;Cache=Shared");
         await conn.OpenAsync();
 
         using (var cmd = conn.CreateCommand())

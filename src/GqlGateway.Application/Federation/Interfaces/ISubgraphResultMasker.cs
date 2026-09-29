@@ -12,5 +12,5 @@ public interface ISubgraphResultMasker
     /// Recursively traverses a GraphQL response object or list and applies data masking
     /// to sensitive fields (e.g. Email, IBAN, SSN, salary) for principals without clear consent.
     /// </summary>
-    object? MaskResultData(object? data, ClaimsPrincipal? principal);
+    object? MaskResultData(object? data, ClaimsPrincipal? principal, IReadOnlyDictionary<string, string>? aliasToFieldMap = null);
 }

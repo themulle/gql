@@ -26,13 +26,33 @@ public sealed class Subscription
         ClaimsPrincipal? principal,
         [EnumeratorCancellation] CancellationToken ct)
     {
+        if (principal?.Identity?.IsAuthenticated != true)
+        {
+            throw new GraphQLException(
+                ErrorBuilder.New()
+                    .SetMessage("Unauthorized: Realtime table subscriptions require an authenticated identity.")
+                    .SetCode("AUTH_NOT_AUTHENTICATED")
+                    .Build());
+        }
+
+        var callerTenant = principal.GetTenantId();
+        if (!string.IsNullOrWhiteSpace(tenantId) &&
+            !string.Equals(callerTenant.Value, tenantId.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new GraphQLException(
+                ErrorBuilder.New()
+                    .SetMessage($"Forbidden: Tenant mismatch. Authenticated tenant '{callerTenant.Value}' cannot subscribe to tenant '{tenantId}'.")
+                    .SetCode("AUTH_TENANT_MISMATCH")
+                    .Build());
+        }
+
         var cleanTable = table.Trim().ToLowerInvariant();
         var topic = cleanTable.StartsWith("cdc_", StringComparison.OrdinalIgnoreCase)
             ? cleanTable
             : $"cdc_{cleanTable}";
 
         var sourceStream = eventChannel.SubscribeAsync(topic, ct);
-        var subscriber = principal ?? new ClaimsPrincipal(new ClaimsIdentity());
+        var subscriber = principal;
 
         await foreach (var cdcEvent in sourceStream.WithCancellation(ct))
         {

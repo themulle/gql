@@ -54,10 +54,32 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             }
         }
 
-        return MaskRecursive(data);
+        return MaskResultData(data, principal, null);
     }
 
-    private object? MaskRecursive(object? node)
+    public object? MaskResultData(object? data, ClaimsPrincipal? principal, IReadOnlyDictionary<string, string>? aliasToFieldMap)
+    {
+        if (data == null) return null;
+
+        var fedOptions = _options.Value.Federation;
+        if (!fedOptions.EnableResultMasking || _options.Value.IsColumnMaskingDisabled)
+        {
+            return data;
+        }
+
+        if (principal != null)
+        {
+            var roles = principal.GetUserRoles();
+            if (roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin"))
+            {
+                return data;
+            }
+        }
+
+        return MaskRecursive(data, aliasToFieldMap);
+    }
+
+    private object? MaskRecursive(object? node, IReadOnlyDictionary<string, string>? aliasToFieldMap)
     {
         if (node == null) return null;
 
@@ -66,13 +88,13 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             var result = new Dictionary<string, object?>(dict.Count, StringComparer.OrdinalIgnoreCase);
             foreach (var (k, v) in dict)
             {
-                if (v is string strVal && ShouldMaskField(k, out var rule))
+                if (ShouldMaskField(k, aliasToFieldMap, out var rule))
                 {
-                    result[k] = _maskingProvider.MaskValue(k, strVal, rule);
+                    result[k] = _maskingProvider.MaskValue(k, v, rule);
                 }
                 else
                 {
-                    result[k] = MaskRecursive(v);
+                    result[k] = MaskRecursive(v, aliasToFieldMap);
                 }
             }
             return result;
@@ -85,13 +107,13 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             {
                 var k = entry.Key?.ToString() ?? string.Empty;
                 var v = entry.Value;
-                if (v is string strVal && ShouldMaskField(k, out var rule))
+                if (ShouldMaskField(k, aliasToFieldMap, out var rule))
                 {
-                    result[k] = _maskingProvider.MaskValue(k, strVal, rule);
+                    result[k] = _maskingProvider.MaskValue(k, v, rule);
                 }
                 else
                 {
-                    result[k] = MaskRecursive(v);
+                    result[k] = MaskRecursive(v, aliasToFieldMap);
                 }
             }
             return result;
@@ -102,7 +124,7 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             var resultList = new List<object?>();
             foreach (var item in list)
             {
-                resultList.Add(MaskRecursive(item));
+                resultList.Add(MaskRecursive(item, aliasToFieldMap));
             }
             return resultList;
         }
@@ -110,7 +132,20 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
         return node;
     }
 
-    private static bool ShouldMaskField(string fieldName, out MaskingRule rule)
+    private static bool ShouldMaskField(string fieldOrAliasName, IReadOnlyDictionary<string, string>? aliasToFieldMap, out MaskingRule rule)
+    {
+        if (aliasToFieldMap != null && aliasToFieldMap.TryGetValue(fieldOrAliasName, out var realFieldName))
+        {
+            if (IsSensitiveFieldName(realFieldName, out rule))
+            {
+                return true;
+            }
+        }
+
+        return IsSensitiveFieldName(fieldOrAliasName, out rule);
+    }
+
+    private static bool IsSensitiveFieldName(string fieldName, out MaskingRule rule)
     {
         var lower = fieldName.ToLowerInvariant();
 

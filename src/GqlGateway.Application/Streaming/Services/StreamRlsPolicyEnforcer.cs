@@ -115,6 +115,18 @@ public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
             return StreamSecurityDecision.Denied("Access denied by ABAC policy");
         }
 
+        // 4b. In-Stream Row-Level Security Filtering (Fail-Closed)
+        if (!string.IsNullOrWhiteSpace(accessDecision.CombinedRowFilterSql))
+        {
+            if (!MatchesStreamingRowFilter(rawPayload, accessDecision.CombinedRowFilterSql))
+            {
+                _logger.LogDebug(
+                    "Streaming event '{EventId}' filtered out by in-stream row filter '{Filter}' for subscriber '{UserSid}'",
+                    cdcEvent.EventId, accessDecision.CombinedRowFilterSql, userSid.Value);
+                return StreamSecurityDecision.Denied("Filtered by row-level security");
+            }
+        }
+
         // 5. In-Stream Column Masking and Redaction
         var metadata = await _metadataRepository.GetTableMetadataAsync(cdcEvent.Table, ct);
         var maskedResult = new Dictionary<string, object?>(rawPayload.Count, StringComparer.OrdinalIgnoreCase);
@@ -151,5 +163,104 @@ public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
         }
 
         return StreamSecurityDecision.Allowed(maskedResult);
+    }
+
+    private static bool MatchesStreamingRowFilter(IReadOnlyDictionary<string, object?> payload, string filterSql)
+    {
+        if (string.IsNullOrWhiteSpace(filterSql))
+        {
+            return true;
+        }
+
+        // Handle OR clauses
+        var orParts = SplitTopLevelClauses(filterSql, " OR ");
+        if (orParts.Count > 1)
+        {
+            return orParts.Any(part => MatchesStreamingRowFilter(payload, part));
+        }
+
+        // Handle AND clauses
+        var andParts = SplitTopLevelClauses(filterSql, " AND ");
+        if (andParts.Count > 1)
+        {
+            return andParts.All(part => MatchesStreamingRowFilter(payload, part));
+        }
+
+        // Strip outer parentheses if balanced
+        var trimmed = filterSql.Trim();
+        while (trimmed.StartsWith('(') && trimmed.EndsWith(')') && IsBalanced(trimmed[1..^1]))
+        {
+            trimmed = trimmed[1..^1].Trim();
+        }
+
+        // Check simple equality: col = 'value' or col = 123
+        var matchEq = System.Text.RegularExpressions.Regex.Match(
+            trimmed,
+            @"^(?:\[?([a-zA-Z0-9_]+)\]?|""([a-zA-Z0-9_]+)"")\s*(=|!=|<>)\s*(?:'([^']*)'|([0-9]+(?:\.[0-9]+)?))$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        if (matchEq.Success)
+        {
+            var col = !string.IsNullOrEmpty(matchEq.Groups[1].Value) ? matchEq.Groups[1].Value : matchEq.Groups[2].Value;
+            var op = matchEq.Groups[3].Value;
+            var expectedVal = matchEq.Groups[4].Success && !string.IsNullOrEmpty(matchEq.Groups[4].Value)
+                ? matchEq.Groups[4].Value
+                : matchEq.Groups[5].Value;
+
+            if (!payload.TryGetValue(col, out var actualVal) || actualVal == null)
+            {
+                return op is "!=" or "<>";
+            }
+
+            var actualStr = actualVal.ToString();
+            bool areEqual = string.Equals(actualStr, expectedVal, StringComparison.OrdinalIgnoreCase);
+
+            return op == "=" ? areEqual : !areEqual;
+        }
+
+        // For unparseable or complex subquery filters in stream, fail-closed for security
+        return false;
+    }
+
+    private static List<string> SplitTopLevelClauses(string input, string delimiter)
+    {
+        var result = new List<string>();
+        int depth = 0;
+        int lastIndex = 0;
+
+        for (int i = 0; i <= input.Length - delimiter.Length; i++)
+        {
+            char c = input[i];
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (depth == 0 && string.Compare(input, i, delimiter, 0, delimiter.Length, StringComparison.OrdinalIgnoreCase) == 0)
+            {
+                result.Add(input[lastIndex..i]);
+                lastIndex = i + delimiter.Length;
+                i += delimiter.Length - 1;
+            }
+        }
+
+        if (lastIndex < input.Length)
+        {
+            result.Add(input[lastIndex..]);
+        }
+
+        return result.Count > 1 ? result : [input];
+    }
+
+    private static bool IsBalanced(string input)
+    {
+        int depth = 0;
+        foreach (var c in input)
+        {
+            if (c == '(') depth++;
+            else if (c == ')')
+            {
+                depth--;
+                if (depth < 0) return false;
+            }
+        }
+        return depth == 0;
     }
 }

@@ -76,8 +76,14 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
                 }
             }
 
-            if (extOptions.RequireRoleForBreakGlass && context.User?.Identity?.IsAuthenticated == true)
+            if (extOptions.RequireRoleForBreakGlass)
             {
+                if (context.User?.Identity?.IsAuthenticated != true)
+                {
+                    _logger.LogWarning("Break-glass access denied: Unauthenticated request attempted to invoke break-glass.");
+                    return IngressResult.Deny("Unauthenticated requests cannot invoke emergency break-glass.", 401);
+                }
+
                 var user = context.User;
                 bool isAuthorized = false;
                 foreach (var role in extOptions.BreakGlassAllowedRoles)

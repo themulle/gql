@@ -44,7 +44,11 @@ public sealed class PreAuthIpRateLimitingMiddleware
         }
 
         string ip = "127.0.0.1";
-        if (context.Items.TryGetValue("OriginalTcpRemoteIp", out var origIpObj))
+        if (_gatewayOptions.ReverseProxy.Enabled && context.Connection.RemoteIpAddress != null)
+        {
+            ip = context.Connection.RemoteIpAddress.ToString();
+        }
+        else if (context.Items.TryGetValue("OriginalTcpRemoteIp", out var origIpObj))
         {
             if (origIpObj is System.Net.IPAddress origIp)
             {

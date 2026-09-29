@@ -213,16 +213,66 @@ public sealed class InMemoryRateLimiterService : IRateLimiterService
     }
 
     private readonly ConcurrentDictionary<string, TokenBucket> _costBuckets = new(StringComparer.OrdinalIgnoreCase);
+    private int _costBucketCount;
+    private long _lastCostCleanup = Stopwatch.GetTimestamp();
+    private int _isCleaningUpCost;
+    private const int MaxCostBuckets = 25000;
 
     public Task<CostQuotaResult> CheckCostQuotaAsync(string key, int requestedCost, ClientQuotaPolicy policy, CancellationToken ct = default)
     {
         var currentTimestamp = Stopwatch.GetTimestamp();
 
-        var bucket = _costBuckets.GetOrAdd(key, _ => new TokenBucket
+        if (Volatile.Read(ref _costBucketCount) > 5000 &&
+            Stopwatch.GetElapsedTime(_lastCostCleanup, currentTimestamp) > TimeSpan.FromSeconds(60) &&
+            Interlocked.CompareExchange(ref _isCleaningUpCost, 1, 0) == 0)
         {
-            Tokens = policy.MaxTokensCapacity,
-            LastRefillTimestamp = currentTimestamp
-        });
+            _lastCostCleanup = currentTimestamp;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var staleThreshold = TimeSpan.FromMinutes(10);
+                    foreach (var kvp in _costBuckets)
+                    {
+                        if (_stoppingToken.IsCancellationRequested) break;
+                        long lastRefill;
+                        lock (kvp.Value.Lock)
+                        {
+                            lastRefill = kvp.Value.LastRefillTimestamp;
+                        }
+                        if (Stopwatch.GetElapsedTime(lastRefill, Stopwatch.GetTimestamp()) > staleThreshold)
+                        {
+                            if (_costBuckets.TryRemove(kvp.Key, out _))
+                            {
+                                Interlocked.Decrement(ref _costBucketCount);
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _isCleaningUpCost, 0);
+                }
+            }, _stoppingToken);
+        }
+
+        if (!_costBuckets.TryGetValue(key, out var bucket))
+        {
+            if (Volatile.Read(ref _costBucketCount) >= MaxCostBuckets)
+            {
+                return Task.FromResult(new CostQuotaResult(false, 0, 60));
+            }
+
+            bucket = _costBuckets.GetOrAdd(key, _ =>
+            {
+                Interlocked.Increment(ref _costBucketCount);
+                return new TokenBucket
+                {
+                    Tokens = policy.MaxTokensCapacity,
+                    LastRefillTimestamp = currentTimestamp
+                };
+            });
+        }
 
         lock (bucket.Lock)
         {

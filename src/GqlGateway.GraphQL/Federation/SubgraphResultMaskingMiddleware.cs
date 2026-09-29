@@ -52,7 +52,9 @@ public sealed class SubgraphResultMaskingMiddleware
             }
 
             var principal = httpContext?.User;
-            var maskedObj = masker.MaskResultData(originalData.Value, principal);
+            var doc = context.OperationDocumentInfo?.Document;
+            var aliasMap = ExtractAliasToFieldMap(doc);
+            var maskedObj = masker.MaskResultData(originalData.Value, principal, aliasMap);
 
             if (maskedObj != null)
             {
@@ -69,6 +71,43 @@ public sealed class SubgraphResultMaskingMiddleware
                     opResult.Extensions ?? HotChocolate.Collections.Immutable.ImmutableOrderedDictionary<string, object?>.Empty);
                 newResult.ContextData = opResult.ContextData;
                 context.Result = newResult;
+            }
+        }
+    }
+
+    private static Dictionary<string, string>? ExtractAliasToFieldMap(HotChocolate.Language.DocumentNode? document)
+    {
+        if (document == null) return null;
+
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var def in document.Definitions)
+        {
+            if (def is HotChocolate.Language.OperationDefinitionNode op)
+            {
+                TraverseSelections(op.SelectionSet, map);
+            }
+        }
+
+        return map;
+    }
+
+    private static void TraverseSelections(HotChocolate.Language.SelectionSetNode? selectionSet, Dictionary<string, string> map)
+    {
+        if (selectionSet == null) return;
+
+        foreach (var sel in selectionSet.Selections)
+        {
+            if (sel is HotChocolate.Language.FieldNode field)
+            {
+                if (field.Alias != null && !string.IsNullOrWhiteSpace(field.Alias.Value))
+                {
+                    map[field.Alias.Value] = field.Name.Value;
+                }
+                TraverseSelections(field.SelectionSet, map);
+            }
+            else if (sel is HotChocolate.Language.InlineFragmentNode frag)
+            {
+                TraverseSelections(frag.SelectionSet, map);
             }
         }
     }
