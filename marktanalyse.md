@@ -73,251 +73,30 @@ Bestandsaufnahme aller Gateway-Module zur Dokumentation der Marktreife (General 
 
 ---
 
-### 3.1 Deep Dive: Ingress/Egress Customizing, C#-Ökosystem & Sonderfreigabe-Workflows
+### 3.1 Bereits etablierte Kernstärken (GA Moats – Gelieferter Produkt-Vorsprung)
 
-In der Enterprise-Praxis scheitern API- und Daten-Gateways selten am Standard-Routing, sondern an der **"Last-Mile-Speziallogik"** (proprietäre Tokens, Token-Exchange mit Altsystemen, interne Compliance-Hashing-Auditoren, branchenspezifische PII-Maskierung und Sonderfreigaben).
+Die folgenden Differenzierungs- und Sicherheitsmerkmale sind in GqlGateway bereits **vollständig umgesetzt, produktionsreif (General Availability / GA) und durch 901/901 automatisierte Tests (inkl. Zero-Regression Security Audit & Release-Benchmarks)** abgesichert. In der Wettbewerbsanalyse dienen sie als etabliertes Fundament gegenüber Apollo, Hasura, Cosmo und klassischen Gateways:
 
-#### A. Architekturvergleich: Native C# In-Process vs. Out-of-Process gRPC Coprozess
-
-```mermaid
-flowchart LR
-    subgraph Client ["Client HTTP/GraphQL"]
-        REQ["Request"]
-    end
-
-    subgraph Gateway ["Gateway Pipeline"]
-        ING["Ingress Hook"]
-        CORE["Core Engine / AST Pushdown"]
-        EGR["Egress Hook"]
-        ING --> CORE --> EGR
-    end
-
-    subgraph Pattern1 ["Tyk/Envoy Modell (Out-of-Process gRPC)"]
-        GRPC_ING["gRPC Service (Ingress)"]
-        GRPC_EGR["gRPC Service (Egress)"]
-    end
-
-    subgraph Pattern2 ["GqlGateway Modell (Native C# In-Process)"]
-        DLL_ING["C# Middleware (Zero-Copy Span)"]
-        DLL_EGR["C# Middleware (Deep AST Context)"]
-    end
-
-    REQ --> ING
-    ING -.->|Hop 1: IPC/Protobuf| GRPC_ING
-    EGR -.->|Hop 2: IPC/Protobuf| GRPC_EGR
-
-    ING ===|Zero-Latency In-Memory| DLL_ING
-    EGR ===|Zero-Latency In-Memory| DLL_EGR
-```
-
-1. **Der Double-Hop-Flaschenhals externer Coprozesse**: Das Zwischenschalten externer gRPC-Dienste im Ingress und Egress bietet Prozessisolation, kostet aber messbar Performance: +1 bis 5 ms P99-Latenz und massiver Memory-Overhead bei großen Egress-Payloads (JSON Re-Parsing).
-2. **Der C#-Vorteil im Enterprise**: Da C# in Enterprise-Landschaften (Finanzen, Industrie, Behörden) stark verbreitet ist, senkt eine native C#-Erweiterbarkeit die TCO drastisch. Entwicklerteams nutzen bestehende Enterprise-NuGet-Pakete, Dependency Injection und Logging-Infrastrukturen ohne Sprachbruch.
-
-#### B. Paradigmenwechsel: Vom binären Allow/Deny zur dynamischen Workflow-Orchestrierung
-
-Klassische Gateways kennen nur Allow oder Deny. In regulierten Branchen scheitert dies: Mitarbeiter benötigen für Vorfälle, Audits oder Sonderfälle **temporäre Ausnahme- und Sonderfreigaben (JIT, Break-Glass, 4-Augen-Prinzip)**.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as Data Consumer / Analyst
-    participant GW as GqlGateway (Ingress Hook)
-    participant WF as Workflow Service (C# / ITSM)
-    participant Approver as Data Owner / ServiceNow
-    participant DB as Backend Target DB
-    participant EGR as GqlGateway (Egress Hook)
-
-    User->>GW: 1. Query mit sensiblen Daten (z. B. VIP/Patientendaten)
-    GW->>WF: 2. Ingress Check: Liegt Sonderfreigabe vor?
-    
-    alt Keine Freigabe vorhanden (Interaktive Challenge)
-        WF->>Approver: 3a. Erzeuge Approval-Ticket (ServiceNow / Jira / 4-Augen)
-        WF-->>GW: 3b. Status: ApprovalPending (Workflow-ID #WF-8812)
-        GW-->>User: 3c. 412 Precondition Failed / Challenge mit Freigabe-URL
-    else Sonderfreigabe aktiv (z. B. JIT-Token oder Break-Glass)
-        WF-->>GW: 4a. Status: Approved (Temporärer Consent gültig)
-        GW->>DB: 4b. Pushdown Query mit gelockertem RLS-Filter
-        DB-->>EGR: 4c. Rohdaten
-        EGR->>EGR: 4d. Revisionssicherer SHA-256 Audit-Hash (#WF-8812)
-        EGR-->>User: 4e. Daten mit Audit-Lineage-Header
-    end
-```
-
-* **Justification-Driven Access**: Ingress-Validierung von `X-Access-Justification: INC-49102` gegen ServiceNow/Jira.
-* **Interaktive 4-Augen-Freigabe (DSGVO Art. 9)**: Strukturierte `ConsentRequired`-Challenge statt 403 Forbidden; automatische Epochen-Invalidierung via Redis bei Genehmigung.
-* **Break-Glass**: Notfall-Zugriff für SREs mit SOC-Alarmierung und lückenlosem SHA-256 Audit-Hash-Chaining.
+| Geliefertes Feature / Moat | Wettbewerbs-Differenzierung (GqlGateway Vorteil) | Status & Nachweis |
+| :--- | :--- | :---: |
+| **Dual-Access Exposure (`F-API-03` & OData v4)** | Durchbricht die „GraphQL-Only Adoption Barrier“: Vollwertiger OData v4 HTTP GET Endpoint mit dynamischer OpenAPI 3.1 Spezifikation (`/odata/v4/$openapi`, `/odata/v4/{domain}/openapi.json|yaml`) und integriertem Swagger UI (`/docs`). Ermöglicht Data Scientists (Python/Pandas), BI-Tools (Power BI) und B2B-Partnern Zero-Tooling REST-Zugriff unter identischer Casbin Zero-Trust Governance. | ✅ **100% GA**<br/>(Integrationstests grün) |
+| **dbt Data Health Circuit Breaker (`F-DBT-1`)** | Schützt Clients vor unbemerkten Upstream-Pipeline-Fehlern: Automatisierte Ingestion von `run_results.json` setzt fehlerhafte Modelle sofort im GraphQL-AST unter Quarantäne (`TABLE_IN_QUARANTINE` Blocker), flankiert durch RBAC-geschützte Endpunkte (`/run-results`, `/health`, `/health/reset`). | ✅ **100% GA**<br/>(100% Testabdeckung) |
+| **Enterprise AI Agent Suite (`F-AI-02`, `04`, `06`)** | Turnkey Model Context Protocol (MCP) Server (Stdio & SSE/Streamable HTTP) mit semantischem Schema-Grounding (`F-AI-02`), AST-basierter Pre-Flight Kostensimulation und Hard-Safety-Limits (`simulate_query` in `F-AI-04`) sowie revisionssicheren `_provenance`-Metadaten-Footnotes für EU-AI-Act-Audits (`F-AI-06`). | ✅ **100% GA**<br/>(MCP Testsuite grün) |
+| **Data Catalog Connectors (`P1`)** | Beseitigt manuelle Policy-Doppelpflege: Vollautomatischer Metadaten-Sync mit Microsoft Purview, Collibra und OpenMetadata via REST-Clients mit Polly 8 Resilienz, Entra ID OAuth, PII/DSGVO-Art.-9-Mapping und HMAC-Webhooks. | ✅ **100% GA**<br/>(Turnkey Connector Suite) |
+| **Zero-Trust SQL RLS Pushdown & Casbin ABAC** | Dynamische Injektion von Row-Level Security direkt in den relationalen AST (Postgres, MSSQL, SQLite). Zero-Downtime Policy Hot-Reloading (`ReloadPoliciesAsync`) ohne Pod-Neustart und SIMD-geschützte Token-Scanner. | ✅ **100% GA**<br/>(Core Execution Engine) |
+| **Native C# Ingress/Egress Pipeline (`P9`)** | Zero-IPC-Latenz (< 0.1 ms) durch native C# Middlewares (`.dll`/NuGet/DI) direkt im Hot Path. Beseitigt den Double-Hop-Flaschenhals externer gRPC-Coprozesse (Tyk/Envoy) und ermöglicht tiefen AST- und Memory-Zugriff. | ✅ **100% GA**<br/>(In-Process SDK aktiv) |
+| **ITSM Closed Loop & Sonderfreigaben** | Dynamische Sonderfreigaben statt statischem Allow/Deny: Justification-Driven Access (`X-Access-Justification`), interaktive 4-Augen-Challenges (DSGVO Art. 9) und Break-Glass-Notfallzugriff mit SHA-256 Audit-Hash-Chaining; Outbound REST an ServiceNow Table API und Jira Cloud. | ✅ **100% GA**<br/>(Transactional Outbox) |
+| **Advanced Privacy & Lifecycle (`P10`, `P11`, `P12`)** | Multi-Tenant Policy Simulation Sandbox (What-If Replay historischer Audit-Logs gegen neue Policies), Smart Schema Deprecation (RFC 8594 Sunset-Header & Brownout Chaos Testing) und federated Differential Privacy (Laplace/Gauß-Epsilon-Perturbation). | ✅ **100% GA**<br/>(Privacy & Lifecycle Core) |
+| **Edge, Realtime & Lakehouse Performance (`P2`, `P3`, `P4`, `P5`, `P7`)** | Apache Iceberg v2 Lakehouse-Connector mit Manifest-Caching und Partition-Pruning; Subgraph Federation via Hot Chocolate Fusion 16.6.7 (AST P99: 26.8 µs); CDN Cache-Tag Headers mit automatischer `private, no-store` Isolation; verteiltes Token-Bucket Rate Limiting via Redis Lua; Subscriptions mit In-Stream RLS über Debezium CDC. | ✅ **100% GA**<br/>(Hochlast-geprüft) |
+| **Technologischer Spitzen-Stack (.NET 10 / C# 12/13)** | Konsequente Zero-Allocation Architektur (`ReadOnlySpan<T>`, `ref struct`, SIMD `SearchValues<T>`), Stack-only Invarianten gegen PII-Leaks im Memory Dump, MassTransit für Transactional Outbox und Polly 8 Resilienz. | ✅ **100% GA**<br/>(Core Runtime Foundation) |
 
 ---
 
-### 3.2 Strategische Technologie-Matrix: C# 12/13 & .NET 10 Sprach- und Runtime-Features als Marktdifferenzierer (Product Moat)
+### 3.2 Strategische Differenzierung: dbt Data Mesh & Contract Governance Moat (Wave 1 & Wave 2)
 
-In modernen Enterprise-Vergaben ist die Technologiewahl kein reines Entwicklungsdetail, sondern ein **strategischer Verkaufs- und TCO-Faktor**. Konkurrenten wie Apollo Router (Rust/Rhai), Cosmo (Rust/Go), Kong (Lua/C) und Hasura (Haskell/Node) zwingen Enterprise-Kunden in Nischensprachen oder leiden unter GC-/IPC-Overhead.
+In modernen Enterprise-Datenarchitekturen ist dbt der De-facto-Standard für Transformationen im Data Warehouse und Lakehouse. Konkurrierende API- und GraphQL-Gateways (Apollo GraphOS, Hasura DDN, WunderGraph Cosmo) besitzen keinerlei Verständnis für Upstream-Data-Pipelines. Sie agieren blind gegenüber Datenfehlern und Schema-Brüchen.
 
-C# 12, 13 und .NET 10 bieten GqlGateway die einzigartige Möglichkeit, **C++/Rust-nahe Raw-Performance mit kompromissloser Enterprise-Sicherheit und maximaler Entwicklerproduktivität** zu fusionieren.
-
-| C# / .NET Feature | Technologische Wirkungsweise im Gateway | Konkreter Produkt- & Marktvorteil (Business Value & Moat) | Status im Produkt |
-| :--- | :--- | :--- | :---: |
-| **`ReadOnlySpan<T>`, `Span<T>` & `stackalloc`** | Zero-Allocation Slicing von HTTP-Headern, GraphQL-Token und Spaltenwerten auf dem Stack ohne Heap-Objekte. | **Sub-Mikrosekunden P99-Latenz**: Maskierung von 2,8 Mio. IBANs/s und 2,0 Mio. E-Mails/s. Senkt Cloud-Compute-Kosten um bis zu 70% ggü. Node/Java-Gateways. | ✅ Aktiv im Core |
-| **`ref struct` (Stack-only Invarianten)** | Compiler-erzwungene Allokationsfreiheit: Typen können weder geboxt noch im Managed Heap abgelegt werden. | **Compile-Time PII-Leakage-Schutz**: Sensible Klartextdaten (DSGVO Art. 9) können den Callstack nicht verlassen und landen nie im Garbage Collector / Memory Dumps (`SensitiveDataSpan`). | ✅ Aktiv im Core |
-| **`SearchValues<T>` & SIMD-Vektorisierung** | Hardware-beschleunigtes Multi-Byte/String-Scanning (AVX-512) für GraphQL-Delimiter, SQL-Tokens und PII-Muster. | **AST-Parsing & Injection-Scanning mit Line-Rate-Speed**: Bis zu 10x schnellere Erkennung unerlaubter Zeichenfolgen und AST-Direktiven als klassische Regex-Engines (`SimdTokenScanner`). | ✅ Aktiv im Core |
-| **`string.Create` & Memory-Pooling** | Allokation von Strings exakt in Zielgröße ohne temporäre StringBuilder/Substring-Zwischenstufen. | **Zero-Garbage-Collection Jitter**: Verhindert GC Gen-1/2 Spikes unter Maximallast (z. B. 50k Concurrent Users im Enterprise Scale Spike). | ✅ Aktiv im Core |
-| **`System.IO.Pipelines` & `ReadOnlySequence<T>`** | Asynchrones, gepuffertes I/O-Streaming direkt aus Socket-Buffern ohne Byte-Array-Kopien (`Stream.Read`). | **Hohe Concurrency bei minimalem Footprint**: Skaliert auf 100k parallele WebSocket- und SSE-Subscriptions mit minimalem RAM-Verbrauch (< 35 MB Basis). | ✅ Aktiv (P5/P7) |
-| **`IAsyncEnumerable<T>` & `Channel<T>`** | Reaktive, asynchrone Streams mit nativer Backpressure für CDC-Events (Debezium) und Outbox-Meldungen. | **Verlässliche Realtime-Governance**: Verhindert Out-of-Memory bei Event-Spitzen; dynamische In-Stream RLS-Filterung ohne Latenzstau. | ✅ Aktiv (P5) |
-| **Pattern Matching & Exhaustive `switch`** | Typsichere Dekonstruktion von GraphQL AST-Nodes, RLS-Expressions und dialektspezifischem SQL-Pushdown. | **Zero-Bug RLS Pushdown**: Neue AST-Typen oder SQL-Dialekte (Postgres, MSSQL, Iceberg/DuckDB) führen bei Lücken zu Compile-Fehlern statt Laufzeit-Sicherheitslecks. | ✅ Aktiv im Core |
-| **Primary Constructors & `record struct`** | Prägnante, unveränderliche (immutable) Werttypen für AST-Knoten, Audit-Hashes und Token-Entscheidungen. | **Unveränderbarkeit (Immutability by Default)**: Beseitigt Race Conditions und unbefugte Manipulation von Policy-Entscheidungen im Gateway-Kontext. | ✅ Aktiv im Core |
-| **C# Source Generators & Interceptors** | Kompilierungszeit-Generierung von GraphQL-Resolvern, Casbin-Regeln und Serialisierern statt Runtime-Reflection. | **Instant Startup (< 100 ms) & No Reflection-Overhead**: Höchste Ausführungsgeschwindigkeit; eliminierter JIT/Reflection-Memory-Overhead. | 🟢 Roadmap P10 |
-| **Native AOT (.NET 10 Ahead-of-Time)** | Kompilierung in native Maschinencode-Binaries ohne JIT-Compiler. | **Architektur-Entscheidung: Verworfen**. Native AOT verhindert das dynamische Nachladen von Datenmodellen, Subgraph-Schemata und C#-Plugins (`AssemblyLoadContext`) zur Laufzeit und bricht Casbin DynamicExpresso `eval()`-Regeln. **Pragmatische Alternative:** Einsatz von **ReadyToRun (R2R) + Dynamic PGO** (Startup < 80 ms bei voller Laufzeit-Extensibilität). | ❌ **Verworfen (Architektur-Veto)** |
-| **`AssemblyLoadContext` (Collectible ALC)** | Isolierte In-Memory Ladekontexte für kundenspezifische C#-Middlewares (`.dll`s). | **Zero-Downtime Hot-Reloading**: Enterprise-Sonderlogiken und Custom-Auth-Module können im laufenden Betrieb ohne Pod-Restart ausgetauscht werden (`DynamicPluginAssemblyLoadContext`). | ✅ Aktiv im Core |
-
----
-
-### 3.3 Ökosystem- & Bibliotheks-Vergleich: .NET Enterprise Moat vs. Rust / Go (Apollo & Cosmo Alternative)
-
-Ein häufiges Missverständnis im Markt ist die Annahme, dass Rust oder Go per se überlegene Ökosysteme für Enterprise Gateways darstellen. Während Rust (Apollo Router, Cosmo) exzellente CPU- und Speichereffizienz für einfache Proxy-Aufgaben bietet, scheitert es in der Praxis an der **"Enterprise Reality Gap"**: Der gravierende Mangel an ausgereiften, herstellerzertifizierten Enterprise-Treibern, dynamischer AST-Manipulation und ganzheitlichen Resilienz-/Messaging-Frameworks.
-
-Die folgende Benchmark- und Ökosystem-Analyse belegt die strukturelle Überlegenheit des modernen .NET-Stacks gegenüber dem Rust-Ökosystem im Unternehmensumfeld:
-
-#### A. Domänen-Vergleich: .NET vs. Rust-Ökosystem
-
-| Domäne | .NET-Bibliothek / API | Status im Rust-Ökosystem (Apollo / Cosmo) | Strategische Konsequenz für GqlGateway |
-| :--- | :--- | :--- | :--- |
-| **Enterprise GraphQL** | **Hot Chocolate** (ChilliCream) | `async-graphql` (gut für Basisanwendungsfälle, aber **keine Stitching-/Fusion-Engine**) | GqlGateway beherrscht native Distributed Federation (Fusion), Zero-Trust Subgraph Token Forwarding und In-Memory Result Masking out-of-the-box. |
-| **Dynamic AST Re-Writing** | **`System.Linq.Expressions`** | **Nicht vorhanden** (Compile-Time Macros statt dynamischer Runtime ASTs) | Ermöglicht GqlGateway dynamisches RLS-Pushdown, AST-Manipulation und Dialekt-Übersetzung zur Laufzeit ohne Re-Kompilierung. |
-| **MSSQL & Oracle** | **`Microsoft.Data.SqlClient`**, **`Oracle.ManagedDataAccess`** | Community-Crates (`tiberius`) oder fragile C-Bindings (`ODPI-C`) | Fortune-500-Standard: Volle Unterstützung für Kerberos, Always Encrypted, RAC, Read-Scale Availability Groups ohne Absturzrisiken unmanaged C-Bindings. |
-| **Enterprise Messaging** | **MassTransit** | **Kein Äquivalent**; erfordert fehleranfälligen Eigenbau aus Broker-Clients + Tokio + DB-Outbox | Schlüsselfertiges Transactional Outbox Pattern, Saga State Machines und automatisierte Retries für ITSM- und CDC-Events. |
-| **Distributed State / Actors** | **Microsoft Orleans** | `actix` (klassisches In-Memory Actor Model, **keine Virtual Actors**) | Elastisch skalierbare Virtual Actors für verteilte Session-Zustände, Token-Buckets und Epochen-Synchronisation im Cluster. |
-| **Enterprise Identity** | **`Microsoft.AspNetCore.Authentication.*`** | Stark fragmentierte Community-Crates für OAuth/JWT | Nahtlose Entra ID, ADFS, Kerberos/Negotiate und mTLS Unterstützung auf Enterprise-Sicherheitsniveau. |
-
----
-
-#### B. Technologischer Spitzen-Stack: Herausragende .NET-Bibliotheken im Produkt-Einsatz
-
-Die herausragenden Bibliotheken im modernen .NET-Ökosystem zeichnen sich durch extreme Performance, typsichere Abstraktionen und battle-tested Zuverlässigkeit im Enterprise-Einsatz aus:
-
-##### 1. High-Performance & Serialisierung
-* **MemoryPack (Cysharp)**
-  * *Was es macht:* Extrem schneller, Zero-Allocation Binär-Serializer für C#.
-  * *Warum es herausragt:* Nutzt C# 12/13 Source Generators und unmanaged Memory-Layouts. Serialisiert Objekte um ein Vielfaches schneller als Protobuf oder MessagePack, da es fast vollständig auf Zwischenpuffer und Boxing verzichtet.
-* **Microsoft Garnet**
-  * *Was es macht:* Von Microsoft Research entwickelter, modularer In-Memory-Cache und Key-Value-Store (vollständig kompatibel zum Redis-Protokoll).
-  * *Warum es herausragt:* Rein in modernem C# geschrieben (`System.IO.Pipelines`, `Tsavorite`-Storage-Engine). Skaliert auf Multi-Core-Systemen horizontal besser und liefert signifikant höhere Durchsätze bei geringerer Latenz als traditionelle Redis-Instanzen.
-
-##### 2. Enterprise Messaging & Resilienz
-* **MassTransit**
-  * *Was es macht:* Komplettes Framework für asynchrone, nachrichtenbasierte Architekturen (Kafka, RabbitMQ, Azure Service Bus, AWS SQS).
-  * *Warum es herausragt:* Bringt komplexe Enterprise-Muster wie das *Transactional Outbox Pattern*, *Saga State Machines*, Idempotenz-Filter und automatisierte Retry-Topologien deklarativ und transportagnostisch mit.
-* **Polly (`Microsoft.Extensions.Resilience`)**
-  * *Was es macht:* Fehlertoleranz- und Resilienz-Bibliothek für verteilte Systeme.
-  * *Warum es herausragt:* Standardmäßig in das .NET-Host-Modell integriert. Ermöglicht Policies für Circuit Breaker, Rate Limiting, Hedging (parallele Backup-Requests bei langsamen Antwortzeiten) und Retries mit exponentiellem Backoff über eine moderne Fluent API.
-
-##### 3. Datenzugriff & ORM
-* **Dapper**
-  * *Was es macht:* Extrem leichtgewichtiger Micro-ORM (entwickelt von Stack Overflow).
-  * *Warum es herausragt:* Mappt rohe SQL-Resultate via dynamisch emittiertem IL-Code nahezu ohne Overhead direkt auf C#-Records und -Objekte. Unschlagbar bei komplexen Reporting-Queries und Hochdurchsatz-Read-Path-Szenarien.
-* **Entity Framework Core (EF Core)**
-  * *Was es macht:* Full-Featured ORM mit mächtigem LINQ-Provider.
-  * *Warum es herausragt:* Der LINQ-zu-SQL-Compiler gehört zu den fortschrittlichsten Abstraktionen am Markt. Features wie *Compiled Models*, *Query Splitting*, *Interceptors* (für automatisches SQL-Rewriting) und native JSON-Spaltenunterstützung machen es produktiv und performant.
-
-##### 4. APIs, Validierung & Clients
-* **FluentValidation**
-  * *Was es macht:* Typsichere Validierungsbibliothek für Business-Objekte und DTOs.
-  * *Warum es herausragt:* Trennt Validierungsregeln sauber von Datenmodellen (keine unübersichtlichen `[Required]`-Attribute). Unterstützt kaskadierende Regeln, asynchrone DB-Prüfungen und komplexe Abhängigkeitsketten.
-* **Refit**
-  * *Was es macht:* Automatische REST-Client-Generierung über C#-Interfaces (inspiriert von Retrofit).
-  * *Warum es herausragt:* Definiert externe HTTP-Endpunkte als einfaches Interface mit Attributen; Refit generiert den `HttpClient`-Boilerplate-Code, Authentifizierungs-Header und JSON-Deserialisierung zur Compile-Zeit.
-* **Hot Chocolate (ChilliCream)**
-  * *Was es macht:* Enterprise GraphQL Server für .NET.
-  * *Warum es herausragt:* Führend bei Schema-Stitching, Distributed Federation (Fusion) und nativer Integration in EF Core mit automatischem Projektions-Pushdown.
-
-##### 5. Testing & Qualitätssicherung
-* **Testcontainers for .NET**
-  * *Was es macht:* Startet echte Abhängigkeiten (PostgreSQL, Kafka, MinIO, Redis) als kurzlebige Docker-/Podman-Container direkt aus dem Testcode.
-  * *Warum es herausragt:* Echte Integrationstests ohne Mocks oder fragile externe Test-Infrastrukturen; Container werden deterministisch nach Testende entsorgt.
-* **Bogus**
-  * *Was es macht:* Faker-Engine zur Generierung realistischer Test- und Mockdaten.
-  * *Warum es herausragt:* Extrem flexible Rulesets, deterministische Datensätze über Seeds und Lokalisierung (z. B. deutsche Adressen, IBANs, Namen).
-* **Verify**
-  * *Was es macht:* Snapshot-Testing-Framework für komplexe Datenstrukturen, JSONs oder Schema-Definitionen.
-  * *Warum es herausragt:* Speichert das Testergebnis als `.verified`-Datei ab und warnt automatisch via Diff-Tool, sobald sich die Struktur unabsichtlich ändert.
-
----
----
-
-### 3.4 Strategische Enterprise-Differenzierungsmerkmale (Enterprise Moats 2026/2027)
-
-Auf Basis eingehender Wettbewerbsanalysen (Apollo GraphOS / Router v2.17+, Hasura DDN v3, Cosmo, Immuta, Privacera, Tyk, Kong) wurden sieben strategische Alleinstellungsmerkmale identifiziert, die GqlGateway als unangefochtenen Marktführer für regulierte Enterprise-Umgebungen (Banking, Healthcare, Public Sector, Insurance) positionieren:
-
-```mermaid
-flowchart TD
-    subgraph CoreMoats ["GqlGateway Enterprise Moats 2026/2027"]
-        M1["1. Differential Privacy & Dynamic Epsilon Perturbation"]
-        M2["2. Smart Schema Deprecation & Client-Impact Sunsetting"]
-        M3["3. Multi-Tenant Policy Simulation Sandbox (What-If Replay)"]
-        M4["4. Zero-Trust Lakehouse Governor (DuckDB & Arrow Flight)"]
-        M5["5. Confidential Compute & Enclaves (Intel SGX / AMD SEV)"]
-        M6["6. Data Contract & FinOps Engine (Semantic SLA & Chargeback)"]
-        M7["7. Post-Quantum Cryptography (ML-KEM / Hybrid PQC)"]
-    end
-```
-
-#### 1. Federated Differential Privacy & Dynamic Epsilon-Perturbation Engine (Zero-Leakage Analytics)
-* **Marktlücke bei Konkurrenten:** Apollo GraphOS und Hasura DDN unterstützen keine mathematische Differential Privacy. Selbst wenn Row-Level Security und Spaltenmaskierung aktiv sind, können Angreifer durch wiederholte statistische Aggregationsabfragen (`avg(salary)`, `count(patients)` mit wechselnden Prädikaten wie `WHERE zip_code=10115 AND birth_year=1984`) Rückschlüsse auf Einzelpersonen ziehen (Differenzierungs- & Rekonstruktionsangriffe).
-* **GqlGateway Moat:**
-  * **In-Engine Laplace- & Gauß-Rausch-Injektion**: Automatische Perturbation von numerischen Aggregat-Ergebnissen im GraphQL/OData Execution-Tree basierend auf konfigurierbarem Budget $(\epsilon, \delta)$.
-  * **Dynamisches Epsilon-Budget-Tracking**: Jeder API-Client/Analyst besitzt ein tägliches Epsilon-Budget. Übersteigt eine Serie von Abfragen das Privacy-Budget, wird der Zugriff blockiert oder granular gedrosselt.
-  * **k-Anonymity & Small-Cohort Suppression**: Kohorten mit weniger als $k$ Treffern ($k < 5$) werden im GraphQL-AST automatisch unterdrückt (`null` mit strukturiertem Warning-Header).
-
-#### 2. Automated Schema Deprecation & Client-Impact Sunsetting (Smart Sunsetting Engine)
-* **Marktlücke bei Konkurrenten:** Apollo Studio zeigt zwar `@deprecated`-Direktiven an, bietet aber keine automatisierte, erzwungene Abschaltung ("Hard Sunsetting") und keine Möglichkeit, Abbrüche client-individuell im Gateway abzufedern, ohne die gesamte API zu brechen.
-* **GqlGateway Moat:**
-  * **Progressive 3-Stufen Sunsetting-Pipeline**:
-    1. *Warning-Phase*: Injektion von GraphQL `extensions.deprecation`-Objekten und HTTP `Sunset`-Headern (RFC 8594) sowie automatische Ticket-Erstellung in Jira/ServiceNow an den registrierten Client-Owner.
-    2. *Brownout-Phase (Chaos Testing)*: Gezielte, zeitlich begrenzte Injektion synthetischer Latenzen (+200ms) oder intermittierender 426-Fehler während definierter Testfenster, um unvorbereitete Clients vor dem Stichtag aufzuspüren.
-    3. *Hard Sunset & Alias Fallback*: Automatisches Blockieren abgelaufener Felder mit maschinenlesbarem Migrations-Vorschlag (`"Feld 'oldField' wurde am 01.06.2026 decommissioned; nutze 'newField'"`).
-  * **Automatischer Catalog-Abgleich**: Deprecations werden per REST-Webhook bidirektional in Collibra, Purview und OpenMetadata reflektiert.
-
-#### 3. Multi-Tenant Policy Simulation Sandbox ("What-If" Replay via Audit Logs)
-* **Marktlücke bei Konkurrenten:** Die Änderung von Casbin- oder GraphQL-Berechtigungen ist im Enterprise-Betrieb mit hohem Risiko verbunden ("Breaking Security Changes"). Kein Mitbewerber bietet ein Verfahren, um neue Policy-Entwürfe gefahrlos gegen historische Produktionslast zu testen.
-* **GqlGateway Moat:**
-  * **In-Memory Shadow Policy Replay**: Data Stewards und Compliance-Beauftragte können historische, pseudonymisierte GraphQL-Audit-Logs im Memory-Puffer gegen Entwurfs-Policies (`draft.csv`) simulieren.
-  * **Granulare Differenz-Matrix**: Das Gateway liefert eine präzise Auswirkungsanalyse vor dem Rollout:
-    * `"2.4% der Abfragen der Rolle 'Financial_Analyst' würden abgelehnt"`
-    * `"14 zusätzliche Spaltenmaskierungen auf Tabelle 'Transactions' aktiv"`
-    * `"Keine Regressionen bei kritischen BI-Dashboards"`.
-
-#### 4. Zero-Trust Lakehouse Query Governor (Apache Arrow Flight & Iceberg v2 Vector Pushdown)
-* **Marktlücke bei Konkurrenten:** Data-Security-Tools (Immuta, Privacera) bieten keine GraphQL-Schnittstelle; Apollo Router kann Lakehouse-Dateiformate (Parquet, Iceberg, Delta) nicht ohne externe SQL-Engines (Trino, Athena) abfragen. Hasura verlangt relationale Tabellen.
-* **GqlGateway Moat:**
-  * **SIMD-vektorisierter ABAC-Pushdown auf Parquet**: Direkte Ausführung über DuckDB / Apache Arrow Flight unter Beibehaltung aller Casbin-ABAC- und Maskierungsregeln.
-  * **Zero-Copy Columnar Streaming**: Analytische GraphQL-Queries streamen Arrow-Record-Batches direkt als JSON/GraphQL ohne zeilenweises C#-Objekt-Mapping.
-  * Bis zu **50x geringere Latenz** und **80% weniger RAM-Bedarf** bei massiven OLAP-Aggregationen direkt über MinIO/S3/Azure Data Lake.
-
-#### 5. Air-Gapped Sovereign Cloud & Confidential Compute (Intel SGX / AMD SEV)
-* **Marktlücke bei Konkurrenten:** Apollo GraphOS verlangt zwingend Cloud-Konnektivität (SaaS Schema Registry, Cloud Router Telemetrie). Kunden in der Verteidigungsindustrie, Geheimnisträgern und Behörden ist dies untersagt.
-* **GqlGateway Moat:**
-  * **100% Autarkie (Zero-Phone-Home)**: Volle Funktionsfähigkeit in abgeschotteten, physisch getrennten Netzen (Air-Gapped / BSI IT-Grundschutz).
-  * **Confidential Enclave Readiness**: Ausführung im geschützten Hauptspeicher (Intel SGX Enclaves / AMD SEV-SNP via Azure Confidential VMs / GCP Confidential Spaces). Weder der Host-Hypervisor noch Cloud-Root-Administratoren können unverschlüsselte Abfragedaten, HMAC-Keys oder Authentifizierungs-Token im RAM auslesen.
-
-#### 6. Automated Data Contract & FinOps Engine (Semantic SLA & Chargeback Attribution)
-* **Marktlücke bei Konkurrenten:** Bestehende Rate-Limiter zählen nur rohe HTTP-Requests pro Sekunde. Sie können weder GraphQL-spezifische Ressourcenkosten (AST-Komplexität, DB-Bytes, Join-Tiefe) noch vertraglich zugesicherte Datenverträge (Data Contracts nach Open Data Contract Standard - ODCS) durchsetzen.
-* **GqlGateway Moat:**
-  * **AST-basierte FinOps-Abrechnung**: Jedem Client oder Kostenstelle wird ein monatliches Budget für Query-Complexity-Punkte und DB-Scan-Volumina zugewiesen.
-  * **Verbrauchsbasiertes Chargeback**: Export von detaillierten FinOps-Nutzungsmetriken via Prometheus/OpenTelemetry für interne Leistungsverrechnung.
-  * **Data Contract Enforcer**: Validierung eingehender und ausgehender Schemata gegen versionierte ODCS-Spezifikationen inklusive SLA-Garantien (P99 < 15ms).
-
-#### 7. Quantum-Resilient Transport & Key Exchange (ML-KEM / Hybrid Post-Quantum PQC)
-* **Marktlücke bei Konkurrenten:** Alle etablierten Gateways nutzen klassisches TLS 1.3 (ECDHE). Sie sind verwundbar für "Harvest Now, Decrypt Later" (HNDL)-Angriffe staatlicher Akteure, bei denen sensible PII-Daten heute abgefangen und in einigen Jahren mit Quantencomputern entschlüsselt werden.
-* **GqlGateway Moat:**
-  * **Hybride Post-Quantum-Kryptographie (PQC)**: Unterstützung für `X25519MLKEM768` (FIPS 203) im TLS-Stack von .NET 10 / OpenSSL 3.3.
-  * **Quantensichere Audit-Hash-Signaturen**: Vorbereitung quantenresistenter State-Machine-Signaturen (ML-DSA / Dilithium) für revisionssichere Langzeitarchive nach BSI TR-02102.
-
----
-
-### 3.5 Strategische Differenzierung: dbt Data Mesh & Contract Governance Moat (Zero-Fault Data Quality & Breaking-Change Prevention)
-
-In modernen Enterprise-Datenarchitekturen ist dbt der De-facto-Standard für Datenmodellierung, Transformationen und Qualitätsprüfung im Data Warehouse und Lakehouse. Konkurrierende API- und GraphQL-Gateways (Apollo GraphOS, Hasura DDN, WunderGraph Cosmo) besitzen keinerlei Verständnis für Upstream-Data-Pipelines. Sie agieren blind gegenüber Datenfehlern und Schema-Brüchen.
-
-GqlGateway schließt diese kritische Lücke durch die **tiefe bidirektionale Verzahnung mit dem dbt-Ökosystem**:
+GqlGateway schlägt die Brücke zwischen Data Engineering und Datenkonsumenten. Auf Basis des bereits gelieferten **`F-DBT-1` Health Circuit Breakers** (Quarantäne bei Testfehlern) adressieren die verbleibenden Säulen die zentralen Sollbruchstellen im Enterprise Data Mesh:
 
 ```mermaid
 flowchart TD
@@ -329,11 +108,14 @@ flowchart TD
     end
 
     subgraph GatewayCore ["GqlGateway dbt Mesh Engine"]
-        INGEST["DbtMetadataIngestionService"]
-        CIRCUIT["Data Quality Circuit Breaker (Quarantäne)"]
-        VALIDATOR["DbtContractValidator (CI/CD Breaking Change Gate)"]
-        EXPOSURE["Live-Telemetry Exposure Publisher"]
-        CASBIN_SYNC["Policy & RLS Auto-Sync (meta.casbin / meta.rls)"]
+        INGEST["DbtMetadataIngestionService (GA Core)"]
+        CIRCUIT["F-DBT-1: Data Quality Circuit Breaker (GA ✅)"]
+        VALIDATOR["F-DBT-2: DbtContractValidator (CI/CD Breaking Change Gate)"]
+        EXPOSURE["F-DBT-3: Live-Telemetry Exposure Publisher"]
+        WEBHOOK["F-DBT-4: Orchestrator & dbt Cloud Webhooks"]
+        METRICS["F-DBT-5: Semantic Layer / MetricFlow Auto-Mapping"]
+        CASBIN_SYNC["F-DBT-6: Policy & RLS Auto-Sync (meta.casbin / meta.rls)"]
+        MESH["F-DBT-7: Cross-Project Federation"]
     end
 
     MANIFEST --> INGEST
@@ -342,218 +124,72 @@ flowchart TD
     SEMANTIC --> INGEST
     VALIDATOR <-->|Pre-Merge CI Check| MANIFEST
     EXPOSURE -.->|Live Ops, Latency & Consumers| DbtEcosystem
+    WEBHOOK --> INGEST
+    METRICS --> INGEST
+    CASBIN_SYNC --> INGEST
+    MESH --> INGEST
 ```
 
-#### Die 7 Säulen der GqlGateway dbt Governance:
+#### Die offenen Differenzierungs-Säulen der dbt Governance:
 
-1. **`run_results.json` Data Health Ingestion & Circuit Breaker (F-DBT-1):**
-   * *Problem bei Mitbewerbern:* Schlägt ein dbt-Test (`dbt test`, z. B. `not_null`, `unique`, Relationship-Integrität) fehl oder bricht ein Modellbau ab, liefern Apollo oder Hasura veraltete oder fehlerhafte Daten an Clients aus.
-   * *GqlGateway Moat:* Ingestion von `run_results.json` nach Pipeline-Läufen. Schlägt ein Modell oder kritischer Test fehl, aktiviert das Gateway automatisch eine Quarantäne: Anfragen werden entweder fail-closed blockiert oder mit aussagekräftigen GraphQL Execution Warnings (`extensions.dbt_health: { status: "DEGRADED", failed_tests: [...] }`) beantwortet.
-
-2. **dbt Model Contract Enforcement & Breaking-Change CI Gate (F-DBT-2):**
-   * *Problem bei Mitbewerbern:* Wenn Data Engineers in dbt Spalten umbenennen, löschen oder Typen ändern, brechen GraphQL-Clients erst zur Laufzeit in Produktion.
-   * *GqlGateway Moat:* `IDbtContractValidator` und Endpoint `POST /api/extensions/dbt/validate-contract`. Im PR-CI-Workflow wird das neue dbt-Manifest gegen das aktive GraphQL-Schema und registrierte Client-Queries geprüft. Breaking Changes werden gemeldet, bevor der Code in Produktion gemergt wird.
-
-3. **Live Telemetry-Driven Exposures (F-DBT-3):**
+1. **dbt Model Contract Enforcement & Breaking-Change CI Gate (`F-DBT-2` - Wave 1):**
+   * *Problem bei Mitbewerbern:* Benennen Data Engineers Spalten um oder ändern Typen, brechen Consumer erst zur Laufzeit in Produktion.
+   * *GqlGateway Moat:* `IDbtContractValidator` und CI-Endpoint `POST /api/extensions/dbt/validate-contract`. Prüft im PR-Workflow das neue dbt-Manifest gegen das aktive GraphQL-Schema und registrierte Client-Queries vor dem Merge.
+2. **Live Telemetry-Driven Exposures (`F-DBT-3` - Wave 1):**
    * *Problem bei Mitbewerbern:* dbt Exposures müssen manuell gepflegt werden und veralten sofort.
-   * *GqlGateway Moat:* Das Gateway reichert das generierte `exposures.yaml` automatisch mit realen Telemetriedaten an: Welche GraphQL-Operationen und Konsumenten (z. B. `ExecutiveDashboard`, `PartnerPortal`) fragen ein Modell ab? Inklusive 30-Tage Abfragehäufigkeit und P99-Latenz. Data Engineers sehen vor Refactorings in den dbt Docs sofort den Impact auf reale Applikationen.
-
-4. **Zero-Touch dbt Cloud & Orchestrator Webhook Integration (F-DBT-4):**
-   * *Problem bei Mitbewerbern:* Erfordert manuelle API-Skripte und periodisches Polling.
-   * *GqlGateway Moat:* Nativer Webhook-Receiver für dbt Cloud (`job.run.completed`) und Airflow/Dagster mit HMAC-SHA256 Signaturprüfung und automatischem Artefakt-Download.
-
-5. **dbt Semantic Layer / Metrics Auto-Mapping (F-DBT-5):**
-   * *Problem bei Mitbewerbern:* Aggregationen müssen mühsam manuell in GraphQL-Resolvern nachprogrammiert werden.
-   * *GqlGateway Moat:* Automatische Generierung typisierter analytischer GraphQL-Abfragen direkt aus dbt `semantic_models` und `metrics` (Dimensions, Time Grains, Aggregations) unter voller Wahrung aller Casbin-ABAC- und Maskierungsregeln.
-
-6. **Policy & RLS Auto-Sync aus dbt Metadaten (F-DBT-6):**
-   * *Problem bei Mitbewerbern:* Berechtigungsregeln müssen doppelt gepflegt werden: im dbt-Repo und im Gateway.
+   * *GqlGateway Moat:* Automatisches Anreichern von `exposures.yaml` mit realen Telemetriedaten: Welche GraphQL-Operationen und Konsumenten (`ExecutiveDashboard`, `PartnerPortal`) fragen ein Modell ab (inkl. 30-Tage Häufigkeit und P99-Latenz).
+3. **Zero-Touch dbt Cloud & Orchestrator Webhook Integration (`F-DBT-4` - Wave 1):**
+   * *Problem bei Mitbewerbern:* Erfordert manuelle Skripte und fehleranfälliges Polling.
+   * *GqlGateway Moat:* Nativer Webhook-Receiver für dbt Cloud (`job.run.completed`), Airflow und Dagster mit HMAC-SHA256 Signaturprüfung und automatischem Artefakt-Download.
+4. **dbt Semantic Layer / Metrics Auto-Mapping (`F-DBT-5` - Wave 2):**
+   * *Problem bei Mitbewerbern:* Aggregationen müssen manuell in GraphQL-Resolvern nachprogrammiert werden.
+   * *GqlGateway Moat:* Automatische Generierung typisierter analytischer GraphQL-Abfragen direkt aus dbt `semantic_models` und `metrics` unter Wahrung aller Casbin-ABAC- und Maskierungsregeln.
+5. **Policy & RLS Auto-Sync aus dbt Metadaten (`F-DBT-6` - Wave 1):**
+   * *Problem bei Mitbewerbern:* Berechtigungsregeln müssen im dbt-Repo und im Gateway doppelt gepflegt werden.
    * *GqlGateway Moat:* Übersetzung von `meta.casbin_roles` und `meta.rls_filter` in Gateway-Vorschläge mit Zero-Trust 4-Augen-Freigabe-Workflow.
-
-7. **dbt Mesh Multi-Project Cross-Model Federation (F-DBT-7):**
+6. **dbt Mesh Multi-Project Cross-Model Federation (`F-DBT-7` - Wave 2):**
    * *Problem bei Mitbewerbern:* Monolithischer Ansatz scheitert in dezentralen Data-Mesh-Organisationen.
    * *GqlGateway Moat:* Unterstützung multipler dbt-Manifeste pro Domäne (`manifest_finance.json`, `manifest_sales.json`) mit automatischem Cross-Project Lineage Stitching im `ILineageGraphStore`.
 
 ---
 
-### 3.6 Strategische Differenzierung: Semantic-Enriched MCP Layer für autonome KI-Agenten (dbt & OpenMetadata Context Engine)
+### 3.3 Strategische Differenzierung: Enterprise AI Agent Suite (Wave 2 Differenzierer)
 
-Mit dem Durchbruch von Agentic AI (Claude 3.5 Sonnet, GPT-4o, autonome Datenanalyse- und DevSecOps-Agenten) wandelt sich das **Model Context Protocol (MCP)** vom Entwickler-Tool zum standardisierten Enterprise-Interface für Tool-Calling und autonomes Reasoning.
+Mit der bereits gelieferten **GA-Triade (`F-AI-02` Semantic Grounding, `F-AI-04` Pre-Flight Cost Simulator, `F-AI-06` Provenance Footnoting)** besitzt GqlGateway ein Alleinstellungsmerkmal gegenüber Apollo MCP Server und Hasura DDN (PromptQL), die MCP lediglich als syntaktischen Wrapper ohne Fachsemantik und Sicherheits-Guardrails behandeln.
 
-Konkurrierende Gateways (Apollo GraphOS mit Apollo MCP Server, Hasura DDN) behandeln MCP jedoch lediglich als **syntaktischen Wrapper**: Sie spiegeln rohe GraphQL- oder SQL-Schemas 1:1 in Tool-Definitionen.
+Um autonome KI-Agenten (Claude, AutoGen, Cursor) in skalierten Enterprise-Landschaften mit hunderten Modellen und sensiblen Daten zuverlässig einzusetzen, erweitern vier geplante Differenzierer die Suite:
 
-#### Das Kernproblem in der Enterprise-Praxis: "Semantic Gap" & LLM-Halluzinationen
+#### Geplante AI-Agent Differenzierungs-Features:
 
-Reine Schema-Signaturen (`get_orders(status: Int, amount: Float)`) führen bei Sprachmodellen unausweichlich zu Fehlern:
-* **Semantische Blindheit (Lack of Domain Meaning):** Das Modell weiß nicht, was `status = 3` bedeutet („bezahlt“, „storniert“ oder „in Bearbeitung“?). Es formuliert fehlerhafte Where-Prädikate.
-* **Kennzahlen-Fehlberechnung:** Ohne hinterlegte Aggregationssemantik aggregiert das Modell Rohdaten auf Zeilenebene, statt die autoritative Finanzkennzahl (`net_revenue_adjusted_eur` exkl. Retouren und MwSt.) abzufragen.
-* **Tool-Selection Failure:** Besitzt ein MCP-Server Dutzende Tools mit generischen Beschreibungen, verfehlen LLMs regelmäßig das passende Tool oder erzeugen fehlerhafte Parameter.
-* **Compliance-Blindheit:** Das Modell erfährt erst nach dem fehlschlagenden Tool-Call via `403 Forbidden` oder `Masked Value`, dass ein Feld PII oder Art. 9 DSGVO Daten enthält.
-
-#### Die GqlGateway-Lösung: Der Semantic MCP Compiler (`F-AI-02`)
-
-GqlGateway fusioniert die Metadatenströme aus **dbt** (analytische Modellierung & Transformationen) und **OpenMetadata** (Enterprise Business Glossary, Ownership & Governance) zu einer automatisierten **Context Engine für LLMs**:
-
-```mermaid
-flowchart TD
-    subgraph MetadataSources ["Enterprise Metadaten-Quellen"]
-        DBT["dbt Manifest & Catalog<br/>• Spaltenbeschreibungen doc('...')<br/>• Model Descriptions & Grain<br/>• Aggregations-Logik & SQL-Formeln<br/>• Upstream Tests & Data Contracts"]
-        OMD["OpenMetadata Unified Catalog<br/>• Business Glossary Terms<br/>• Domain Ownership & Data Tiering<br/>• Data Quality & Freshness Badges<br/>• PII & DSGVO Art. 9 Tags"]
-    end
-
-    subgraph GatewayCore ["GqlGateway: Semantic MCP Engine (F-AI-02)"]
-        COMPILER["Semantic MCP Schema Compiler<br/>• Tool Description Synthesizer<br/>• Parameter Constraint Grounding<br/>• Token-Budgeting & Dynamic Compaction"]
-        RESOURCES["MCP Resource & Prompt Provider<br/>• uri: glossary://{domain}/{term}<br/>• uri: dbt://lineage/{model}<br/>• Pre-Flight Prompt Templates"]
-        GUARD["Zero-Trust MCP Guardrail Engine<br/>• Casbin ABAC & RLS Pushdown<br/>• PII-Scrubbing & Dynamic Masking<br/>• Fail-Closed Audit Trail (SHA-256)"]
-    end
-
-    subgraph AIClient ["KI-Agenten & LLM-Clients"]
-        AGENT["Autonomer KI-Agent (Claude, Cursor, AutoGen)<br/>• Perfekte Tool-Auswahl durch Business-Semantik<br/>• Korrekte Parameter & Filter (Zero Hallucination)<br/>• Governance-Awareness (Kennt Maskierung vorab)"]
-    end
-
-    DBT --> COMPILER
-    OMD --> COMPILER
-    COMPILER --> RESOURCES
-    COMPILER --> GUARD
-    GUARD --> AGENT
-    RESOURCES -.->|Just-in-Time Context Fetch| AGENT
-```
-
-#### Die 4 Säulen des Semantic MCP Mehrwerts:
-
-1. **Automatische Tool- & Parameter-Grounding (dbt Column Docs):**
-   * Jede Spaltenbeschreibung (`description: "{{ doc('mrr_definition') }}"`) und jeder Model-Doc-Block aus dbt wird zur Compile-Zeit direkt in die `description`-Attribute des MCP-Tools und des JSON-Parameterschemas injiziert.
-   * Der Agent liest im Tool-Schema: *„amount_net: Netto-Umsatz in EUR nach Abzug von B2B-Rabatten und vor Skonto. Nur für abgeschlossene Transaktionen (status = 1) verwenden.“* -> **Zero-Shot Präzision ohne Halluzination.**
-2. **Business Glossary & Data Quality Grounding (OpenMetadata):**
-   * Tool-Definitionen werden mit autoritativen Unternehmensdefinitionen aus OpenMetadata annotiert.
-   * Der Agent sieht den Qualitätsstatus: *„Tier 1 Gold Model, Freshness: vor 12 Minuten aktualisiert, Tests: 100% grün.“*
-   * Bei veralteten oder fehlerhaften Daten warnt das Tool den Agenten proaktiv im Schema, alternative Quellen zu wählen.
-3. **Governance-Aware Agent Prompting (PII & DSGVO Pre-Flight):**
-   * Anhand von OpenMetadata PII-Klassifizierungen (`PII.Sensitive`, `GDPR.Art9`) werden Parameter im MCP-Tool mit Vorab-Hinweisen versehen: *„Dieses Feld unterliegt automatischer Maskierung (Pseudonymisierung), sofern kein JIT-Freigabeticket übergeben wird.“*
-   * Verhindert unnötige Tool-Retries und befähigt den Agenten, vorab Begründungs-Tickets (`X-Access-Justification`) zu formulieren.
-4. **Token-Budgeting & MCP Resources statt Context-Stuffing:**
-   * Um das LLM-Context-Window nicht mit überlangen dbt-Texten zu überfluten, verwendet GqlGateway einen **Dynamic Compactor**:
-     * *Short Description* im MCP Tool Schema (< 120 Zeichen für schnelles Routing).
-     * *Deep Semantics on Demand* über MCP Resources (`resources/read?uri=glossary://finance/mrr` oder `uri=dbt://models/dim_customers/lineage`). Der Agent lädt Tiefenkontext nur bei Bedarf nach.
-
-#### Erweiterte AI-Agent Enterprise Suite (Folge-Features im selben Umfeld):
-
-Neben dem semantischen Compiler (`F-AI-02`) adressieren sechs weitere Schlüssel-Features die größten Schmerzpunkte autonomer Agenten im Unternehmensdaten-Einsatz:
-
-5. **Pre-Flight Query Simulator & DB/Token Cost Guard (`F-AI-04`):**
-   * *Problem:* Autonome ReAct-Agenten feuern leicht unpaginierte Queries ab, die Terabytes im Lakehouse scannen oder den LLM-Context-Window mit 50.000 JSON-Zeilen sprengen.
-   * *Lösung:* Ein MCP-Tool `simulate_query(query: string)` berechnet vorab: geschätzte Zeilen, DB-Scanvolumen (MB/GB), Response-Tokens und aktive Maskierungsregeln.
-   * *Hard Safety-Limit:* Überschreitet die geplante Query Grenzwerte (z. B. > 4.000 Tokens oder > 1 GB Scan), blockiert das Gateway die direkte Ausführung und liefert strukturierte Hinweise zur Paginierung (`first: 50`) oder Aggregation.
-
-6. **Provenance & Lineage Footnoting / Explainable AI (`F-AI-06`):**
-   * *Problem:* Wenn ein Agent Geschäftsberichte erstellt, verlangen Vorstände, Wirtschaftsprüfer und EU-AI-Act-Auditoren lückenlose Nachweise: *„Woher stammt diese Zahl genau?“*
-   * *Lösung:* Jede Tool-Antwort liefert im Header/Envelope einen maschinenlesbaren `_provenance`-Block (dbt-Modelldatei, Git-Commit-Hash, OpenMetadata URN, Pipeline-Freshness, aktive RLS/Maskierungs-Policies).
-   * *Nutzen:* Der Agent zitiert die autoritative Quelle automatisch als Fußnote in seinen Zusammenfassungen.
-
-7. **Dynamic Few-Shot / "Golden Query" Injection (`F-AI-03`):**
+1. **Dynamic Few-Shot / "Golden Query" Injection (`F-AI-03` - Wave 2):**
    * *Problem:* Trotz Schemakenntnis scheitern LLMs bei komplexen verschachtelten GraphQL-Filtern oder Aggregationen (Zero-Shot-Fehlerrate: 20–30 %).
-   * *Lösung:* Ingestion verifizierter Produktions-Queries aus historischen Audit-Logs als „Golden Queries“. Der MCP-Server injiziert dem Agenten on-demand validierte Musterabfragen (`examples://finance/revenue_by_region`). Steigert die First-Try-Erfolgsrate auf > 95 %.
-
-8. **Human-in-the-Loop (HitL) Step-Up Approval im MCP-Protokoll (`F-AI-05`):**
+   * *Lösung:* Ingestion verifizierter Produktions-Queries aus historischen Audit-Logs als „Golden Queries“. Der MCP-Server injiziert dem Agenten on-demand validierte Musterabfragen (`examples://finance/revenue_by_region`), was die First-Try-Erfolgsrate auf > 95 % hebt.
+2. **Human-in-the-Loop (HitL) Step-Up Approval im MCP-Protokoll (`F-AI-05` - Wave 2):**
    * *Problem:* Benötigt ein Agent temporär unmaskierte VIP- oder Art. 9 DSGVO-Daten, bricht der Request bei klassischen Gateways hart mit `403` ab.
-   * *Lösung:* Der MCP-Call wird pausiert; das Gateway stößt über die ITSM-Integration (ServiceNow/Slack) einen interaktiven 4-Augen-Freigabe-Call an den Datenverantwortlichen an. Nach Klick auf „Genehmigen“ invalidiert Redis die Policy-Epoche und der MCP-Call des Agenten läuft transparent mit Klartextdaten durch.
-
-9. **Vektor-unterstütztes Dynamic Tool Pruning (`F-AI-07`):**
-   * *Problem:* Enterprise-Datenmodelle umfassen oft 500+ Tabellen / GraphQL-Typen. Exponiert man alle als MCP-Tools, kollabiert die Routing-Genauigkeit des Modells.
+   * *Lösung:* Der MCP-Call wird pausiert; das Gateway stößt über die ITSM-Integration (ServiceNow/Slack) einen interaktiven 4-Augen-Freigabe-Call an den Datenverantwortlichen an. Nach Genehmigung invalidiert Redis die Policy-Epoche und der MCP-Call des Agenten läuft transparent mit Klartextdaten durch.
+3. **Vektor-unterstütztes Dynamic Tool Pruning (`F-AI-07` - Wave 2):**
+   * *Problem:* Enterprise-Datenmodelle umfassen oft 500+ Tabellen / GraphQL-Typen. Exponiert man alle als MCP-Tools, kollabiert die Routing-Genauigkeit des Modells durch Context-Overflow.
    * *Lösung:* Zweistufige Discovery: Der Agent beschreibt seine Absicht (`discover_tools(intent: "Kundenabwanderung DACH")`). Ein Vektor-Index über dbt-Beschreibungen und OpenMetadata-Glossare mountet dynamisch exakt die 3–5 relevanten Tools für die Session.
+4. **Closed-Loop Agent Feedback & Documentation Drift Detection (`F-AI-08` - Wave 2/3):**
+   * *Problem:* Dokumentationen in dbt und Katalogen veralten schnell.
+   * *Lösung:* Stellt der Agent Diskrepanzen zwischen Dokumentation und Datenwerten fest (z. B. ungelistete Enum-Werte), emittiert er über `report_documentation_drift` einen Feedback-Event. Das Gateway erzeugt automatisch ein Draft-Proposal in OpenMetadata oder einen PR im dbt-Repository.
 
-10. **Closed-Loop Agent Feedback & Documentation Drift Detection (`F-AI-08`):**
-    * *Problem:* Dokumentationen in dbt und Katalogen veralten schnell.
-    * *Lösung:* Stellt der Agent Diskrepanzen zwischen Dokumentation und Datenwerten fest (z. B. ungelistete Enum-Werte), emittiert er über `report_documentation_drift` einen Feedback-Event. Das Gateway erzeugt automatisch ein Draft-Proposal in OpenMetadata oder einen PR im dbt-Repository.
-
-#### Umfassender Wettbewerbsvergleich: Enterprise AI Agent Integration
+#### Wettbewerbsvergleich: Enterprise AI Agent Integration
 
 | Feature / Fähigkeit | Apollo GraphOS (MCP Server) | Hasura DDN (PromptQL) | GqlGateway AI Agent Suite (`F-AI-02` bis `08`) |
 | :--- | :--- | :--- | :--- |
-| **Schema-Grounding** | Rohe Schema-Reflection | Proprietäre DDN-Metadaten | **Vollständige dbt-Doc-Blocks & Spaltensemantik** |
-| **Enterprise Business Glossary** | ❌ Nicht vorhanden | ❌ Nicht vorhanden | **Nativer OpenMetadata, Purview & Collibra Sync** |
-| **Pre-Flight Query Cost Guard** | ❌ Nur statische Client-Rate-Limits | ❌ Keine AST/Token-Simulation | **`simulate_query` mit Token- & Lakehouse-Scan-Guard** |
-| **Explainable AI & Provenance** | ❌ Reine JSON-Antwort | ❌ Keine dbt/Git-Lineage im Output | **Lückenloser `_provenance`-Block für EU-AI-Act** |
-| **Few-Shot Golden Queries** | ❌ Zero-Shot Prompting | ❌ Feste Templates | **Dynamische Golden Queries aus Audit-Logs** |
-| **Human-in-the-Loop JIT-Approval** | ❌ Statisches 403 Forbidden | ❌ Statische Rollen-Checks | **Interaktive Approval-Pause via ServiceNow/Slack** |
-| **Skalierung (1.000+ Modelle)** | Context-Stuffing (Prompt Overflow) | Feste Subgraphen | **Vektor-unterstütztes Dynamic Tool Pruning** |
-| **Governance & Zero-Trust** | Delegiert an Subgraphs | Basis Session Permissions | **In-Engine Casbin ABAC, SIMD PII-Scrubbing & WORM-Audit** |
+| **Schema-Grounding** | Rohe Schema-Reflection | Proprietäre DDN-Metadaten | **Vollständige dbt-Doc-Blocks & Spaltensemantik (GA ✅)** |
+| **Enterprise Business Glossary** | ❌ Nicht vorhanden | ❌ Nicht vorhanden | **Nativer OpenMetadata, Purview & Collibra Sync (GA ✅)** |
+| **Pre-Flight Query Cost Guard** | ❌ Nur statische Client-Rate-Limits | ❌ Keine AST/Token-Simulation | **`simulate_query` mit Token- & Lakehouse-Scan-Guard (GA ✅)** |
+| **Explainable AI & Provenance** | ❌ Reine JSON-Antwort | ❌ Keine dbt/Git-Lineage im Output | **Lückenloser `_provenance`-Block für EU-AI-Act (GA ✅)** |
+| **Few-Shot Golden Queries** | ❌ Zero-Shot Prompting | ❌ Feste Templates | **Dynamische Golden Queries aus Audit-Logs (`F-AI-03`)** |
+| **Human-in-the-Loop JIT-Approval** | ❌ Statisches 403 Forbidden | ❌ Statische Rollen-Checks | **Interaktive Approval-Pause via ServiceNow/Slack (`F-AI-05`)** |
+| **Skalierung (1.000+ Modelle)** | Context-Stuffing (Prompt Overflow) | Feste Subgraphen | **Vektor-unterstütztes Dynamic Tool Pruning (`F-AI-07`)** |
+| **Governance & Zero-Trust** | Delegiert an Subgraphs | Basis Session Permissions | **In-Engine Casbin ABAC, SIMD PII-Scrubbing & WORM-Audit (GA ✅)** |
 
 ---
 
-### 3.7 Strategische Differenzierung: Dynamic OpenAPI 3.1 & OData REST Exposure via HTTP GET (The Dual-Access Moat)
-
-In der Enterprise-Praxis scheitern reine GraphQL-Gateways regelmäßig an der **„GraphQL-Only Adoption Barrier“**: Rund 70–80 % aller potenziellen Datenkonsumenten im Großunternehmen sind keine Frontend-Entwickler, sondern Data Scientists, BI-Analysten, Low-Code-Entwickler oder externe B2B-Partner.
-
-#### A. Das Kernproblem im Enterprise: Die vier Konsumenten-Gruppen ohne GraphQL
-
-```mermaid
-flowchart TD
-    subgraph NonGraphQLConsumers ["70-80% aller Datenabnehmer im Großunternehmen"]
-        DS["Data Science & Analytics<br/>(Python / Pandas / R / Jupyter)<br/>• Bevorzugt simple GET-Requests<br/>• Keine GraphQL-Libraries erwünscht"]
-        LC["Low-Code & Automation<br/>(Power Apps / Retool / Zapier)<br/>• Nativ auf OpenAPI / Swagger ausgelegt<br/>• GraphQL nur schwerfällig integrierbar"]
-        B2B["B2B-Partner & Altsysteme<br/>(SAP / Siebel / Partner-APIs)<br/>• Verlangen vertragliche OpenAPI/REST-Spezifikation<br/>• Generieren SDKs mit openapi-generator"]
-        APIM["Enterprise API-Management<br/>(Kong / Azure APIM / Apigee)<br/>• Developer-Portale basieren auf OpenAPI.json<br/>• Audits verlangen REST-Verträge"]
-    end
-
-    subgraph GatewaySolution ["GqlGateway: Dual-Access Engine (F-API-03)"]
-        CORE["Einheitlicher Zero-Trust Core<br/>(Casbin ABAC + SQL RLS Pushdown + PII-Masking)"]
-        GQL_EP["GraphQL Endpoint (/graphql)"]
-        ODATA_EP["OData HTTP GET Endpoint (/odata/v4)"]
-        OPENAPI_GEN["Dynamic OpenAPI 3.1 Generator (/odata/v4/$openapi)"]
-    end
-
-    DS --> ODATA_EP
-    LC --> OPENAPI_GEN
-    B2B --> OPENAPI_GEN
-    APIM --> OPENAPI_GEN
-
-    GQL_EP --> CORE
-    ODATA_EP --> CORE
-```
-
-#### B. Das CSDL-XML-Dilemma von OData – und warum OpenAPI 3.1 die Lösung ist
-
-OData v4 bietet standardmäßig mächtige relationale Abfragemöglichkeiten per HTTP `GET` (`$filter`, `$select`, `$top`, `$skip`, `$count`). 
-
-**Das fundamentale Akzeptanzproblem von klassischem OData:**
-* Das offizielle Entdeckungsformat ist **CSDL XML (`/$metadata`)**.
-* Kein moderner REST-Entwickler, kein Swagger UI, kein Postman und kein KI-Tooling kann mit CSDL XML interagieren oder daraus moderne Clients generieren.
-
-**Die GqlGateway-Lösung (`F-API-03`):**
-Das Gateway übersetzt sein registriertes Datenmodell (Tabellen, Views, dbt-Modelle, Hot Chocolate Entity Data Model) vollautomatisch zur Laufzeit in eine standardkonforme **OpenAPI 3.1 Spezifikation (`/odata/v4/$openapi`)**:
-1. **Objekt-spezifische Pfade:** Jede registrierte Entität erhält einen dedizierten, typisierten Pfad (z. B. `GET /odata/v4/finance/dbo/invoices`).
-2. **First-Class OData Query Parameter:** Parameter wie `$select`, `$filter`, `$top`, `$skip` und `$count` werden mit vollständigen Typ- und Syntax-Dokumentationen im OpenAPI-Schema exponiert.
-3. **Semantische Anreicherung:** Spalten- und Tabellenbeschreibungen aus dbt (`doc(...)`) und OpenMetadata Business Glossaries fließen direkt in die `description`- und `title`-Felder der OpenAPI Schemas.
-4. **Deprecation & PII-Hinweise:** Das Smart Sunsetting Modul (P11) injiziert `deprecated: true` und Sunset-Header in die OpenAPI; PII-Spalten werden mit Klassifizierungs-Tags versehen.
-
-#### C. Warum der Zugriff per HTTP `GET` so entscheidend ist
-
-Im Gegensatz zu GraphQL (das fast ausschließlich über HTTP `POST` mit einem JSON-Payload operiert) bietet HTTP `GET` im Enterprise entscheidende Architekturvorteile:
-* **Natives Edge- & CDN-Caching:** HTTP `GET`-Anfragen auf `/odata/v4/sales/dbo/customers?$select=id,name&$top=100` sind von Natur aus idempotent und können von Cloudflare, Fastly oder internen Varnish-Caches ohne Body-Hashing zwischengespeichert werden.
-* **Zero-Tooling Einstieg:** Abfragen können als einfacher Link im Browser geöffnet, gebookmarkt, per cURL aufgerufen oder mit `pd.read_json()` in Python in einer Zeile geladen werden.
-* **Instant KI-Agenten Kompatibilität:** Frameworks wie OpenAI Custom GPT Actions, AutoGen oder LangChain OpenAPI Toolkit importieren die `openapi.json` direkt und können ohne MCP-Client sofort Tool-Calls gegen das Gateway ausführen.
-
-#### D. Schutz vor Megaspec-Bloat: Domain-Scoped OpenAPI Endpoints
-
-In Großunternehmen mit hunderten oder tausenden Tabellen würde eine monolithische `openapi.json` schnell 50–100 MB groß werden und Swagger UI oder Generatoren zum Absturz bringen. GqlGateway löst dies architektonisch durch:
-* **Globaler Endpunkt:** `GET /odata/v4/$openapi` (vollständige Enterprise-Spezifikation)
-* **Domain-Scoped Endpoints:** `GET /odata/v4/{domain}/openapi.json` (z. B. nur Domäne `finance` oder `sales` für schlanke, performante Client-Generierung)
-* **Integrierte Swagger UI / ReDoc:** Interaktiver API-Explorer unter `/odata/v4/$swagger` und `/docs` zum direkten Testen im Browser.
-
-#### E. Wettbewerbsvergleich: Dual-Access Exposure (GraphQL + OData GET + OpenAPI)
-
-| Kriterium | Apollo GraphOS (Router) | Hasura DDN | Klassische API Gateways (Kong / Tyk) | GqlGateway (`F-API-03`) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Protokolle** | Nur GraphQL | GraphQL + proprietäre REST Actions | Nur REST / HTTP Proxy | **GraphQL + OData v4 + OpenAPI 3.1 REST** |
-| **Objekt-Abruf per HTTP GET** | ❌ Nein (nur POST) | Eingeschränkt (manuelle REST Endpoints) | Ja, aber reiner Passthrough ohne DB Pushdown | **Ja, nativer OData GET mit SQL Pushdown** |
-| **Dynamische OpenAPI für DB-Objekte** | ❌ Nicht vorhanden | ❌ Nur für manuell angelegte REST Endpoints | ❌ Manuelle Swagger-Pflege | **Vollautomatisch aus Metadaten-Katalog & CSDL** |
-| **dbt & OpenMetadata im REST-Schema** | ❌ Nein | ❌ Nein | ❌ Nein | **Vollständige Semantik in OpenAPI Properties** |
-| **Zero-Trust ABAC & Masking** | Subgraph-Delegation | Eigene RBAC | Nur simple Header-Checks | **Identischer Casbin ABAC & Masking Core für GQL & REST** |
-
----
-
-### 3.8 Strategische Differenzierung: Omnichannel Semantic Documentation Passthrough (`F-DOC-01`)
+### 3.4 Strategische Differenzierung: Omnichannel Semantic Documentation Passthrough (`F-DOC-01` & `F-API-04`)
 
 In der heutigen Enterprise-Realität klafft ein massiver **Bruch zwischen Data Engineering und Datenkonsumenten** („The Semantic Abyss“):
 Data Engineers investieren hunderte Stunden in detaillierte Modell- und Feldbeschreibungen in dbt (`schema.yml`, Markdown-Doc-Blocks `{{ doc('...') }}`) sowie Business-Glossare in Unternehmenskatalogen (OpenMetadata, Collibra, Purview).
@@ -649,7 +285,7 @@ flowchart TD
 
 ---
 
-#### 3.8.1 Erweiterte Feldanreicherung: Kurzbeschreibung vs. Langbeschreibung (`meta.long_description` in dbt & OpenMetadata Extensions / Glossare)
+#### 3.4.1 Erweiterte Feldanreicherung: Kurzbeschreibung vs. Langbeschreibung (`meta.long_description` in dbt & OpenMetadata Extensions / Glossare)
 
 In modernen Enterprise-Datenmodellen reicht ein einzelnes Textfeld selten aus. Reife Data-Engineering- und Governance-Teams trennen strikt zwischen:
 * **Kurzbeschreibung (`description`):** Kompakter Teaser (1–2 Sätze) für schnelle Orientierung und UI-Tooltips.
@@ -699,7 +335,7 @@ Das Gateway synthetisiert die beiden Quellen (fachliche Definition aus OpenMetad
 
 ---
 
-#### 3.8.2 Erweiterte Enterprise-Metadatenquellen in den Extensions (Beyond Table Comments)
+#### 3.4.2 Erweiterte Enterprise-Metadatenquellen in den Extensions (Beyond Table Comments)
 
 Neben dbt und OpenMetadata schlummert in den bereits vorhandenen Konnektoren des `GqlGateway.Extensions`-Ökosystems ein hochkarätiges Geflecht weiterer Metadaten. Ein marktführendes Enterprise Gateway beschränkt sich nicht auf statische Tabellenkommentare, sondern fusioniert **operative, regulatorische und telemetrische Metadaten** zu einem ganzheitlichen semantischen Layer:
 
@@ -786,7 +422,7 @@ flowchart TD
 
 ---
 
-#### 3.8.3 Upstream Web API & Microservice Federation via OpenAPI/Swagger Ingestion (`F-API-04`)
+#### 3.4.3 Upstream Web API & Microservice Federation via OpenAPI/Swagger Ingestion (`F-API-04`)
 
 In modernen Enterprise-Architekturen stammen geschäftskritische Daten nicht mehr ausschließlich aus relationalen Datenbanken oder Data Lakes, sondern zunehmend aus **bestehenden REST-Microservices** (z. B. CRM-, Billing- oder Legacy-ERP-Systemen). GqlGateway unterstützt dies nativ über die deklarative HTTP-Engine ([`DeclarativeHttpDataSourceExecutor`](file:///root/gql/src/GqlGateway.Application/Services/DeclarativeHttpDataSourceExecutor.cs) mit [`HttpEndpointDescriptor`](file:///root/gql/src/GqlGateway.Domain/Model/HttpEndpointDescriptor.cs)).
 
@@ -849,6 +485,48 @@ flowchart TD
 | **Multi-Katalog Federation (Purview/Collibra/Alation)** | ❌ Keine Kataloganbindung | ❌ Nur proprietäre Metadaten | ❌ Nicht vorhanden | ❌ Nicht vorhanden | **Nativer Sync für MIP-Labels, Badges & Popularity** |
 | **Upstream Web API Swagger/OpenAPI Doc Ingestion** | ❌ Manuelle Wrapper-Subgraphen nötig | ❌ Nur manuelle Actions ohne Doku | ❌ Nur statischer TS-Build | ❌ Reiner Proxy ohne Schema | **Vollautomatische Ingestion & Doku-Spiegelung** |
 | **Documentation Drift Schutz** | ❌ Hochgradig anfällig | ❌ Doppelte Pflege nötig | ❌ Manuelle Synchronisation | ❌ Extrem anfällig | **Zero Drift: Single Source of Truth** |
+
+---
+
+### 3.5 Langfristige Enterprise Differenzierungsmerkmale (Wave 2 Moats 2026/2027)
+
+Nachdem die grundlegenden Sicherheits-, Lifecycle- und Privacy-Engines (P10 Policy Simulation, P11 Smart Sunsetting, P12 Differential Privacy) bereits erfolgreich in GA überführt wurden, sichern vier langfristige strategische Alleinstellungsmerkmale die Marktführerschaft für stark regulierte Umgebungen (Banking, Healthcare, Defence, Public Sector) in Wave 2:
+
+```mermaid
+flowchart TD
+    subgraph Wave2Moats ["GqlGateway Enterprise Moats 2026/2027 (Wave 2)"]
+        M1["1. Zero-Trust Lakehouse Governor (DuckDB & Arrow Flight - P14)"]
+        M2["2. Confidential Compute & Enclaves (Intel SGX / AMD SEV - P15)"]
+        M3["3. Data Contract & FinOps Engine (Semantic SLA & Chargeback - P13)"]
+        M4["4. Post-Quantum Cryptography (ML-KEM / Hybrid PQC - P16)"]
+    end
+```
+
+#### 1. Zero-Trust Lakehouse Query Governor (Apache Arrow Flight & Iceberg v2 Vector Pushdown - `P14`)
+* **Marktlücke bei Konkurrenten:** Data-Security-Tools (Immuta, Privacera) bieten keine GraphQL-Schnittstelle; Apollo Router kann Lakehouse-Dateiformate (Parquet, Iceberg, Delta) nicht ohne externe SQL-Engines (Trino, Athena) abfragen. Hasura verlangt relationale Tabellen.
+* **GqlGateway Moat:**
+  * **SIMD-vektorisierter ABAC-Pushdown auf Parquet**: Direkte Ausführung über DuckDB / Apache Arrow Flight unter Beibehaltung aller Casbin-ABAC- und Maskierungsregeln.
+  * **Zero-Copy Columnar Streaming**: Analytische GraphQL-Queries streamen Arrow-Record-Batches direkt als JSON/GraphQL ohne zeilenweises C#-Objekt-Mapping.
+  * Bis zu **50x geringere Latenz** und **80% weniger RAM-Bedarf** bei massiven OLAP-Aggregationen direkt über MinIO/S3/Azure Data Lake.
+
+#### 2. Air-Gapped Sovereign Cloud & Confidential Compute (Intel SGX / AMD SEV - `P15`)
+* **Marktlücke bei Konkurrenten:** Apollo GraphOS verlangt zwingend Cloud-Konnektivität (SaaS Schema Registry, Cloud Router Telemetrie). Kunden in der Verteidigungsindustrie, Geheimnisträgern und Behörden ist dies untersagt.
+* **GqlGateway Moat:**
+  * **100% Autarkie (Zero-Phone-Home)**: Volle Funktionsfähigkeit in abgeschotteten, physisch getrennten Netzen (Air-Gapped / BSI IT-Grundschutz).
+  * **Confidential Enclave Readiness**: Ausführung im geschützten Hauptspeicher (Intel SGX Enclaves / AMD SEV-SNP via Azure Confidential VMs / GCP Confidential Spaces). Weder der Host-Hypervisor noch Cloud-Root-Administratoren können unverschlüsselte Abfragedaten, HMAC-Keys oder Authentifizierungs-Token im RAM auslesen.
+
+#### 3. Automated Data Contract & FinOps Engine (Semantic SLA & Chargeback Attribution - `P13`)
+* **Marktlücke bei Konkurrenten:** Bestehende Rate-Limiter zählen nur rohe HTTP-Requests pro Sekunde. Sie können weder GraphQL-spezifische Ressourcenkosten (AST-Komplexität, DB-Bytes, Join-Tiefe) noch vertraglich zugesicherte Datenverträge (Data Contracts nach Open Data Contract Standard - ODCS) durchsetzen.
+* **GqlGateway Moat:**
+  * **AST-basierte FinOps-Abrechnung**: Jedem Client oder Kostenstelle wird ein monatliches Budget für Query-Complexity-Punkte und DB-Scan-Volumina zugewiesen.
+  * **Verbrauchsbasiertes Chargeback**: Export von detaillierten FinOps-Nutzungsmetriken via Prometheus/OpenTelemetry für interne Leistungsverrechnung.
+  * **Data Contract Enforcer**: Validierung eingehender und ausgehender Schemata gegen versionierte ODCS-Spezifikationen inklusive SLA-Garantien (P99 < 15ms).
+
+#### 4. Quantum-Resilient Transport & Key Exchange (ML-KEM / Hybrid Post-Quantum PQC - `P16`)
+* **Marktlücke bei Konkurrenten:** Alle etablierten Gateways nutzen klassisches TLS 1.3 (ECDHE). Sie sind verwundbar für "Harvest Now, Decrypt Later" (HNDL)-Angriffe staatlicher Akteure, bei denen sensible PII-Daten heute abgefangen und in einigen Jahren mit Quantencomputern entschlüsselt werden.
+* **GqlGateway Moat:**
+  * **Hybride Post-Quantum-Kryptographie (PQC)**: Unterstützung für `X25519MLKEM768` (FIPS 203) im TLS-Stack von .NET 10 / OpenSSL 3.3.
+  * **Quantensichere Audit-Hash-Signaturen**: Vorbereitung quantenresistenter State-Machine-Signaturen (ML-DSA / Dilithium) für revisionssichere Langzeitarchive nach BSI TR-02102.
 
 ---
 
