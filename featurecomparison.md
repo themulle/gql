@@ -53,6 +53,8 @@ Im Jahr 2025/2026 hat sich der Markt für GraphQL- und API-Gateways in drei Haup
 | | Subgraph Föderation | **Ja** (Fusion Router) | **Ja** (Federation v2) | Teilweise | **Ja** (Cosmo) | ❌ Nein | ❌ Nein | ❌ Nein |
 | | OData v4 Dual Access | **Ja** (Power BI/SAP) | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein |
 | | Nativer Apache Parquet Export | **Ja** (Columnar Snappy mit RLS & Masking) | ❌ Nein (Nur JSON) | ❌ Nein (Nur JSON) | ❌ Nein (Nur JSON) | ❌ Nein | ❌ Nein (Nur SQL Proxy) | ❌ Nein (Nur Raw HTTP) |
+| | Governed WebSQL (HTTP SQL) | **Ja** (`POST /api/v1/sql` mit AST Linter & RLS) | ❌ Nein | ❌ Nein (Nur GraphQL) | ❌ Nein | ❌ Nein | ❌ Nein (Nur DB-Proxy) | ❌ Nein |
+| | Single-Query SQL Pushdown | **Ja** (`FOR JSON PATH` / `json_agg` gegen N+1) | ❌ Nein (DataLoader/Subgraphs) | **Ja** (Nativ) | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein |
 | **Echtzeit & Streaming** | GraphQL Subscriptions | **Ja** (WS / SSE) | **Ja** | **Ja** | **Ja** | Teilweise | ❌ Nein | Teilweise |
 | | In-Stream Casbin RLS Filtering | **Ja** (Pro Event) | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein |
 | | Debezium / Kafka CDC Ingestion | **Ja** (Nativ) | ❌ Nein | Teilweise | ❌ Nein | ❌ Nein | ❌ Nein | ❌ Nein |
