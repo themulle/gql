@@ -768,6 +768,19 @@ FOR JSON PATH;
 3. **Multi-Level RLS & Field-Level-Security:** Jedes Sub-Select erhält seinen eigenen Casbin-Mandantenfilter. Fehlt die Berechtigung für ein Sub-Objekt, liefert die Datenbank automatisch `NULL` für den Kindknoten, ohne die Elternzeile zu gefährden.
 4. **Hybrid Fallback bei Cross-Source:** Gehört ein Teilzweig zu einer anderen Datenquelle (z. B. Iceberg Lakehouse), führt das Gateway für die relationalen Knoten den Single-Query-Pushdown aus und federiert die Fremdquelle über den DataLoader-Vektor.
 
+##### Die Bewältigung komplexer Datentypen (Der Type-Coercion- & Wrapping-Layer)
+Ein naiver `FOR JSON`-Pushdown scheitert in realen Enterprise-Datenbanken, da relationale Sondertypen ohne Konvertierung zu Laufzeitfehlern oder inkompatiblem JSON führen. Der GqlGateway AST-Compiler integriert deshalb einen automatisierten **Type-Coercion-Layer** auf Basis der Spaltenmetadaten (`TableColumn.DataType`):
+
+| Datentyp-Klasse | Typisches Problem in `FOR JSON` | GqlGateway AST-Wrapping Lösung |
+| :--- | :--- | :--- |
+| **Geospatial** (`GEOMETRY`, `GEOGRAPHY`) | MSSQL bricht mit CLR-Typfehler ab; Postgres liefert Hex-WKB. | **Automatisches GeoJSON:** Wrappt mit `JSON_QUERY(col.STAsGeoJSON())` (MSSQL) bzw. `ST_AsGeoJSON(col)::json` (Postgres). |
+| **Binärdaten** (`VARBINARY`, `BYTEA`, `BLOB`) | Postgres liefert `\x`-Hex; Big BLOBs verstopfen den JSON-Puffer. | **Base64-Zwang:** Wrappt mit `encode(col, 'base64')`; Auslagerung von Groß-BLOBs (>1 MB) in separate Streaming-URLs. |
+| **Datum & Zeit** (`DATETIME2`, `TIMESTAMPTZ`) | Lokale Zeit ohne `Z`-Suffix führt zu Zeitzonenfehlern im Client. | **ISO 8601 RFC-3339 Zwang:** `CONVERT(VARCHAR(33), col, 126) + 'Z'`. |
+| **Eingebettetes JSON** (`JSON`, `NVARCHAR(MAX)`) | MSSQL escaped vorhandenes JSON als String (`"{\"a\": 1}"`). | **Natives Sub-JSON:** Injektion von `JSON_QUERY(col)` verhindert doppelten Escaping-Horror. |
+| **Währungen / Hohe Präzision** (`DECIMAL(38,10)`) | JavaScript-Clients verlieren bei > 53 Bit Präzision (IEEE 754). | **String-Coercion:** `CAST(col AS VARCHAR(50))` schützt vor Rundungsfehlern in Web-Frontends. |
+
+> **Enterprise-Moat:** Im Gegensatz zu Hasura fusioniert GqlGateway den Type-Coercion-Layer mit dem **OpenMetadata-/dbt-Governance-Layer**: Ist eine Geokoordinate oder ein Binärbild als DSGVO-relevant getaggt, wird die Maskierungsfunktion (z. B. `ST_Centroid` oder Anonymisierung) direkt in denselben SQL-Wrapper injiziert.
+
 ##### Product Manager Bewertung:
 * **Wettbewerbsvorteil:** Hasura verdankt seinen Markterfolg primär diesem Single-Query-Kompilierungs-Trick. GqlGateway kombiniert dies nun als erstes Gateway mit **Unternehmenskatalogen (Purview/Collibra/OpenMetadata), dynamischer DSGVO-Maskierung und nativer Parquet-Bereitstellung**.
 * **Priorisierung:** `F-PERF-09: GraphQL-to-SQL AST Single-Query Compiler`, RICE-Score: **12.2** (Wave 2 Core Accelerator).
