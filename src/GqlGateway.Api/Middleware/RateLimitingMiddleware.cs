@@ -43,7 +43,23 @@ public sealed class PreAuthIpRateLimitingMiddleware
             return;
         }
 
-        var ip = context.Connection.RemoteIpAddress?.ToString() ?? "127.0.0.1";
+        string ip = "127.0.0.1";
+        if (context.Items.TryGetValue("OriginalTcpRemoteIp", out var origIpObj))
+        {
+            if (origIpObj is System.Net.IPAddress origIp)
+            {
+                ip = origIp.ToString();
+            }
+            else if (origIpObj is string origIpStr && !string.IsNullOrWhiteSpace(origIpStr))
+            {
+                ip = origIpStr;
+            }
+        }
+        else if (context.Connection.RemoteIpAddress != null)
+        {
+            ip = context.Connection.RemoteIpAddress.ToString();
+        }
+
         var result = await _rateLimiter.CheckPreAuthIpAsync(ip, _options, context.RequestAborted);
 
         if (!result.Allowed)

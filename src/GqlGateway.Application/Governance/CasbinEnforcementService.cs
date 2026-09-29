@@ -23,7 +23,9 @@ public sealed class CasbinEnforcementService : IPolicyEnforcementService, IDispo
 {
     private readonly ConcurrentDictionary<string, Enforcer> _tenantEnforcers = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, List<CasbinRuleMetadata>> _tenantRules = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, TableAccessDecision> _decisionCache = new(StringComparer.Ordinal);
+    private sealed record CachedDecision(TableAccessDecision Decision, long CreatedTimestampTicks);
+    private readonly ConcurrentDictionary<string, CachedDecision> _decisionCache = new(StringComparer.Ordinal);
+    private static readonly TimeSpan DecisionCacheTtl = TimeSpan.FromSeconds(60);
     private readonly ConcurrentDictionary<string, string> _tenantPolicyFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, FileSystemWatcher> _fileWatchers = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, System.Timers.Timer> _debounceTimers = new(StringComparer.OrdinalIgnoreCase);
@@ -199,11 +201,18 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         ArgumentNullException.ThrowIfNull(context);
 
         var tableStr = context.TargetTable.ToString();
-        var cacheKey = $"{context.Tenant.Value}:{context.UserSid.Value}:{tableStr}:{context.PurposeId}:{context.Department}:{context.Region}:{context.ClearanceLevel}";
+        var groupsStr = context.GroupSids != null && context.GroupSids.Count > 0
+            ? string.Join(",", context.GroupSids.Select(g => g.Value).OrderBy(s => s, StringComparer.Ordinal))
+            : string.Empty;
+        var cacheKey = $"{context.Tenant.Value}:{context.UserSid.Value}:{tableStr}:{context.PurposeId}:{context.Department}:{context.Region}:{context.ClearanceLevel}:G[{groupsStr}]";
 
-        if (_decisionCache.TryGetValue(cacheKey, out var cachedDecision))
+        if (_decisionCache.TryGetValue(cacheKey, out var cachedEntry))
         {
-            return ValueTask.FromResult(cachedDecision);
+            if (Stopwatch.GetElapsedTime(cachedEntry.CreatedTimestampTicks) <= DecisionCacheTtl)
+            {
+                return ValueTask.FromResult(cachedEntry.Decision);
+            }
+            _decisionCache.TryRemove(cacheKey, out _);
         }
 
         var sw = Stopwatch.StartNew();
@@ -218,7 +227,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
             {
                 allowed = true;
             }
-            else
+            else if (context.GroupSids != null)
             {
                 foreach (var groupSid in context.GroupSids)
                 {
@@ -276,7 +285,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
                 $"Access to table '{tableStr}' denied by ABAC policy for tenant '{context.Tenant.Value}'.");
         }
 
-        _decisionCache.TryAdd(cacheKey, decision);
+        _decisionCache.TryAdd(cacheKey, new CachedDecision(decision, Stopwatch.GetTimestamp()));
         return ValueTask.FromResult(decision);
     }
 

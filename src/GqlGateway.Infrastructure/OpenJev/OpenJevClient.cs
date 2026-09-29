@@ -19,7 +19,7 @@ public sealed partial class OpenJevClient : IOpenJevClient
 
     private readonly HttpClient? _httpClient;
     private readonly ILogger<OpenJevClient> _logger;
-    private readonly ConcurrentDictionary<string, (int Tokens, DateTimeOffset LastRefill)> _rateLimits = new();
+    private readonly ConcurrentDictionary<string, UserRateLimitState> _rateLimits = new();
 
     public OpenJevClient(ILogger<OpenJevClient> logger, HttpClient? httpClient = null)
     {
@@ -181,42 +181,55 @@ public sealed partial class OpenJevClient : IOpenJevClient
             EvictStaleRateLimitEntries(now);
         }
 
-        bool allowed = false;
-
-        _rateLimits.AddOrUpdate(
-            userSid,
-            _ =>
-            {
-                allowed = true;
-                return (Tokens: 19, LastRefill: now);
-            },
-            (_, existing) =>
-            {
-                var elapsed = now - existing.LastRefill;
-                int replenished = (int)(elapsed.TotalSeconds * (20.0 / 60.0));
-                int currentTokens = Math.Min(20, existing.Tokens + replenished);
-
-                if (currentTokens >= 1)
-                {
-                    allowed = true;
-                    return (Tokens: currentTokens - 1, LastRefill: now);
-                }
-
-                allowed = false;
-                return (Tokens: 0, LastRefill: existing.LastRefill);
-            });
-
-        return allowed;
+        var state = _rateLimits.GetOrAdd(userSid, _ => new UserRateLimitState());
+        return state.TryConsume(now);
     }
 
     private void EvictStaleRateLimitEntries(DateTimeOffset now)
     {
         var cutoff = now.AddMinutes(-5);
-        foreach (var entry in _rateLimits)
+        foreach (var (key, state) in _rateLimits)
         {
-            if (entry.Value.LastRefill < cutoff)
+            if (state.IsStale(cutoff))
             {
-                _rateLimits.TryRemove(entry.Key, out _);
+                _rateLimits.TryRemove(key, out _);
+            }
+        }
+    }
+
+    private sealed class UserRateLimitState
+    {
+        private readonly object _lock = new();
+        private int _tokens = 20;
+        private DateTimeOffset _lastRefill = DateTimeOffset.UtcNow;
+
+        public bool TryConsume(DateTimeOffset now)
+        {
+            lock (_lock)
+            {
+                var elapsed = now - _lastRefill;
+                int replenished = (int)(elapsed.TotalSeconds * (20.0 / 60.0));
+                if (replenished > 0)
+                {
+                    _tokens = Math.Min(20, _tokens + replenished);
+                    _lastRefill = now;
+                }
+
+                if (_tokens >= 1)
+                {
+                    _tokens--;
+                    return true;
+                }
+
+                return false;
+            }
+        }
+
+        public bool IsStale(DateTimeOffset cutoff)
+        {
+            lock (_lock)
+            {
+                return _lastRefill < cutoff;
             }
         }
     }

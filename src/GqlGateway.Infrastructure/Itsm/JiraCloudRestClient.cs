@@ -100,8 +100,9 @@ public sealed class JiraCloudRestClient(
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogError("Jira Cloud REST API returned HTTP {StatusCode}: {Body}", (int)response.StatusCode, responseBody);
-                return new ItsmTicketResult(false, null, "ITSM_UNAVAILABLE", $"Jira error: {responseBody}");
+                var sanitizedBody = responseBody.Length > 200 ? string.Concat(responseBody.AsSpan(0, 200), "...[truncated]") : responseBody;
+                _logger.LogError("Jira Cloud REST API returned HTTP {StatusCode}: {Body}", (int)response.StatusCode, sanitizedBody);
+                return new ItsmTicketResult(false, null, "ITSM_UNAVAILABLE", $"Jira error (HTTP {(int)response.StatusCode}): {sanitizedBody}");
             }
 
             using var doc = JsonDocument.Parse(responseBody);

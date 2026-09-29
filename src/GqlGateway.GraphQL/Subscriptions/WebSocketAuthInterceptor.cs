@@ -5,18 +5,24 @@ using System.Collections.Generic;
 using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
+using GqlGateway.Application.Interfaces;
 using HotChocolate.AspNetCore;
 using HotChocolate.AspNetCore.Subscriptions;
 using HotChocolate.AspNetCore.Subscriptions.Protocols;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 public sealed class WebSocketAuthInterceptor : DefaultSocketSessionInterceptor
 {
     private readonly ILogger<WebSocketAuthInterceptor> _logger;
+    private readonly ISocketTokenValidator? _tokenValidator;
 
-    public WebSocketAuthInterceptor(ILogger<WebSocketAuthInterceptor> logger)
+    public WebSocketAuthInterceptor(
+        ILogger<WebSocketAuthInterceptor> logger,
+        ISocketTokenValidator? tokenValidator = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _tokenValidator = tokenValidator;
     }
 
     public override async ValueTask<ConnectionStatus> OnConnectAsync(
@@ -35,10 +41,17 @@ public sealed class WebSocketAuthInterceptor : DefaultSocketSessionInterceptor
                 var token = ExtractToken(payloadDict);
                 if (!string.IsNullOrWhiteSpace(token))
                 {
-                    // SEC-2: Validate token instead of blindly accepting any arbitrary string
-                    if (!TryValidateToken(token, out var validatedPrincipal))
+                    var validator = _tokenValidator ?? session.Connection.HttpContext?.RequestServices.GetService<ISocketTokenValidator>();
+                    if (validator == null)
                     {
-                        _logger.LogWarning("WebSocket connection_init rejected: Token validation failed.");
+                        _logger.LogWarning("WebSocket connection_init rejected: No ISocketTokenValidator registered.");
+                        return ConnectionStatus.Reject("Authentication validator unavailable");
+                    }
+
+                    var (isValid, validatedPrincipal) = await validator.ValidateTokenAsync(token, cancellationToken);
+                    if (!isValid || validatedPrincipal == null)
+                    {
+                        _logger.LogWarning("WebSocket connection_init rejected: Cryptographic token validation failed.");
                         return ConnectionStatus.Reject("Invalid authentication token");
                     }
 
@@ -66,68 +79,6 @@ public sealed class WebSocketAuthInterceptor : DefaultSocketSessionInterceptor
         }
     }
 
-    private bool TryValidateToken(string token, out ClaimsPrincipal principal)
-    {
-        principal = null!;
-        if (string.IsNullOrWhiteSpace(token)) return false;
-
-        // JWT format: header.payload.signature
-        var parts = token.Split('.');
-        if (parts.Length == 3)
-        {
-            try
-            {
-                var payloadJson = System.Text.Encoding.UTF8.GetString(Base64UrlDecode(parts[1]));
-                using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
-                var root = doc.RootElement;
-
-                // Validate expiry
-                if (root.TryGetProperty("exp", out var expProp) && expProp.TryGetInt64(out var expSeconds))
-                {
-                    var expDate = DateTimeOffset.FromUnixTimeSeconds(expSeconds);
-                    if (expDate < DateTimeOffset.UtcNow)
-                    {
-                        _logger.LogWarning("WebSocket JWT token is expired (exp: {ExpDate}).", expDate);
-                        return false;
-                    }
-                }
-
-                var sub = root.TryGetProperty("sub", out var subProp) ? subProp.GetString() : null;
-                var tenant = root.TryGetProperty("tenant_id", out var tProp) ? tProp.GetString() : "default";
-
-                var identity = new ClaimsIdentity("WebSocketJwtAuth");
-                if (!string.IsNullOrWhiteSpace(sub))
-                {
-                    identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, sub));
-                    identity.AddClaim(new Claim("sub", sub));
-                    identity.AddClaim(new Claim(ClaimTypes.PrimarySid, sub.StartsWith("S-", StringComparison.OrdinalIgnoreCase) ? sub : $"S-1-5-21-{sub}"));
-                }
-                identity.AddClaim(new Claim("tenant_id", tenant ?? "default"));
-
-                principal = new ClaimsPrincipal(identity);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to decode WebSocket JWT token.");
-                return false;
-            }
-        }
-
-        return false;
-    }
-
-    private static byte[] Base64UrlDecode(string input)
-    {
-        var output = input.Replace('-', '+').Replace('_', '/');
-        switch (output.Length % 4)
-        {
-            case 2: output += "=="; break;
-            case 3: output += "="; break;
-        }
-        return Convert.FromBase64String(output);
-    }
-
     public static string? ExtractToken(IReadOnlyDictionary<string, object?> dict)
     {
         foreach (var key in new[] { "authorization", "Authorization", "token", "Token", "x-api-key", "X-API-Key" })
@@ -142,7 +93,8 @@ public sealed class WebSocketAuthInterceptor : DefaultSocketSessionInterceptor
         return null;
     }
 
-    public static ClaimsPrincipal CreatePrincipalFromToken(string token)
+    [Obsolete("Insecure: Bypasses cryptographic token signature validation. Only for test fixtures. Use ISocketTokenValidator in production.", error: false)]
+    internal static ClaimsPrincipal CreatePrincipalFromToken(string token)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
 

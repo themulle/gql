@@ -130,6 +130,12 @@ public static class GatewayServiceCollectionExtensions
             .Validate(opts =>
                 environment.IsDevelopment() || !opts.HighAvailability.MultiNodeClusterMode || opts.Caching.Redis.Enabled,
                 "NF-HA-02 Verletzung: Im MultiNodeClusterMode erfordert die clusterweite Cache- und Epoch-Invalidierung zwingend Caching.Redis.Enabled = true!")
+            .Validate(opts =>
+                environment.IsDevelopment() ||
+                string.IsNullOrWhiteSpace(opts.Plugins.Directory) ||
+                !Directory.Exists(System.IO.Path.GetFullPath(opts.Plugins.Directory)) ||
+                opts.Plugins.RequireIntegrityManifest,
+                "Sicherheitsverletzung: Außerhalb von Development erfordert ein konfiguriertes Plugin-Verzeichnis zwingend Plugins.RequireIntegrityManifest = true!")
             .ValidateOnStart();
 
         var gatewayOptions = configuration.GetSection(GatewayOptions.SectionName).Get<GatewayOptions>() ?? new GatewayOptions();
@@ -237,7 +243,6 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IDbtHealthCircuitBreaker, DbtHealthCircuitBreaker>();
         services.AddSingleton<IOpenApiCacheManager, OpenApiCacheManager>();
         services.AddSingleton<IDynamicOpenApiGenerator, DynamicOpenApiGenerator>();
-        services.AddHttpClient<IAuditWormExportService, AuditWormExportService>();
         services.AddSingleton<IRlsFilterGenerator, RlsFilterGenerator>();
         services.AddSingleton<IRowFilterSqlBuilder, RowFilterSqlBuilder>();
         services.AddSingleton<IConsentResolutionService, ConsentResolutionService>();
@@ -251,6 +256,7 @@ public static class GatewayServiceCollectionExtensions
 
         // Data Catalog Services & Clients (P1)
         services.AddTransient<SsrfProtectionHandler>();
+        services.AddHttpClient<IAuditWormExportService, AuditWormExportService>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddHttpClient<PurviewDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddHttpClient<CollibraDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddHttpClient<OpenMetadataDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
@@ -707,6 +713,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddFusionFederationServices(gatewayOptions);
 
         services.AddSingleton<ErrorSanitizingFilter>();
+        services.AddSingleton<ISocketTokenValidator, JwtSocketTokenValidator>();
         services.AddSingleton<WebSocketAuthInterceptor>();
 
         var gqlBuilder = services
@@ -853,6 +860,13 @@ public static class GatewayServiceCollectionExtensions
             {
                 throw new ValidationException("NF-HA-02 Verletzung: Im MultiNodeClusterMode erfordert die clusterweite Cache- und Epoch-Invalidierung zwingend Caching.Redis.Enabled = true!");
             }
+
+            if (!string.IsNullOrWhiteSpace(options.Plugins.Directory) &&
+                Directory.Exists(System.IO.Path.GetFullPath(options.Plugins.Directory)) &&
+                !options.Plugins.RequireIntegrityManifest)
+            {
+                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development erfordert ein konfiguriertes Plugin-Verzeichnis zwingend Plugins.RequireIntegrityManifest = true!");
+            }
         }
 
         if (!string.Equals(options.GovernanceDb.Provider, "Sqlite", StringComparison.OrdinalIgnoreCase))
@@ -882,17 +896,27 @@ public static class GatewayServiceCollectionExtensions
 }
 
 /// <summary>
-/// DelegatingHandler enforcing strict SSRF validation via DeclarativeHttpDataSourceExecutor.ValidateUrl
-/// across all outbound HTTP requests made by ITSM, Catalog, Lineage, and CDN purge clients (HIGH-03).
+/// DelegatingHandler enforcing strict SSRF validation with asynchronous DNS resolution
+/// across all outbound HTTP requests made by ITSM, Catalog, Lineage, and CDN purge clients (HIGH-03 / SEC-02).
 /// </summary>
 public sealed class SsrfProtectionHandler : DelegatingHandler
 {
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    private readonly IHostEnvironment? _environment;
+
+    public SsrfProtectionHandler(IHostEnvironment? environment = null)
+    {
+        _environment = environment;
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         if (request.RequestUri != null)
         {
-            DeclarativeHttpDataSourceExecutor.ValidateUrl(request.RequestUri);
+            await DeclarativeHttpDataSourceExecutor.ValidateDestinationUrlAsync(
+                request.RequestUri,
+                _environment?.IsDevelopment() ?? false,
+                cancellationToken).ConfigureAwait(false);
         }
-        return base.SendAsync(request, cancellationToken);
+        return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 }

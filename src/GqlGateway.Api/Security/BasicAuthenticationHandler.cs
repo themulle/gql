@@ -181,7 +181,8 @@ public sealed class BasicAuthenticationHandler : AuthenticationHandler<Authentic
         // 2. Plaintext or unsalted SHA-256 passwords are strictly prohibited outside of Development
         if (!_isDevelopment)
         {
-            Logger.LogError("Basic authentication rejected user '{Username}': Plaintext or unsalted SHA-256 passwords are strictly prohibited outside of Development.", username);
+            var userHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(username)))[..12];
+            Logger.LogError("Basic authentication rejected user (hash: {UserHash}): Plaintext or unsalted SHA-256 passwords are strictly prohibited outside of Development.", userHash);
             return false;
         }
 

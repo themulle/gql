@@ -75,9 +75,14 @@ public sealed class PluginManager : IPluginManager, IDisposable
         {
             manifest = LoadManifest(manifestPath);
         }
-        else if (_options?.Value.Plugins.RequireIntegrityManifest == true)
+        else
         {
-            throw new SecurityException($"Sicherheitsfehler: Kein Integrity-Manifest (manifest.json) in '{fullDirectoryPath}' vorhanden.");
+            var env = _serviceProvider?.GetService(typeof(Microsoft.Extensions.Hosting.IHostEnvironment)) as Microsoft.Extensions.Hosting.IHostEnvironment;
+            bool isDev = string.Equals(env?.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
+            if (_options?.Value.Plugins.RequireIntegrityManifest == true || !isDev)
+            {
+                throw new SecurityException($"Sicherheitsfehler: Kein Integrity-Manifest (manifest.json) in '{fullDirectoryPath}' vorhanden.");
+            }
         }
 
         int loadedCount = 0;

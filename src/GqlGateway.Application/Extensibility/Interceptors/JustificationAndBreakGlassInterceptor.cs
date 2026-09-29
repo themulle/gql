@@ -10,16 +10,19 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
 {
     private readonly GatewayOptions _options;
     private readonly ILogger<JustificationAndBreakGlassInterceptor> _logger;
+    private readonly GqlGateway.Application.Interfaces.IGovernanceRepository? _governanceRepo;
 
     [GeneratedRegex(@"^(INC|CHG|SEC|REQ|PR)-\d+$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex TicketPattern();
 
     public JustificationAndBreakGlassInterceptor(
         IOptions<GatewayOptions> options,
-        ILogger<JustificationAndBreakGlassInterceptor> logger)
+        ILogger<JustificationAndBreakGlassInterceptor> logger,
+        GqlGateway.Application.Interfaces.IGovernanceRepository? governanceRepo = null)
     {
         _options = options.Value;
         _logger = logger;
+        _governanceRepo = governanceRepo;
     }
 
     public int Order => 10;
@@ -73,11 +76,61 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
                 }
             }
 
+            if (extOptions.RequireRoleForBreakGlass && context.User?.Identity?.IsAuthenticated == true)
+            {
+                var user = context.User;
+                bool isAuthorized = false;
+                foreach (var role in extOptions.BreakGlassAllowedRoles)
+                {
+                    if (user.IsInRole(role) || user.HasClaim(c => c.Type == System.Security.Claims.ClaimTypes.Role && string.Equals(c.Value, role, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        isAuthorized = true;
+                        break;
+                    }
+                }
+
+                if (!isAuthorized)
+                {
+                    _logger.LogWarning(
+                        "Break-glass access denied: User '{User}' does not possess any authorized break-glass role ({Roles}).",
+                        user.Identity?.Name ?? "Anonymous",
+                        string.Join(", ", extOptions.BreakGlassAllowedRoles));
+                    return ValueTask.FromResult(IngressResult.Deny("User is not authorized to invoke emergency break-glass bypass.", 403));
+                }
+            }
+
             context.Items["IsBreakGlass"] = true;
             _logger.LogWarning(
                 "[AUDIT: BREAK-GLASS ACTIVATED] Emergency elevated access invoked by user '{User}' with ticket '{Ticket}'.",
                 context.User?.Identity?.Name ?? "Anonymous",
                 justification);
+
+            if (_governanceRepo != null)
+            {
+                var userSid = context.User?.Identity?.Name ?? "Anonymous";
+                var tenantId = context.User?.FindFirst("tenant_id")?.Value ?? "default";
+                var clientIp = context.GetHeader("X-Forwarded-For") ?? "unknown";
+                var auditEntry = new GqlGateway.Domain.Model.AuditLogEntry
+                {
+                    Id = Guid.NewGuid(),
+                    OccurredAt = DateTimeOffset.UtcNow,
+                    EventType = "BREAK_GLASS_ACTIVATED",
+                    ActorSid = new GqlGateway.Domain.Common.Sid(userSid),
+                    TargetTable = "GATEWAY_INGRESS",
+                    Decision = "ALLOW",
+                    TraceId = Guid.NewGuid().ToString("N"),
+                    DetailsJson = System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        tenantId,
+                        clientIp,
+                        action = "BREAK_GLASS",
+                        resource = "GATEWAY_INGRESS",
+                        justificationTicket = justification,
+                        breakGlassActive = true
+                    })
+                };
+                _ = _governanceRepo.RecordAuditEventAsync(auditEntry, cancellationToken);
+            }
         }
 
         return ValueTask.FromResult(IngressResult.Continue());

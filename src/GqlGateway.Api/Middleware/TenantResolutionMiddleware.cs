@@ -91,11 +91,11 @@ public sealed class TenantResolutionMiddleware(RequestDelegate next)
             {
                 tenantId = new TenantId(rawTenant);
             }
-            catch (ArgumentException ex)
+            catch (ArgumentException)
             {
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
                 context.Response.ContentType = "application/json";
-                await context.Response.WriteAsync($"{{\"errors\":[{{\"message\":\"{ex.Message}\",\"code\":\"INVALID_TENANT_ID\"}}]}}");
+                await context.Response.WriteAsync("{\"errors\":[{\"message\":\"Invalid tenant identifier.\",\"code\":\"INVALID_TENANT_ID\"}]}");
                 return;
             }
         }

@@ -97,4 +97,28 @@ public sealed class OpenApiIntegrationTests : IClassFixture<WebApplicationFactor
         var html = await response.Content.ReadAsStringAsync();
         html.ShouldContain("swagger-ui");
     }
+
+    [Fact]
+    public async Task OpenApiGlobalEndpoint_UnprivilegedUser_ReturnsForbidden()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-STANDARD-USER");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "StandardUser");
+
+        var response = await client.GetAsync("/odata/v4/$openapi");
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task IngestOpenApi_WithoutAdminRole_ReturnsForbidden()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-STANDARD-USER");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "StandardUser");
+
+        var content = new System.Net.Http.StringContent("openapi: 3.0.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}", System.Text.Encoding.UTF8, "application/yaml");
+        var response = await client.PostAsync("/api/governance/catalog/ingest-openapi", content);
+
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
+    }
 }

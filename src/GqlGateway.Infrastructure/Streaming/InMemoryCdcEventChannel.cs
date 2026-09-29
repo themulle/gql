@@ -26,7 +26,7 @@ public sealed class InMemoryCdcEventChannel : ICdcEventChannel
         return _channels.GetOrAdd(topic, _ =>
             Channel.CreateBounded<CdcEvent>(new BoundedChannelOptions(10_000)
             {
-                FullMode = BoundedChannelFullMode.DropOldest,
+                FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = false,
                 SingleWriter = false
             }));

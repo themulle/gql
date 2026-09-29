@@ -343,7 +343,7 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         return fullUrl;
     }
 
-    internal async Task ValidateDestinationUrl(string fullUrl, CancellationToken ct = default)
+    internal Task ValidateDestinationUrl(string fullUrl, CancellationToken ct = default)
     {
         if (!Uri.TryCreate(fullUrl, UriKind.Absolute, out var uri))
         {
@@ -351,10 +351,12 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         }
 
         bool isDev = _environment?.IsDevelopment() ?? false;
-        if (!isDev && !string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new SecurityException($"Insecure HTTP scheme '{uri.Scheme}' not permitted for outbound data sources in non-development environments.");
-        }
+        return ValidateDestinationUrlAsync(uri, isDev, ct);
+    }
+
+    public static async Task ValidateDestinationUrlAsync(Uri uri, bool isDev, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
 
         var host = uri.Host.TrimEnd('.').ToLowerInvariant();
 
@@ -364,16 +366,21 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             throw new SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
         }
 
-        // 2. In non-dev, validate IP addresses (against Loopback, LinkLocal, RFC 1918, IPv6 equivalents)
+        // 2. Validate IP addresses (against Loopback, LinkLocal, RFC 1918, IPv6 equivalents)
+        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "169.254.169.254")
+        {
+            throw new SecurityException($"Outbound access to private/loopback/metadata address '{host}' is strictly forbidden.");
+        }
+
+        if (IPAddress.TryParse(host, out var directIp) && IsRestrictedIp(directIp))
+        {
+            throw new SecurityException($"Outbound access to restricted IP address '{directIp}' is strictly forbidden.");
+        }
+
         if (!isDev)
         {
-            if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "169.254.169.254")
-            {
-                throw new SecurityException($"Outbound access to private/loopback/metadata address '{host}' is strictly forbidden.");
-            }
-
             IPAddress[] addresses;
-            if (IPAddress.TryParse(host, out var directIp))
+            if (directIp != null)
             {
                 addresses = [directIp];
             }
@@ -381,11 +388,10 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             {
                 try
                 {
-                    addresses = await Dns.GetHostAddressesAsync(host, ct);
+                    addresses = await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
                 }
-                catch (SocketException ex)
+                catch (SocketException)
                 {
-                    _logger.LogWarning(ex, "SSRF validation: Could not resolve host '{Host}' via DNS.", host);
                     addresses = [];
                 }
             }
@@ -396,6 +402,11 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
                 {
                     throw new SecurityException($"Outbound access to private/loopback/restricted address '{ip}' is strictly forbidden.");
                 }
+            }
+
+            if (!string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SecurityException($"Insecure HTTP scheme '{uri.Scheme}' not permitted for outbound data sources in non-development environments.");
             }
         }
     }

@@ -44,7 +44,7 @@ public sealed class OpenTelemetryTracingMiddleware(RequestDelegate next)
         {
             if (activity != null)
             {
-                activity.SetStatus(ActivityStatusCode.Error, ex.Message);
+                activity.SetStatus(ActivityStatusCode.Error, ex.GetType().Name);
                 activity.AddException(ex);
             }
             throw;

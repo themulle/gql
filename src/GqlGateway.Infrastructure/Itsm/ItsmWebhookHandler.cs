@@ -39,11 +39,20 @@ public sealed class ItsmWebhookHandler(
         CancellationToken ct = default)
         => HandleStatusChangeAsync(rawPayload, hmacSignature, timestamp, null, ct);
 
+    public Task<bool> HandleStatusChangeAsync(
+        string rawPayload,
+        string hmacSignature,
+        DateTimeOffset timestamp,
+        string? headerInstanceId,
+        CancellationToken ct = default)
+        => HandleStatusChangeAsync(rawPayload, hmacSignature, timestamp, headerInstanceId, null, ct);
+
     public async Task<bool> HandleStatusChangeAsync(
         string rawPayload,
         string hmacSignature,
         DateTimeOffset timestamp,
         string? headerInstanceId,
+        string? rawTimestampHeader,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rawPayload);
@@ -86,7 +95,6 @@ public sealed class ItsmWebhookHandler(
                 cleanSig = cleanSig["sha256=".Length..];
             }
 
-            byte[] computedHashWithTimestamp = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes($"t={timestamp:O}.v1={rawPayload}"));
             byte[] providedHash;
             try
             {
@@ -98,8 +106,20 @@ public sealed class ItsmWebhookHandler(
                 return false;
             }
 
-            // 3. Timing-sicherer Signaturvergleich (Strikte Timestamp-gebundene HMAC-Validierung zur Replay-Abwehr)
-            bool signatureValid = CryptographicOperations.FixedTimeEquals(computedHashWithTimestamp, providedHash);
+            // Support both raw header timestamp (e.g. Unix epoch or client formatting) and normalized ISO-8601
+            bool signatureValid = false;
+            if (!string.IsNullOrWhiteSpace(rawTimestampHeader))
+            {
+                byte[] computedHashWithRawTimestamp = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes($"t={rawTimestampHeader}.v1={rawPayload}"));
+                signatureValid = CryptographicOperations.FixedTimeEquals(computedHashWithRawTimestamp, providedHash);
+            }
+
+            if (!signatureValid)
+            {
+                byte[] computedHashWithTimestamp = HMACSHA256.HashData(secretKey, Encoding.UTF8.GetBytes($"t={timestamp:O}.v1={rawPayload}"));
+                signatureValid = CryptographicOperations.FixedTimeEquals(computedHashWithTimestamp, providedHash);
+            }
+
             if (!signatureValid)
             {
                 logger.LogWarning("Webhook abgelehnt: Ungültige HMAC-SHA256-Signatur.");

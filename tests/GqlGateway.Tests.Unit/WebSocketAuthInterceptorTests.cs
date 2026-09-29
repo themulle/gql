@@ -9,6 +9,8 @@ using GqlGateway.GraphQL.Subscriptions;
 using Shouldly;
 using Xunit;
 
+#pragma warning disable CS0618
+
 public sealed class WebSocketAuthInterceptorTests
 {
     [Fact]
@@ -50,6 +52,7 @@ public sealed class WebSocketAuthInterceptorTests
         token.ShouldBeNull();
     }
 
+#pragma warning disable CS0618
     [Fact]
     public void CreatePrincipalFromToken_PopulatesClaimsCorrectly()
     {
@@ -71,4 +74,5 @@ public sealed class WebSocketAuthInterceptorTests
         Should.Throw<System.Security.SecurityException>(() =>
             WebSocketAuthInterceptor.CreatePrincipalFromToken(privilegedSid));
     }
+#pragma warning restore CS0618
 }

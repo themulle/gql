@@ -192,9 +192,9 @@ public static class GatewayApplicationBuilderExtensions
         app.UseMiddleware<PreAuthIpRateLimitingMiddleware>();
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseMiddleware<PostAuthSidRateLimitingMiddleware>();
         app.UseMiddleware<TenantResolutionMiddleware>();
         app.UseMiddleware<OpenTelemetryTracingMiddleware>();
-        app.UseMiddleware<PostAuthSidRateLimitingMiddleware>();
         app.UseMiddleware<GatewayExtensibilityMiddleware>();
 
         return app;
@@ -402,7 +402,7 @@ public static class GatewayApplicationBuilderExtensions
                                      ?? context.Request.Headers["X-Jira-Instance"].FirstOrDefault()
                                      ?? context.Request.Query["instance"].FirstOrDefault();
 
-            var success = await webhookHandler.HandleStatusChangeAsync(payload, signature, timestamp, instanceHeader, context.RequestAborted);
+            var success = await webhookHandler.HandleStatusChangeAsync(payload, signature, timestamp, instanceHeader, tsHeader, context.RequestAborted);
             if (!success)
             {
                 return Results.Unauthorized();
@@ -591,13 +591,18 @@ public static class GatewayApplicationBuilderExtensions
 
                 var cdcEvent = DebeziumCdcParser.Parse(body);
 
-                // SEC-4: Enforce strict tenant isolation on ingested CDC events to prevent cross-tenant event spoofing
-                if (!string.IsNullOrWhiteSpace(callerTenant) && !isClusterAdmin)
+                // SEC-4: Enforce strict fail-closed tenant isolation on ingested CDC events
+                if (!isClusterAdmin)
                 {
+                    if (string.IsNullOrWhiteSpace(callerTenant))
+                    {
+                        return Results.StatusCode(StatusCodes.Status403Forbidden);
+                    }
+
                     if (!string.IsNullOrWhiteSpace(cdcEvent.TenantId) &&
                         !string.Equals(cdcEvent.TenantId, callerTenant, StringComparison.OrdinalIgnoreCase))
                     {
-                        return Results.Forbid();
+                        return Results.StatusCode(StatusCodes.Status403Forbidden);
                     }
 
                     if (string.IsNullOrWhiteSpace(cdcEvent.TenantId))
@@ -622,6 +627,15 @@ public static class GatewayApplicationBuilderExtensions
             HttpContext context,
             IDbtMetadataIngestionService dbtService) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner") ||
+                               context.User.IsInRole("DbtAdmin");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             if (context.Request.ContentLength > 100 * 1024 * 1024)
             {
                 return Results.BadRequest(new { error = "Manifest size exceeds maximum allowed size (100 MB)." });
@@ -828,6 +842,14 @@ public static class GatewayApplicationBuilderExtensions
             HttpContext context,
             IOpenApiIngestionService ingestionService) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("SchemaAdmin") ||
+                               context.User.IsInRole("ClusterAdmin");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             if (context.Request.ContentLength > 20 * 1024 * 1024)
             {
                 return Results.BadRequest(new { error = "OpenAPI specification exceeds maximum allowed size (20 MB)." });
@@ -1018,6 +1040,17 @@ public static class GatewayApplicationBuilderExtensions
             IOpenApiCacheManager cacheManager,
             HttpContext context) =>
         {
+            var roles = context.User.GetUserRoles();
+            bool isPrivileged = roles.Contains("GovernanceAdmin") ||
+                               roles.Contains("ClusterAdmin") ||
+                               roles.Contains("DataOwner") ||
+                               roles.Contains("SchemaAdmin") ||
+                               roles.Contains("CatalogReader");
+            if (!isPrivileged)
+            {
+                return Results.Forbid();
+            }
+
             var format = context.Request.Query["format"].ToString();
             var accept = context.Request.Headers.Accept.ToString();
             bool isYaml = string.Equals(format, "yaml", StringComparison.OrdinalIgnoreCase) ||
@@ -1039,6 +1072,17 @@ public static class GatewayApplicationBuilderExtensions
             IOpenApiCacheManager cacheManager,
             HttpContext context) =>
         {
+            var roles = context.User.GetUserRoles();
+            bool isPrivileged = roles.Contains("GovernanceAdmin") ||
+                               roles.Contains("ClusterAdmin") ||
+                               roles.Contains("DataOwner") ||
+                               roles.Contains("SchemaAdmin") ||
+                               roles.Contains("CatalogReader");
+            if (!isPrivileged)
+            {
+                return Results.Forbid();
+            }
+
             var bytes = await cacheManager.GetOrAddAsync(
                 domainScope: domain,
                 isYaml: false,
@@ -1054,6 +1098,17 @@ public static class GatewayApplicationBuilderExtensions
             IOpenApiCacheManager cacheManager,
             HttpContext context) =>
         {
+            var roles = context.User.GetUserRoles();
+            bool isPrivileged = roles.Contains("GovernanceAdmin") ||
+                               roles.Contains("ClusterAdmin") ||
+                               roles.Contains("DataOwner") ||
+                               roles.Contains("SchemaAdmin") ||
+                               roles.Contains("CatalogReader");
+            if (!isPrivileged)
+            {
+                return Results.Forbid();
+            }
+
             var bytes = await cacheManager.GetOrAddAsync(
                 domainScope: domain,
                 isYaml: true,
@@ -1063,14 +1118,22 @@ public static class GatewayApplicationBuilderExtensions
             return Results.Bytes(bytes, contentType: "application/yaml;charset=utf-8");
         }).RequireAuthorization();
 
-        app.MapGet("/odata/v4/$swagger", (HttpContext context) =>
+        app.MapGet("/odata/v4/$swagger", (HttpContext context, IWebHostEnvironment env) =>
         {
+            if (!env.IsDevelopment() && context.User?.Identity?.IsAuthenticated != true)
+            {
+                return Results.Unauthorized();
+            }
             context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
             return Results.Content(SwaggerUiHtml, "text/html;charset=utf-8");
         });
 
-        app.MapGet("/docs", (HttpContext context) =>
+        app.MapGet("/docs", (HttpContext context, IWebHostEnvironment env) =>
         {
+            if (!env.IsDevelopment() && context.User?.Identity?.IsAuthenticated != true)
+            {
+                return Results.Unauthorized();
+            }
             context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
             return Results.Content(SwaggerUiHtml, "text/html;charset=utf-8");
         });
@@ -1248,7 +1311,7 @@ public static class GatewayApplicationBuilderExtensions
                         ?? context.User.FindFirst("appid")?.Value
                         ?? context.User.Identity?.Name;
 
-                    if (!string.IsNullOrWhiteSpace(callerId) &&
+                    if (string.IsNullOrWhiteSpace(callerId) ||
                         !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
                     {
                         return Results.StatusCode(StatusCodes.Status403Forbidden);
@@ -1295,7 +1358,7 @@ public static class GatewayApplicationBuilderExtensions
                             ?? context.User.FindFirst("appid")?.Value
                             ?? context.User.Identity?.Name;
 
-                        if (!string.IsNullOrWhiteSpace(callerId) &&
+                        if (string.IsNullOrWhiteSpace(callerId) ||
                             !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
                         {
                             return Results.StatusCode(StatusCodes.Status403Forbidden);
@@ -1365,7 +1428,7 @@ public static class GatewayApplicationBuilderExtensions
                         ?? context.User.FindFirst("appid")?.Value
                         ?? context.User.Identity?.Name;
 
-                    if (!string.IsNullOrWhiteSpace(callerId) &&
+                    if (string.IsNullOrWhiteSpace(callerId) ||
                         !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
                     {
                         return Results.StatusCode(StatusCodes.Status403Forbidden);
