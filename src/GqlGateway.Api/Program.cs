@@ -8,7 +8,8 @@ var builder = WebApplication.CreateBuilder(args);
 // Configure Kestrel limits
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.Limits.MaxRequestBodySize = 2 * 1024 * 1024; // 2 MB
+    // Allow up to 100 MB for streaming dbt manifests and large audit/governance payloads
+    options.Limits.MaxRequestBodySize = 100 * 1024 * 1024;
 });
 
 // 1. Serilog Setup

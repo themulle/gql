@@ -204,7 +204,27 @@ Currently passes **735 / 735 tests (100% green)** across all test suites:
 - **98 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
 - **43 Extensions Tests** (Apache Iceberg v2 Lakehouse connector & partition pruning, Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion & contract validation, ServiceNow/Jira webhooks, OData)
 
-### 3. Run Gateway Locally
+### 3. Run Gateway via Docker Container (Fastest / Getting Started)
+
+Ein schlüsselfertiges Container-Image mit integriertem **Microsoft Garnet .NET Cache**, In-Memory Governance-DB (10 Domänen vorbefüllt) und aktivierter Web-UI steht in der GitHub Container Registry bereit:
+
+```bash
+# Direkt via Docker Run (Ports 8080 HTTP / 8081 HTTPS)
+docker run -d -p 8080:8080 -p 8081:8081 --name gql-gateway ghcr.io/themulle/gql:getting-started
+
+# Oder via Docker Compose
+docker compose up -d
+```
+
+#### Sofort verfügbare Endpunkte auf Port 8080:
+- **Banana Cake Pop GraphQL IDE**: [`http://localhost:8080/graphql`](http://localhost:8080/graphql)
+- **Swagger UI (REST / OpenAPI 3.1 Explorer)**: [`http://localhost:8080/docs`](http://localhost:8080/docs)
+- **OData v4 Datenabruf (REST / Excel / Power BI)**: `GET http://localhost:8080/odata/v4/{domain}/{schema}/{table}`
+- **OpenAPI 3.1 Spezifikation**: [`http://localhost:8080/odata/v4/$openapi`](http://localhost:8080/odata/v4/$openapi)
+- **MCP (Model Context Protocol für KI-Agenten)**: `POST http://localhost:8080/mcp`
+- **Health Checks**: [`http://localhost:8080/health/live`](http://localhost:8080/health/live) & [`/health/ready`](http://localhost:8080/health/ready)
+
+### 4. Run Gateway Locally from Source
 
 ```bash
 dotnet run --project src/GqlGateway.Api/GqlGateway.Api.csproj

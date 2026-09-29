@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using System.ComponentModel.DataAnnotations;
 using GqlGateway.Api.Hosting;
 using GqlGateway.Api.Middleware;
@@ -268,8 +269,8 @@ public static class GatewayServiceCollectionExtensions
         services.AddHttpClient<PurviewDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddHttpClient<CollibraDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddHttpClient<OpenMetadataDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddSingleton<IDataCatalogClientFactory, DataCatalogClientFactory>();
-        services.AddSingleton<IDataCatalogSyncService, DataCatalogSyncService>();
+        services.TryAddSingleton<IDataCatalogClientFactory, DataCatalogClientFactory>();
+        services.TryAddScoped<IDataCatalogSyncService, DataCatalogSyncService>();
         services.AddSingleton<IOpenApiIngestionService, OpenApiIngestionService>();
 
         // SQL Connection Factory & Health Checks
@@ -377,8 +378,8 @@ public static class GatewayServiceCollectionExtensions
         // ITSM Dispatcher, Outbound REST Clients (ServiceNow & Jira) & Inbound Webhooks
         services.AddHttpClient<ServiceNowTableApiClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddHttpClient<JiraCloudRestClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddScoped<IItsmWorkflowClient, ServiceNowTableApiClient>();
-        services.AddScoped<IItsmWorkflowClient, JiraCloudRestClient>();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IItsmWorkflowClient, ServiceNowTableApiClient>());
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IItsmWorkflowClient, JiraCloudRestClient>());
         services.AddScoped<ItsmWorkflowDispatcher>();
         services.AddScoped<IItsmWebhookHandler, ItsmWebhookHandler>();
         services.AddScoped<IConsentRecertificationService, ConsentRecertificationWorkflowService>();
@@ -439,8 +440,14 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();
         services.AddHostedService<TrafficDrainHostedService>();
 
-        // Foreign System Extensions (ServiceNow, Jira, OpenMetadata)
+        // Foreign System Extensions (ServiceNow, Jira, OpenMetadata, Multi-Catalog)
         services.AddGatewayExtensions(gatewayOptions);
+        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.MicrosoftPurviewCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.CollibraCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.AlationCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<GqlGateway.Extensions.Itsm.ServiceNowClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<GqlGateway.Extensions.Itsm.JiraClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<GqlGateway.Extensions.OpenMetadata.OpenMetadataClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
 
         // Realtime Event Subscriptions & In-Stream RLS (P5)
         services.AddSingleton<ICdcEventChannel, InMemoryCdcEventChannel>();
