@@ -888,6 +888,61 @@ Trino ist eine herausragende analytische Engine, scheitert jedoch im operativen 
 
 ---
 
+### 3.7 Strategischer Architektur-Vergleich: Hasura-Weg vs. Trino-Weg für GqlGateway
+
+Die Diskussion um die optimale Abfrage- und AST-Strategie führt zu zwei diametral entgegengesetzten Architektur-Paradigmen:
+1. **Der Hasura-Weg (Pushdown Compiler & In-Database Hierarchical Serialization)**
+2. **Der Trino-Weg (Distributed In-Memory Data Virtualization & Cross-Source Engine)**
+
+```mermaid
+flowchart TD
+    subgraph HasuraWay ["1. Der Hasura-Weg (Pushdown-Compiler)"]
+        H_GQL["GraphQL Query"] --> H_COMP["AST-to-SQL Compiler<br/>(Keine In-Memory Datenverarbeitung)"]
+        H_COMP --> H_SQL["Single SQL mit FOR JSON PATH / json_agg<br/>(Subqueries, Joins & RLS in EINEM Statement)"]
+        H_SQL --> H_DB["RDBMS Engine (MSSQL / Postgres C++ Kernel)"]
+        H_DB --> H_OUT["Direct Socket-to-HTTP Streaming<br/>P99: 2-5 ms | RAM: ~0 MB"]
+    end
+
+    subgraph TrinoWay ["2. Der Trino-Weg (Data Virtualization)"]
+        T_REQ["WebSQL / SQL Statement"] --> T_PLAN["SQL Parser & Plan Optimizer<br/>(Antlr4 / Logical Plan)"]
+        T_PLAN --> T_SPLIT["Split Engine & Multi-Source Connectors"]
+        T_SPLIT --> T_SRC1["Source A: MSSQL (Raw Rows)"]
+        T_SPLIT --> T_SRC2["Source B: Iceberg S3 (Parquet)"]
+        T_SRC1 --> T_MEM["Gateway In-Memory Engine<br/>(Hash-Joins, Filter, Aggregation im RAM)"]
+        T_SRC2 --> T_MEM
+        T_MEM --> T_OUT["Tabular JSON / Arrow Stream<br/>P99: 30-150 ms | RAM: Hoch"]
+    end
+```
+
+#### 1. Detaillierte Gegenüberstellung der Optionen
+
+| Dimension | Option A: Der Hasura-Weg (Pushdown Compiler) | Option B: Der Trino-Weg (Data Virtualization) | Option C: GqlGateway Hybrid-Modell (Empfohlen) |
+| :--- | :--- | :--- | :--- |
+| **Philosophie** | **„Push to Storage“:** Die relationale DB macht 100% der Join-, Aggregations- und Serialisierungs-Arbeit. | **„Pull to Gateway“:** Gateway lädt Teildatensätze in den eigenen Heap und joint sie selbst. | **„Smart Pushdown with Fallback“:** Maximaler Pushdown, wo möglich; Föderation nur bei disjunkten Quellen. |
+| **Primärer Einsatzzweck** | **OLTP / API Hot Path:** Verschachtelte GraphQL-Abfragen (Kunde &rarr; Orders &rarr; Items). | **OLAP / Ad-hoc SQL:** Heterogene Föderation (JOIN MSSQL mit S3 Parquet) & WebSQL. | **Best-of-Both-Worlds:** Hasura-Speed für GraphQL + Trino-Sicherheit für WebSQL. |
+| **Latenz P99** | **Ultra-tief (2–5 ms)** | **Mittel bis Hoch (30–150 ms)** | **2–5 ms (Intra-Source)** / **15–30 ms (Cross-Source)** |
+| **Memory Footprint** | **Nahezu 0 (Zero-Copy):** Gateway muss keine Tabellenzeilen im C#-Heap materialisieren. | **Sehr hoch:** Benötigt Buffers für Hash-Joins und Zwischenaggregationen. | **Minimal:** Streamt relationale Daten; puffert nur bei heterogenen Föderations-Joins. |
+| **Cross-Source Fähigkeit** | ❌ **Keine:** Kann keine Relationen zwischen zwei getrennten DBs in einem SQL ausführen. | **Exzellent:** Nativer Join über beliebig viele heterogene Konnektoren. | **Vollständig:** Single-Query für RDBMS-Knoten + Vektor-Scan für Lakehouse-Zweige. |
+| **Implementierungsaufwand** | **Gering bis Mittel (ca. 1.5–2 W):** Reines AST-Kompilieren und String-Generieren. | **Sehr hoch (Monate bis Jahre):** Erfordert eigene relationale Rechen-Engine im Gateway. | **Ausgewogen (ca. 3.5 W):** Modulares ScriptDom-WebSQL + Hasura `FOR JSON PATH` Visitor. |
+
+---
+
+#### 2. Das Urteil: Warum das GqlGateway Hybrid-Modell die Konkurrenz deklassiert
+
+Weder ein reiner Hasura-Klon noch ein reiner Trino-Klon löst alle Enterprise-Anforderungen:
+* Ein reines **Hasura** scheitert, sobald Unternehmen relationale Kundendaten mit historischen Lakehouse-Parquet-Daten im S3 verbinden wollen (Hasura kann keine Cross-Source-Föderation ohne teure Zusatzmodule).
+* Ein reines **Trino** ist für operative Web-APIs und Mobile Apps viel zu langsam (hohe Latenz, speicherhungriger JVM-Cluster) und kann keine nativen verschachtelten GraphQL-Hierarchien emittieren.
+
+##### Das GqlGateway 3-Säulen-Zielbild:
+1. **Für GraphQL Intra-Source (z. B. Kunde &rarr; Bestellungen in MSSQL):**  
+   **100% Hasura-Weg.** Der GraphQL-AST wird über `Microsoft.SqlServer.TransactSql.ScriptDom` direkt in ein einziges `FOR JSON PATH`-Statement kompiliert. 1 DB-Hop, Sub-5ms Latenz, Zero Memory Allocation.
+2. **Für WebSQL (`POST /api/v1/sql`):**  
+   **Trino/ScriptDom-Weg.** Strikte AST-Validierung (Read-Only Whitelist), Anti-DoS Linter und automatischer Casbin-RLS-Pushdown in die `WHERE`-Klausel.
+3. **Für Cross-Source GraphQL (MSSQL + Apache Iceberg Lakehouse):**  
+   **Hybrid-Föderation.** Der relationale Ast wird im Hasura-Stil auf MSSQL zusammengefasst; der Lakehouse-Ast wird über den vektorisierten `LakehouseDataSourceExecutor` per Batch nachgeladen und im Gateway zusammengesetzt.
+
+---
+
 ## 4. Priorisierungs-Framework: Aktualisierte RICE-C Matrix
 
 Mit dem erfolgreichen Abschluss aller Kernkomponenten (P1, P2, P3, P4, P5, P7, P8, P9 sowie Casbin Hot-Reload, MCP Stdio/HTTP, ITSM Clients und GDPR PDF/OpenLineage) priorisiert das RICE-C Modell die neuen Enterprise-Differenzierungsinitiativen:
