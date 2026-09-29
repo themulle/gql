@@ -28,6 +28,7 @@ public sealed class GatewayOptions
     [Required] public ExtensibilityOptions Extensibility { get; init; } = new();
     [Required] public CasbinOptions Casbin { get; init; } = new();
     [Required] public DbtOptions Dbt { get; init; } = new();
+    [Required] public BackstageIntegrationOptions Backstage { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -675,6 +676,16 @@ public sealed class DbtOptions
     public bool Enabled { get; init; } = true;
     public string WebhookSecret { get; init; } = string.Empty;
     public bool danger_bypass_webhook_signature_validation { get; init; } = false;
+}
+
+public sealed class BackstageIntegrationOptions
+{
+    public bool Enabled { get; init; } = true;
+    public string DefaultOwner { get; init; } = "group:default/data-stewards";
+    public string DefaultSystem { get; init; } = "enterprise-data-mesh";
+    public string DefaultNamespace { get; init; } = "default";
+    public bool IncludeTablesAsApis { get; init; } = true;
+    public string BaseUrl { get; init; } = string.Empty;
 }
 
 

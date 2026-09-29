@@ -513,6 +513,9 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ISchemaRegistryRepository, InMemorySchemaRegistryRepository>();
         services.AddSingleton<ISchemaRegistryService, SchemaRegistryService>();
 
+        // Backstage.io Integration
+        services.AddSingleton<GqlGateway.Application.Integrations.Backstage.IBackstageCatalogExportService, GqlGateway.Application.Integrations.Backstage.BackstageCatalogExportService>();
+
         return services;
     }
 
