@@ -37,7 +37,10 @@ public static class GatewayApplicationBuilderExtensions
             await next();
         });
 
-        app.UseForwardedHeaders();
+        if (gatewayOptions.ReverseProxy.Enabled)
+        {
+            app.UseForwardedHeaders();
+        }
         app.UseCors();
 
         // HTTP Security Response Headers (MED-01)
@@ -397,6 +400,14 @@ public static class GatewayApplicationBuilderExtensions
                 }
                 timestamp = DateTimeOffset.UtcNow;
             }
+            else if (!opts.IsWebhookTimestampToleranceIgnored)
+            {
+                var diff = (DateTimeOffset.UtcNow - timestamp).Duration();
+                if (diff > TimeSpan.FromMinutes(5))
+                {
+                    return Results.Unauthorized();
+                }
+            }
 
             string? instanceHeader = context.Request.Headers["X-Instance-ID"].FirstOrDefault()
                                      ?? context.Request.Headers["X-ServiceNow-Instance"].FirstOrDefault()
@@ -499,6 +510,19 @@ public static class GatewayApplicationBuilderExtensions
                 }
             }
 
+            if (!opts.IsWebhookTimestampToleranceIgnored)
+            {
+                if (!timestamp.HasValue)
+                {
+                    return Results.Json(new { error = "Missing required timestamp header (X-Catalog-Timestamp)." }, statusCode: StatusCodes.Status401Unauthorized);
+                }
+
+                if ((DateTimeOffset.UtcNow - timestamp.Value).Duration() > TimeSpan.FromMinutes(5))
+                {
+                    return Results.Json(new { error = "Webhook timestamp is outside the permitted 5-minute tolerance window." }, statusCode: StatusCodes.Status401Unauthorized);
+                }
+            }
+
             var provider = context.Request.Query.TryGetValue("provider", out var prov) ? prov.FirstOrDefault() : null;
 
             var result = await webhookHandler.HandleWebhookAsync(payload, signature, timestamp, provider, context.RequestAborted);
@@ -578,6 +602,19 @@ public static class GatewayApplicationBuilderExtensions
                 }
             }
 
+            if (!opts.IsWebhookTimestampToleranceIgnored)
+            {
+                if (!timestamp.HasValue)
+                {
+                    return Results.Json(new { error = "Missing required timestamp header (X-Catalog-Timestamp)." }, statusCode: StatusCodes.Status401Unauthorized);
+                }
+
+                if ((DateTimeOffset.UtcNow - timestamp.Value).Duration() > TimeSpan.FromMinutes(5))
+                {
+                    return Results.Json(new { error = "Webhook timestamp is outside the permitted 5-minute tolerance window." }, statusCode: StatusCodes.Status401Unauthorized);
+                }
+            }
+
             var result = await webhookHandler.HandleWebhookAsync(payload, signature, timestamp, provider, context.RequestAborted);
             if (!result.Success)
             {
@@ -593,6 +630,11 @@ public static class GatewayApplicationBuilderExtensions
             ICdcEventIngestionService ingestionService,
             ILoggerFactory loggerFactory) =>
         {
+            if (request.ContentLength > 10 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "CDC payload exceeds maximum allowed size (10 MB)." });
+            }
+
             using var reader = new StreamReader(request.Body);
             var body = await reader.ReadToEndAsync(request.HttpContext.RequestAborted);
             if (string.IsNullOrWhiteSpace(body))
@@ -1547,11 +1589,17 @@ public static class GatewayApplicationBuilderExtensions
 
         // Schema Registry & CI/CD Endpoints (P8)
         app.MapPost("/api/schema-registry/publish", async (
+            HttpContext httpContext,
             SchemaRegistrationRequest request,
             ISchemaRegistryService registry,
             ClaimsPrincipal principal,
             CancellationToken ct) =>
         {
+            if (httpContext.Request.ContentLength > 10 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Schema registration payload exceeds maximum allowed size (10 MB)." });
+            }
+
             var canPublish = principal.IsInRole("GovernanceAdmin") ||
                              principal.IsInRole("SchemaAdmin") ||
                              principal.IsInRole("GatewayAdmin") ||
@@ -1590,10 +1638,16 @@ public static class GatewayApplicationBuilderExtensions
         }).RequireAuthorization();
 
         app.MapPost("/api/schema-registry/check", async (
+            HttpContext httpContext,
             SchemaRegistrationRequest request,
             ISchemaRegistryService registry,
             CancellationToken ct) =>
         {
+            if (httpContext.Request.ContentLength > 10 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Schema check payload exceeds maximum allowed size (10 MB)." });
+            }
+
             var diff = await registry.CheckSchemaAsync(request.ServiceName, request.Sdl, ct);
             return Results.Ok(new
             {

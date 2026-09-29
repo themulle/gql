@@ -454,8 +454,15 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
 
         if (pattern.Contains('*'))
         {
-            var regex = "^" + Regex.Escape(pattern).Replace("\\*", ".*") + "$";
-            return Regex.IsMatch(target, regex, RegexOptions.IgnoreCase);
+            try
+            {
+                var regex = "^" + Regex.Escape(pattern).Replace("\\*", ".*") + "$";
+                return Regex.IsMatch(target, regex, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(200));
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return false;
+            }
         }
 
         return false;

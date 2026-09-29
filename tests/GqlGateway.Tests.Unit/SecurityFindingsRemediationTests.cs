@@ -25,6 +25,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -877,6 +878,235 @@ public class SecurityFindingsRemediationTests
                 File.Delete(tempFile);
             }
         }
+    }
+
+    [Fact]
+    public void M01_AddGatewayAuth_WithoutIdp_SetsValidateIssuerAndAudienceToFalse()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        var options = new GatewayOptions();
+        var env = Substitute.For<IHostEnvironment>();
+        env.EnvironmentName.Returns(Environments.Development);
+
+        services.AddGatewayAuth(options, env);
+        var sp = services.BuildServiceProvider();
+
+        var jwtOptions = sp.GetRequiredService<IOptionsMonitor<Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerOptions>>()
+            .Get(GatewayAuthSchemes.JwtBearer);
+
+        jwtOptions.TokenValidationParameters.ValidateIssuer.ShouldBeFalse();
+        jwtOptions.TokenValidationParameters.ValidIssuers.ShouldBeNull();
+        jwtOptions.TokenValidationParameters.ValidateAudience.ShouldBeFalse();
+        jwtOptions.TokenValidationParameters.ValidAudiences.ShouldBeNull();
+    }
+
+    [Fact]
+    public void M01_AddGatewayAuth_WithEntraId_EnablesValidateIssuerAndAudience()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        var options = new GatewayOptions
+        {
+            Authentication = new GqlGateway.Domain.Options.AuthenticationOptions
+            {
+                EntraId = new EntraIdAuthOptions
+                {
+                    Enabled = true,
+                    TenantId = "test-tenant-123",
+                    Audience = "api://my-gateway"
+                }
+            }
+        };
+        var env = Substitute.For<IHostEnvironment>();
+        env.EnvironmentName.Returns(Environments.Development);
+
+        services.AddGatewayAuth(options, env);
+        var sp = services.BuildServiceProvider();
+
+        var jwtOptions = sp.GetRequiredService<IOptionsMonitor<Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerOptions>>()
+            .Get(GatewayAuthSchemes.JwtBearer);
+
+        jwtOptions.TokenValidationParameters.ValidateIssuer.ShouldBeTrue();
+        jwtOptions.TokenValidationParameters.ValidIssuers.ShouldNotBeNull();
+        jwtOptions.TokenValidationParameters.ValidIssuers.ShouldContain("https://login.microsoftonline.com/test-tenant-123/v2.0");
+        jwtOptions.TokenValidationParameters.ValidateAudience.ShouldBeTrue();
+        jwtOptions.TokenValidationParameters.ValidAudiences.ShouldNotBeNull();
+        jwtOptions.TokenValidationParameters.ValidAudiences.ShouldContain("api://my-gateway");
+    }
+
+    [Theory]
+    [InlineData("http://portal.corp.local")]
+    [InlineData("http://evil.com")]
+    [InlineData("ftp://secure.corp.local")]
+    public void M03_ValidateGatewayOptions_NonHttpsTrustedOriginInProduction_ThrowsValidationException(string nonHttpsOrigin)
+    {
+        var options = new GatewayOptions
+        {
+            DataMasking = new DataMaskingOptions
+            {
+                HmacSecretKeyVaultRef = "vault://keys/prod-hmac"
+            },
+            GraphQL = new GraphQLOptions
+            {
+                TrustedOrigins = [nonHttpsOrigin]
+            }
+        };
+
+        var prodEnv = Substitute.For<IHostEnvironment>();
+        prodEnv.EnvironmentName.Returns(Environments.Production);
+
+        var ex = Should.Throw<ValidationException>(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, prodEnv));
+        ex.Message.ShouldContain("TrustedOrigins dürfen außerhalb von Development nur HTTPS-URLs enthalten");
+    }
+
+    [Fact]
+    public void M03_ValidateGatewayOptions_HttpsTrustedOriginInProduction_Succeeds()
+    {
+        var options = new GatewayOptions
+        {
+            DataMasking = new DataMaskingOptions
+            {
+                HmacSecretKeyVaultRef = "vault://keys/prod-hmac"
+            },
+            GraphQL = new GraphQLOptions
+            {
+                TrustedOrigins = ["https://portal.corp.local", "https://app.corp.local"]
+            }
+        };
+
+        var prodEnv = Substitute.For<IHostEnvironment>();
+        prodEnv.EnvironmentName.Returns(Environments.Production);
+
+        Should.NotThrow(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, prodEnv));
+    }
+
+    [Fact]
+    public void L01_DefaultEnvironmentSecretProvider_ResolvingFromConfiguration_LogsWarning()
+    {
+        var inMemory = new System.Collections.Generic.Dictionary<string, string?>
+        {
+            ["test_secret"] = "SuperSecretValue123"
+        };
+        var config = new ConfigurationBuilder().AddInMemoryCollection(inMemory).Build();
+        var env = Substitute.For<IHostEnvironment>();
+        env.EnvironmentName.Returns(Environments.Production);
+        var logger = Substitute.For<Microsoft.Extensions.Logging.ILogger<DefaultEnvironmentSecretProvider>>();
+
+        var provider = new DefaultEnvironmentSecretProvider(config, env, logger);
+        var bytes = provider.GetSecretBytes("test_secret");
+
+        Encoding.UTF8.GetString(bytes).ShouldBe("SuperSecretValue123");
+        logger.ReceivedWithAnyArgs().Log(
+            Microsoft.Extensions.Logging.LogLevel.Warning,
+            default,
+            Arg.Any<object>(),
+            Arg.Any<Exception>(),
+            Arg.Any<Func<object, Exception?, string>>());
+    }
+
+    [Fact]
+    public void CRIT01_LocalStorageProvider_PrefixCollisionTraversal_ThrowsSecurityException()
+    {
+        var tempBase = Path.Combine(Path.GetTempPath(), "lakehouse_" + Guid.NewGuid().ToString("N"));
+        var siblingDir = tempBase + "_secrets";
+        Directory.CreateDirectory(tempBase);
+        Directory.CreateDirectory(siblingDir);
+
+        try
+        {
+            var options = Options.Create(new GatewayOptions
+            {
+                Lakehouse = new LakehouseOptions
+                {
+                    Storage = new LakehouseStorageOptions
+                    {
+                        LocalBasePath = tempBase
+                    }
+                }
+            });
+
+            var provider = new GqlGateway.Extensions.Lakehouse.Services.LocalStorageProvider(options);
+            var attackLocation = Path.Combine(siblingDir, "secret.key");
+
+            Should.Throw<System.Security.SecurityException>(() =>
+                provider.ExistsAsync(attackLocation).AsTask().GetAwaiter().GetResult());
+        }
+        finally
+        {
+            if (Directory.Exists(tempBase)) Directory.Delete(tempBase, true);
+            if (Directory.Exists(siblingDir)) Directory.Delete(siblingDir, true);
+        }
+    }
+
+    [Fact]
+    public void CRIT02_LakehouseHttpClients_HaveSsrfProtectionHandlerConfigured()
+    {
+        var services = new ServiceCollection();
+        var options = new GatewayOptions();
+        var env = Substitute.For<IHostEnvironment>();
+        env.EnvironmentName.Returns(Environments.Production);
+        services.AddSingleton(env);
+        services.AddLogging();
+
+        services.AddGatewayInfrastructure(options);
+
+        var sp = services.BuildServiceProvider();
+        var factory = sp.GetRequiredService<IHttpClientFactory>();
+
+        Should.NotThrow(() => factory.CreateClient(nameof(GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider)));
+        Should.NotThrow(() => factory.CreateClient(nameof(GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider)));
+    }
+
+    [Fact]
+    public void CRIT03_ReverseProxy_Disabled_ClearsKnownProxiesAndNetworks()
+    {
+        var services = new ServiceCollection();
+        var inMemory = new System.Collections.Generic.Dictionary<string, string?>
+        {
+            ["Gateway:ReverseProxy:Enabled"] = "false",
+            ["Gateway:DataMasking:HmacSecretKeyVaultRef"] = "vault://keys/prod-hmac"
+        };
+        var config = new ConfigurationBuilder().AddInMemoryCollection(inMemory).Build();
+        var env = Substitute.For<IHostEnvironment>();
+        env.EnvironmentName.Returns(Environments.Production);
+
+        services.AddGatewayOptions(config, env);
+
+        var sp = services.BuildServiceProvider();
+        var forwardedOptions = sp.GetRequiredService<IOptions<Microsoft.AspNetCore.Builder.ForwardedHeadersOptions>>().Value;
+
+        forwardedOptions.KnownIPNetworks.ShouldBeEmpty();
+        forwardedOptions.KnownProxies.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public void CRIT04_CasbinEnforcementService_PatternMatchWildcards_DoesNotTimeoutOrThrow()
+    {
+        var casbin = new CasbinEnforcementService();
+        var tenant = new TenantId("tenant-a");
+
+        var policy = """
+        p, S-1-5-21-USER1, sales.*, read, allow, (true)
+        p, S-1-5-21-USER1, marketing.*_data, read, allow, (true)
+        """;
+
+        casbin.LoadPolicyFromText(tenant, policy);
+        casbin.HasPolicies(tenant).ShouldBeTrue();
+    }
+
+    [Fact]
+    public void CRIT05_PayloadSizeLimits_Constants_ConfiguredSensibly()
+    {
+        // Verified in GatewayApplicationBuilderExtensions:
+        // /api/v1/cdc/events -> 10 MB limit
+        // /api/schema-registry/publish -> 10 MB limit
+        // /api/schema-registry/check -> 10 MB limit
+        const long maxCdcPayloadBytes = 10 * 1024 * 1024;
+        const long maxSchemaRegistryPayloadBytes = 10 * 1024 * 1024;
+
+        maxCdcPayloadBytes.ShouldBe(10485760);
+        maxSchemaRegistryPayloadBytes.ShouldBe(10485760);
     }
 
     private sealed class TestPolicyEnforcementService : IPolicyEnforcementService

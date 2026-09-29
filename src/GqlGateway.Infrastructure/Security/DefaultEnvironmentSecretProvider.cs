@@ -79,7 +79,7 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
             var secretVal = _configuration[key];
             if (!string.IsNullOrWhiteSpace(secretVal))
             {
-                _logger?.LogDebug("Resolved secret reference '{SecretRef}' using configuration key '{CandidateKey}'.", secretRef, key);
+                _logger?.LogWarning("Secret reference '{SecretRef}' resolved from configuration key '{CandidateKey}'. In production, ensure sensitive secrets are stored securely in Azure Key Vault or environment variables rather than configuration files.", secretRef, key);
                 return Encoding.UTF8.GetBytes(secretVal);
             }
 

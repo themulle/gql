@@ -113,6 +113,9 @@ public static class GatewayServiceCollectionExtensions
                 environment.IsDevelopment() || !opts.GraphQL.TrustedOrigins.Contains("*"),
                 "Sicherheitsverletzung: TrustedOrigins '*' (Wildcard-CORS) ist außerhalb der Development-Umgebung aus Sicherheitsgründen (CSRF-Schutz) verboten!")
             .Validate(opts =>
+                environment.IsDevelopment() || opts.GraphQL.TrustedOrigins.All(o => o == "*" || (Uri.TryCreate(o, UriKind.Absolute, out var u) && string.Equals(u.Scheme, "https", StringComparison.OrdinalIgnoreCase))),
+                "Sicherheitsverletzung: TrustedOrigins dürfen außerhalb von Development nur HTTPS-URLs enthalten.")
+            .Validate(opts =>
                 environment.IsDevelopment() || (
                     !string.IsNullOrWhiteSpace(opts.DataMasking.HmacSecretKeyVaultRef) &&
                     opts.DataMasking.HmacSecretKeyVaultRef != "DEV_INSECURE_TEST_KEY_ONLY" &&
@@ -172,6 +175,11 @@ public static class GatewayServiceCollectionExtensions
                         options.KnownProxies.Add(ip);
                     }
                 }
+            }
+            else
+            {
+                options.KnownIPNetworks.Clear();
+                options.KnownProxies.Clear();
             }
         });
 
@@ -441,8 +449,10 @@ public static class GatewayServiceCollectionExtensions
 
         // Modern Lakehouse Apache Iceberg Connector (P4 / ADR-015)
         services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.LocalStorageProvider>();
-        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider));
-        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider));
+        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider))
+            .AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider))
+            .AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddSingleton(sp => new GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider(
             sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
             sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
@@ -609,9 +619,9 @@ public static class GatewayServiceCollectionExtensions
 
             options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
             {
-                ValidateIssuer = true,
+                ValidateIssuer = validIssuers.Count > 0,
                 ValidIssuers = validIssuers.Count > 0 ? validIssuers : null,
-                ValidateAudience = true,
+                ValidateAudience = validAudiences.Count > 0,
                 ValidAudiences = validAudiences.Count > 0 ? validAudiences : null,
                 ValidateLifetime = true,
                 ValidateIssuerSigningKey = true,
@@ -862,6 +872,11 @@ public static class GatewayServiceCollectionExtensions
             if (options.GraphQL.TrustedOrigins.Contains("*"))
             {
                 throw new ValidationException("Sicherheitsverletzung: TrustedOrigins '*' (Wildcard-CORS) ist außerhalb der Development-Umgebung aus Sicherheitsgründen (CSRF-Schutz) verboten!");
+            }
+
+            if (options.GraphQL.TrustedOrigins.Any(o => o != "*" && (!Uri.TryCreate(o, UriKind.Absolute, out var u) || !string.Equals(u.Scheme, "https", StringComparison.OrdinalIgnoreCase))))
+            {
+                throw new ValidationException("Sicherheitsverletzung: TrustedOrigins dürfen außerhalb von Development nur HTTPS-URLs enthalten.");
             }
 
             if (options.HighAvailability.MultiNodeClusterMode && !options.Caching.Redis.Enabled)
