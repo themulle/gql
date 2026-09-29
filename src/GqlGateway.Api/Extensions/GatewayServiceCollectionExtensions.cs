@@ -256,6 +256,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddHttpClient<OpenMetadataDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddSingleton<IDataCatalogClientFactory, DataCatalogClientFactory>();
         services.AddSingleton<IDataCatalogSyncService, DataCatalogSyncService>();
+        services.AddSingleton<IOpenApiIngestionService, OpenApiIngestionService>();
 
         // SQL Connection Factory & Health Checks
         services.AddSingleton<ISqlConnectionFactory, SqlConnectionFactory>();

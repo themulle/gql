@@ -2,9 +2,9 @@
 
 **Rolle:** Principal Enterprise Product Manager & Platform Strategist  
 **Marktumfeld:** 2025/2026 Enterprise API & GraphQL Federation (Apollo GraphOS / Router v2.17+, Hasura DDN v3, WunderGraph Cosmo, StepZen, Immuta)  
-**Status:** Aktualisiert nach vollständiger Umsetzung von Wave 1 & Wave 2 Core: F-DBT-1 (dbt Data Health Circuit Breaker & Quarantäne), F-API-03 (Dynamic OpenAPI 3.1 & Swagger UI Explorer) sowie F-AI-02, F-AI-04, F-AI-06 (Semantic MCP Compiler, Pre-Flight Cost Simulator & Provenance Footnoting) mit 901/901 grünen Tests, Hot Chocolate 16.6.7 Upgrade und vollständiger AppSec-Härtung.  
-**Ziel:** Nachvollziehbarer Produktstatus, Dokumentation gelieferter Differenzierungs-Moats und Priorisierung der nächsten Roadmap-Phasen nach dem RICE-C-Modell.
-**Referenz-Architektur:** [Solution Architect Implementierungsplan Wave 1 & Wave 2](file:///root/.gemini/antigravity-cli/brain/4cea064e-4e35-4614-ae6f-86298552afea/implementation-plan-wave1-wave2.md)  
+**Status:** Aktualisiert nach vollständiger Umsetzung aller Initiativen aus Wave 1 (100% GA: F-DOC-01, F-DBT-1, F-DBT-2, F-DBT-3, F-DBT-4, F-DBT-6, F-API-03, F-API-04, F-AI-02, F-AI-04, F-AI-06) mit 913/913 grünen Tests, Hot Chocolate 16.6.7 Upgrade und vollständiger AppSec-Härtung.  
+**Ziel:** Nachvollziehbarer Produktstatus, Dokumentation gelieferter Differenzierungs-Moats und Priorisierung der nächsten Roadmap-Phasen (Wave 2) nach dem RICE-C-Modell.
+**Referenz-Architektur:** [Wave 1 Architectural Implementation Plan](file:///root/.gemini/antigravity-cli/brain/4cea064e-4e35-4614-ae6f-86298552afea/wave1-architectural-implementation-plan.md) | [Solution Architect Implementierungsplan Wave 1 & Wave 2](file:///root/.gemini/antigravity-cli/brain/4cea064e-4e35-4614-ae6f-86298552afea/implementation-plan-wave1-wave2.md)  
 
 ---
 
@@ -44,8 +44,8 @@ Bestandsaufnahme aller Gateway-Module zur Dokumentation der Marktreife (General 
 | Modul / Feature | Zustand im Repository | Reifegrad | Status & verbleibende Roadmap-Gaps |
 | :--- | :--- | :---: | :--- |
 | **Data Catalog Connectors (P1)** | Vollständig implementiert ([`PurviewDataCatalogClient`](file:///root/gql/src/GqlGateway.Infrastructure/DataCatalog/PurviewDataCatalogClient.cs), [`CollibraDataCatalogClient`](file:///root/gql/src/GqlGateway.Infrastructure/DataCatalog/CollibraDataCatalogClient.cs), [`OpenMetadataDataCatalogClient`](file:///root/gql/src/GqlGateway.Infrastructure/DataCatalog/OpenMetadataDataCatalogClient.cs), [`DataCatalogClientFactory`](file:///root/gql/src/GqlGateway.Infrastructure/DataCatalog/DataCatalogClientFactory.cs), [`DataCatalogSyncService`](file:///root/gql/src/GqlGateway.Application/DataCatalog/Services/DataCatalogSyncService.cs), Webhook HMAC-Validierung). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Native REST-Clients mit Polly 8 Resilienz, Entra ID OAuth, PII- & DSGVO-Art.-9-Mapping und Epoch-Invalidierung aktiv. |
-| **dbt Governance, Data Health & Lineage (F-DBT)** | Streaming Parser ([`DbtArtifactStreamingParser`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtArtifactStreamingParser.cs)), Ingestion Service ([`DbtMetadataIngestionService`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtMetadataIngestionService.cs)), Proposal Repository ([`InMemoryDbtProposalRepository`](file:///root/gql/src/GqlGateway.Infrastructure/Persistence/InMemoryDbtProposalRepository.cs)), Lineage Graph Store ([`ILineageGraphStore`](file:///root/gql/src/GqlGateway.Application/Interfaces/ILineageGraphStore.cs)), Exposures Export ([`DbtExposurePublisher`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtExposurePublisher.cs)), Health Circuit Breaker ([`IDbtHealthCircuitBreaker`](file:///root/gql/src/GqlGateway.Application/Dbt/Interfaces/IDbtHealthCircuitBreaker.cs), [`DbtHealthCircuitBreaker`](file:///root/gql/src/GqlGateway.Application/Dbt/Services/DbtHealthCircuitBreaker.cs), [`DbtHealthModels`](file:///root/gql/src/GqlGateway.Domain/Model/DbtHealthModels.cs)), Execution Middleware ([`DbtHealthExecutionMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/DbtHealthExecutionMiddleware.cs)). | **100% (GA Core & F-DBT-1)** | ✅ **Manifest-Ingestion, Lineage & Data Health Circuit Breaker GA.** `run_results.json` Quarantäne-Engine live mit RBAC-geschützter API (`/run-results`, `/health`, `/health/reset`), AST-basierter GraphQL-Blockierung (`TABLE_IN_QUARANTINE`) und 100% Testabdeckung. Nächste Schritte: F-DBT-2 Model Contract Breaking-Change CI Gate & F-DBT-4 Webhooks. |
-| **Enterprise GraphQL Engine (Hot Chocolate 16.6.7)** | Vollständig auf Version 16.6.7 migriert. Native AST `QueryCostAnalyzerRule`, vereinfachte DI-Singletons, Zero-Allocation MCP Byte-Formatter, 901 automatisierte Tests (737 Unit + 116 Integration + 43 Extensions + 5 Architecture) zu 100% grün. Benchmark P99 AST-Traversierung: 0.0268 ms (SLA <= 2.0 ms -> PASS, 75x unter Grenzwert). | **100% (GA)** | ✅ **Vollständig modernisiert & benchmark-verifiziert.** Extrem performanter GraphQL Core mit sub-mikrosekunden AST-Kostenanalyse und Zero-Regression Security Audit. |
+| **dbt Governance, Data Health & Lineage (F-DBT)** | Streaming Parser ([`DbtArtifactStreamingParser`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtArtifactStreamingParser.cs)), Ingestion Service ([`DbtMetadataIngestionService`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtMetadataIngestionService.cs)), Proposal Repository ([`InMemoryDbtProposalRepository`](file:///root/gql/src/GqlGateway.Infrastructure/Persistence/InMemoryDbtProposalRepository.cs)), Lineage Graph Store ([`ILineageGraphStore`](file:///root/gql/src/GqlGateway.Application/Interfaces/ILineageGraphStore.cs)), Exposures Export ([`DbtExposurePublisher`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtExposurePublisher.cs)), Health Circuit Breaker ([`IDbtHealthCircuitBreaker`](file:///root/gql/src/GqlGateway.Application/Dbt/Interfaces/IDbtHealthCircuitBreaker.cs), [`DbtHealthCircuitBreaker`](file:///root/gql/src/GqlGateway.Application/Dbt/Services/DbtHealthCircuitBreaker.cs), [`DbtHealthModels`](file:///root/gql/src/GqlGateway.Domain/Model/DbtHealthModels.cs)), Execution Middleware ([`DbtHealthExecutionMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/DbtHealthExecutionMiddleware.cs)), Telemetry Metrics Provider ([`InMemoryTelemetryMetricsProvider`](file:///root/gql/src/GqlGateway.Application/Dbt/Services/InMemoryTelemetryMetricsProvider.cs)), Webhook Receiver ([`DbtWebhookReceiver`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtWebhookReceiver.cs)). | **100% (GA)** | ✅ **Vollständig geliefert (Wave 1 GA).** Manifest-Ingestion, Lineage Graph, Data Health Circuit Breaker (`run_results.json`), Model Contract Breaking-Change CI Gate (`F-DBT-2`), Live Telemetry Exposures (`F-DBT-3`), timing-sicherer HMAC-SHA256 Webhook-Receiver (`F-DBT-4`) und Policy/RLS Auto-Sync (`F-DBT-6`) mit 4-Augen-Proposals live und 100% testabgedeckt. |
+| **Enterprise GraphQL Engine (Hot Chocolate 16.6.7)** | Vollständig auf Version 16.6.7 migriert. Native AST `QueryCostAnalyzerRule`, vereinfachte DI-Singletons, Zero-Allocation MCP Byte-Formatter, 913 automatisierte Tests (749 Unit + 116 Integration + 43 Extensions + 5 Architecture) zu 100% grün. Benchmark P99 AST-Traversierung: 0.0268 ms (SLA <= 2.0 ms -> PASS, 75x unter Grenzwert). | **100% (GA)** | ✅ **Vollständig modernisiert & benchmark-verifiziert.** Extrem performanter GraphQL Core mit sub-mikrosekunden AST-Kostenanalyse und Zero-Regression Security Audit. |
 | **Client Quotas & Cost Telemetrie (P2)** | Vollständig implementiert ([`ClientTierResolver`](file:///root/gql/src/GqlGateway.Application/Caching/Services/ClientTierResolver.cs), [`CostAndQuotaMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/CostAndQuotaMiddleware.cs), [`RedisRateLimiterService`](file:///root/gql/src/GqlGateway.Infrastructure/RateLimiting/RedisRateLimiterService.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Client-Tiering (`Free`, `Standard`, `Enterprise`, `Internal`), atomares Lua Token Bucket in Redis, Response-Header (`X-Query-Cost`, `X-RateLimit-*`) und `extensions.cost`. |
 | **CDN Cache-Tag Headers & Edge Invalidation (P3)** | Vollständig implementiert ([`CdnCacheTagVisitor`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/CdnCacheTagVisitor.cs), [`CdnCacheTagMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/CdnCacheTagMiddleware.cs), [`CloudflareCdnPurgeService`](file:///root/gql/src/GqlGateway.Infrastructure/Cdn/CloudflareCdnPurgeService.cs), [`FastlyCdnPurgeService`](file:///root/gql/src/GqlGateway.Infrastructure/Cdn/FastlyCdnPurgeService.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** AST-Tag-Extraktion, Zero-Trust Cache Isolation (`private, no-store` bei RLS/Maskierung) und asynchrone Mutation-Invalidierung via Outbox. |
 | **Subgraph Federation Router (P7)** | Vollständig implementiert ([`SubgraphSecurityDelegatingHandler`](file:///root/gql/src/GqlGateway.GraphQL/Federation/SubgraphSecurityDelegatingHandler.cs), [`SubgraphResultMaskingMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Federation/SubgraphResultMaskingMiddleware.cs), [`FusionGatewayExtensions`](file:///root/gql/src/GqlGateway.GraphQL/Federation/FusionGatewayExtensions.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Hot Chocolate Fusion Subgraph Router mit Zero-Trust Client Token Forwarding und In-Memory Result Masking auf aggregierten Daten. |
@@ -56,8 +56,8 @@ Bestandsaufnahme aller Gateway-Module zur Dokumentation der Marktreife (General 
 | **Modern Lakehouse Connector (P4)** | Vollständig implementiert ([`IcebergMetadataReader`](file:///root/gql_extensions/src/GqlGateway.Extensions/Lakehouse/Services/IcebergMetadataReader.cs), [`IcebergPartitionPruner`](file:///root/gql_extensions/src/GqlGateway.Extensions/Lakehouse/Services/IcebergPartitionPruner.cs), [`LakehouseDataSourceExecutor`](file:///root/gql_extensions/src/GqlGateway.Extensions/Lakehouse/Services/LakehouseDataSourceExecutor.cs), Storage-Provider für Local, S3 SigV4 & Azure Blob, Integrationstests). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Nativer Apache Iceberg v2 Lakehouse-Connector mit L1-Metadaten-/Manifest-Cache (`MetadataCacheTtlMinutes`), vektorisiertem Partition- & Min/Max-Stats-Pruning, Fail-Closed Zero-Trust Governance und automatischer PII/GDPR-Spaltenmaskierung. |
 | **Subscriptions & Realtime Events (P5)** | Vollständig implementiert ([`Subscription.cs`](file:///root/gql/src/GqlGateway.GraphQL/Subscriptions/Subscription.cs), [`WebSocketAuthInterceptor.cs`](file:///root/gql/src/GqlGateway.GraphQL/Subscriptions/WebSocketAuthInterceptor.cs), [`StreamRlsPolicyEnforcer.cs`](file:///root/gql/src/GqlGateway.Application/Streaming/Services/StreamRlsPolicyEnforcer.cs), [`InMemoryCdcEventChannel.cs`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/InMemoryCdcEventChannel.cs), [`DebeziumCdcParser.cs`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/DebeziumCdcParser.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** WebSocket (`graphql-transport-ws`) und SSE Subscriptions mit dynamischer In-Stream Row Level Security (Casbin ABAC), In-Stream Column Masking, strikter Mandanten-Isolation und Debezium/Kafka CDC Ingestion. |
 | **Management Studio & UI (P6)** | Reines Headless-Gateway. | **0%** | 🔴 Visuelles Web-Dashboard für Data Stewards (Policy Simulator, Audit-Viewer, Schema Explorer). |
-| **OData v4 & Dynamic OpenAPI 3.1 REST Layer (`F-API-03`)** | Vollständig implementiert ([`ODataHandler`](file:///root/gql/src/GqlGateway.Application/OData/ODataHandler.cs), CSDL XML Generator, Entity Set Query Executor, [`IDynamicOpenApiGenerator`](file:///root/gql/src/GqlGateway.Application/OData/Interfaces/IDynamicOpenApiGenerator.cs), [`DynamicOpenApiGenerator`](file:///root/gql/src/GqlGateway.Application/OData/Services/DynamicOpenApiGenerator.cs), [`IOpenApiCacheManager`](file:///root/gql/src/GqlGateway.Application/OData/Interfaces/IOpenApiCacheManager.cs), [`OpenApiCacheManager`](file:///root/gql/src/GqlGateway.Application/OData/Services/OpenApiCacheManager.cs), Integrationstests [`OpenApiIntegrationTests.cs`](file:///root/gql/tests/GqlGateway.Tests.Integration/OpenApiIntegrationTests.cs)). | **100% (GA)** | ✅ **OData Core & Dynamic OpenAPI 3.1 Explorer GA.** Nativer OData-Service (`/odata/v4`, `/$metadata`), dynamische OpenAPI 3.1 Spezifikation (`/odata/v4/$openapi` in JSON & YAML), Domain-Scoped Specs (`/odata/v4/{domain}/openapi.json|yaml`), Memory-Cache mit Key-Sanitisierung und gehärtetes, CSP-geschütztes Swagger UI (`/odata/v4/$swagger`, `/docs`). |
-| **Omnichannel Documentation Passthrough (`F-DOC-01`)** | Parser vorhanden ([`DbtArtifactStreamingParser`](file:///root/gql_extensions/src/GqlGateway.Extensions/Dbt/DbtArtifactStreamingParser.cs), [`OpenMetadataCatalogAdapter`](file:///root/gql_extensions/src/GqlGateway.Extensions/DataCatalog/OpenMetadataCatalogAdapter.cs)), Domain- & Egress-Durchstich in Umsetzung. | **40% (In Work)**<br/>*Next: F-DOC-01* | 🚀 **Top Quick-Win (Wave 1):** Durchschleifen von dbt-Doc-Blocks und OpenMetadata-Beschreibungen in GraphQL Web UI (`DynamicTableType`), MCP Tool-Signaturen, OpenAPI 3.1 Swagger und OData CSDL Annotations. |
+| **OData v4 & Dynamic OpenAPI 3.1 REST Layer (`F-API-03`, `F-API-04`)** | Vollständig implementiert ([`ODataHandler`](file:///root/gql/src/GqlGateway.Application/OData/ODataHandler.cs), CSDL XML Generator, Entity Set Query Executor, [`IDynamicOpenApiGenerator`](file:///root/gql/src/GqlGateway.Application/OData/Interfaces/IDynamicOpenApiGenerator.cs), [`DynamicOpenApiGenerator`](file:///root/gql/src/GqlGateway.Application/OData/Services/DynamicOpenApiGenerator.cs), [`IOpenApiCacheManager`](file:///root/gql/src/GqlGateway.Application/OData/Interfaces/IOpenApiCacheManager.cs), [`OpenApiCacheManager`](file:///root/gql/src/GqlGateway.Application/OData/Services/OpenApiCacheManager.cs), [`IOpenApiIngestionService`](file:///root/gql/src/GqlGateway.Application/DataCatalog/Interfaces/IOpenApiIngestionService.cs), [`OpenApiIngestionService`](file:///root/gql/src/GqlGateway.Application/DataCatalog/Services/OpenApiIngestionService.cs)). | **100% (GA)** | ✅ **OData Core, Dynamic OpenAPI 3.1 & Declarative Web API Ingestion GA.** Nativer OData-Service (`/odata/v4`, `/$metadata`), dynamische OpenAPI 3.1 Spezifikation (`/odata/v4/$openapi` in JSON & YAML), Domain-Scoped Specs (`/odata/v4/{domain}/openapi.json|yaml`), Memory-Cache mit Key-Sanitisierung, gehärtetes Swagger UI (`/docs`, `/odata/v4/$swagger`) und automatisierte Registrierung externer REST-Services via `POST /api/governance/catalog/ingest-openapi` (`F-API-04`). |
+| **Omnichannel Documentation Passthrough (`F-DOC-01`)** | Vollständig implementiert ([`DynamicTableType.cs`](file:///root/gql/src/GqlGateway.GraphQL/DynamicTypes/DynamicTableType.cs), [`SemanticMcpCompiler.cs`](file:///root/gql/src/GqlGateway.Application/Mcp/Services/SemanticMcpCompiler.cs), [`DynamicOpenApiGenerator.cs`](file:///root/gql/src/GqlGateway.Application/OData/Services/DynamicOpenApiGenerator.cs), [`ODataCsdlGenerator.cs`](file:///root/gql_extensions/src/GqlGateway.Extensions/OData/ODataCsdlGenerator.cs), Unit-Tests). | **100% (GA)** | ✅ **Vollständig geliefert (Wave 1 GA).** Lückenloses Durchschleifen von dbt-Doc-Blocks und OpenMetadata-Beschreibungen in GraphQL Banana Cake Pop (`DynamicTableType`), MCP Tool-Signaturen & On-Demand Resources (`dbt://models/...`), OpenAPI 3.1 JSON/YAML (`x-long-description`, `x-dbt-meta`) und OData CSDL Core Annotations (`Core.Description`, `Core.LongDescription`). |
 
 ---
 
@@ -538,22 +538,22 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 
 | Initiative / Feature | Reach | Impact | Conf. | Comp. | Effort | **Score** | Status & Priorität |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **F-DOC-01: Omnichannel Documentation Passthrough (GQL, MCP, Swagger, OData)** | 10 | 2.8 | 95% | 1.5 | 1.0 W | **39.9** | 🚀 **Top Quick-Win (Wave 1 - In Arbeit)** |
+| **F-DOC-01: Omnichannel Documentation Passthrough (GQL, MCP, Swagger, OData)** | 10 | 2.8 | 95% | 1.5 | 1.0 W | **39.9** | ✅ **100% Abgeschlossen (GA)** (GQL, MCP Tools/Resources, OpenAPI 3.1, OData CSDL) |
 | **F-DBT-1: `run_results.json` Health Telemetry & Circuit Breaker** | 9 | 2.5 | 95% | 1.8 | 1.0 W | **38.4** | ✅ **100% Abgeschlossen (GA)** (Circuit Breaker, RBAC-APIs, AST-Quarantäne) |
-| **F-DBT-3: Live Telemetry-Driven Exposures (Ops, P99, Consumers)** | 7 | 2.0 | 90% | 1.2 | 0.8 W | **18.9** | 🚀 **Top-Priorität (Wave 1)** |
-| **F-DBT-2: dbt Model Contract Enforcement & Breaking Change Gate** | 8 | 2.5 | 90% | 1.5 | 1.5 W | **18.0** | 🚀 **Top-Priorität (Wave 1)** |
+| **F-DBT-3: Live Telemetry-Driven Exposures (Ops, P99, Consumers)** | 7 | 2.0 | 90% | 1.2 | 0.8 W | **18.9** | ✅ **100% Abgeschlossen (GA)** (InMemoryTelemetryMetricsProvider, Enriched exposures.yaml) |
+| **F-DBT-2: dbt Model Contract Enforcement & Breaking Change Gate** | 8 | 2.5 | 90% | 1.5 | 1.5 W | **18.0** | ✅ **100% Abgeschlossen (GA)** (DbtContractLinter, CI Gate & Breaking Change Guard) |
 | **F-AI-02: Semantic MCP Schema Compiler (dbt & OpenMetadata Ingestion)** | 8 | 3.0 | 90% | 1.6 | 2.0 W | **17.3** | ✅ **100% Abgeschlossen (GA)** (dbt/Katalog Ingestion in Tools & Resources) |
 | **F-API-03: Dynamic OData OpenAPI 3.1 & Swagger UI (`/odata/v4/$openapi`)** | 9 | 2.5 | 95% | 1.2 | 1.5 W | **17.1** | ✅ **100% Abgeschlossen (GA)** (OpenAPI JSON/YAML, Domain-Scope, Swagger UI) |
 | **F-AI-04: Pre-Flight Query Cost & Token Guard (`simulate_query`)** | 9 | 2.5 | 90% | 1.2 | 1.5 W | **16.2** | ✅ **100% Abgeschlossen (GA)** (AST Cost Simulation & Hard-Safety-Limits) |
-| **F-API-04: Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion** | 8 | 2.2 | 90% | 1.2 | 1.2 W | **15.8** | 🚀 **Top-Priorität (Wave 1)** (Zero-Touch Microservice Doku & Enums) |
+| **F-API-04: Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion** | 8 | 2.2 | 90% | 1.2 | 1.2 W | **15.8** | ✅ **100% Abgeschlossen (GA)** (OpenApiIngestionService, Virtual HTTP Tables & Catalog Ingestion) |
 | **F-AI-06: Provenance & Lineage Footnoting (Explainable AI / EU AI Act)** | 7 | 2.5 | 85% | 2.0 | 2.0 W | **14.9** | ✅ **100% Abgeschlossen (GA)** (Revisionssichere `_provenance` Footnotes) |
 | **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | ✅ **100% Abgeschlossen (GA)** |
 | **F-AI-03: Dynamic Few-Shot "Golden Query" Injection (Audit Replay)** | 8 | 2.2 | 90% | 1.1 | 1.3 W | **13.4** | 🟡 **Priorität Wave 2** |
 | **P11: Smart Schema Deprecation & Sunsetting Engine** | 9 | 2.2 | 95% | 1.4 | 2 W | **13.2** | ✅ **100% Abgeschlossen (GA)** |
-| **F-DBT-4: dbt Cloud & Orchestrator HMAC Webhook Receiver** | 8 | 1.5 | 90% | 1.2 | 1.0 W | **12.9** | 🟢 **Top Priorität (Wave 1)** |
+| **F-DBT-4: dbt Cloud & Orchestrator HMAC Webhook Receiver** | 8 | 1.5 | 90% | 1.2 | 1.0 W | **12.9** | ✅ **100% Abgeschlossen (GA)** (Timing-safe HMAC-SHA256 Webhook Receiver) |
 | **F-AI-05: Human-in-the-Loop Step-Up Approval via MCP (4-Augen)** | 7 | 2.8 | 80% | 1.8 | 2.2 W | **12.8** | 🟡 **Priorität Wave 2** |
 | **P12: Differential Privacy & Dynamic Perturbation** | 7 | 3.0 | 85% | 2.0 | 3 W | **11.9** | ✅ **100% Abgeschlossen (GA)** |
-| **F-DBT-6: Policy & RLS Auto-Sync aus dbt Metadaten** | 7 | 2.0 | 85% | 1.5 | 1.5 W | **11.9** | 🟢 **Top Priorität (Wave 1)** |
+| **F-DBT-6: Policy & RLS Auto-Sync aus dbt Metadaten** | 7 | 2.0 | 85% | 1.5 | 1.5 W | **11.9** | ✅ **100% Abgeschlossen (GA)** (meta.casbin_roles & meta.rls_filter, 4-Eyes Proposal Approval) |
 | **P13: Data Contract & FinOps Chargeback Engine** | 8 | 2.0 | 90% | 1.3 | 2 W | **9.4** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **F-AI-07: Vector-Indexed Dynamic Tool Pruning (Scalable Catalog)** | 6 | 2.5 | 85% | 1.1 | 1.5 W | **9.4** | 🟡 **Priorität Wave 2** |
 | **P16: Post-Quantum Cryptography (ML-KEM / PQC)** | 6 | 2.0 | 85% | 1.6 | 2 W | **8.2** | 🟡 **Mittlere Priorität (Wave 2)** |
@@ -578,7 +578,7 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 
 ```mermaid
 flowchart TD
-    subgraph Delivered["Bereits Geliefert (General Availability - 901 Tests Green)"]
+    subgraph Delivered["Bereits Geliefert: Core & Wave 1 (General Availability - 913 Tests Green ✅)"]
         direction TB
         D1["P1 Data Catalogs (Purview, Collibra, OpenMetadata)"]
         D2["P2 Client Quotas & Cost Telemetry (Redis Lua)"]
@@ -602,19 +602,15 @@ flowchart TD
         D20["F-AI-02 Semantic MCP Compiler (dbt & OpenMetadata Resources/Tools)"]
         D21["F-AI-04 Pre-Flight Cost Simulator & Token Guard (simulate_query)"]
         D22["F-AI-06 Lineage & Provenance Footnoting (_provenance Footnotes)"]
+        D23["F-DOC-01 Omnichannel Documentation Passthrough (GQL, MCP, Swagger, OData)"]
+        D24["F-DBT-2 dbt Model Contract CI Gate & Breaking Change Linter"]
+        D25["F-DBT-3 Live Telemetry-Driven Exposures (Ops, P99, Consumers)"]
+        D26["F-DBT-4 dbt Cloud & Orchestrator HMAC Webhook Receiver"]
+        D27["F-DBT-6 Policy & RLS Auto-Sync aus dbt Metadaten"]
+        D28["F-API-04 Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion"]
     end
 
-    subgraph Wave1["Wave 1: Enterprise Governance & dbt Quality (Verbleibende Arbeitspakete)"]
-        direction TB
-        W1_1["F-DOC-01 Omnichannel Documentation Passthrough (GQL, MCP, Swagger, OData) - In Arbeit 🚀"]
-        W1_2["F-DBT-2 dbt Model Contract CI Gate & Breaking Change Linter"]
-        W1_3["F-DBT-3 Live Telemetry-Driven Exposures (Ops, P99, Consumers)"]
-        W1_4["F-DBT-4 dbt Cloud & Orchestrator HMAC Webhook Receiver"]
-        W1_5["F-DBT-6 Policy & RLS Auto-Sync aus dbt Metadaten"]
-        W1_6["F-API-04 Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion"]
-    end
-
-    subgraph Wave2["Wave 2: FinOps, Lakehouse Acceleration, Agent Scale & Post-Quantum (Q4 2026 / 2027)"]
+    subgraph Wave2["Wave 2: FinOps, Lakehouse Acceleration, Agent Scale & Post-Quantum (Nächste Umsetzungsphase)"]
         direction TB
         W2_1["F-AI-03 Dynamic Few-Shot Golden Queries (Audit Replay)"]
         W2_2["F-AI-05 Human-in-the-Loop Step-Up Approval via MCP (4-Augen)"]
@@ -627,28 +623,23 @@ flowchart TD
         W2_9["F-DBT-7 dbt Mesh Cross-Project Federation"]
     end
 
-    Delivered --> Wave1
-    Wave1 --> Wave2
+    Delivered --> Wave2
 ```
 
-### Konkrete Handlungsempfehlungen für die strategische Umsetzung:
+### Konkrete Handlungsempfehlungen & Wave 1 Abschluss-Status:
 
-1. **Vollständig geliefert: F-DBT-1 Data Health Circuit Breaker & Quarantäne-Engine:**
-   - Schützt GraphQL-Clients vor verunreinigten oder fehlerhaften Daten (`dbt test` Failures) über automatische Quarantäne und `TABLE_IN_QUARANTINE`-Fehler im AST.
-   - **Status F-DBT-1:** Core-Komponenten ([`IDbtHealthCircuitBreaker`](file:///root/gql/src/GqlGateway.Application/Dbt/Interfaces/IDbtHealthCircuitBreaker.cs), [`DbtHealthCircuitBreaker`](file:///root/gql/src/GqlGateway.Application/Dbt/Services/DbtHealthCircuitBreaker.cs), [`DbtHealthModels`](file:///root/gql/src/GqlGateway.Domain/Model/DbtHealthModels.cs)), GraphQL-Middleware ([`DbtHealthExecutionMiddleware`](file:///root/gql/src/GqlGateway.GraphQL/Interceptors/DbtHealthExecutionMiddleware.cs)) und RBAC-geschützte Endpunkte (`/run-results`, `/health`, `/health/reset`) sind **produktiv geliefert und 100% testabgedeckt**.
-2. **Vollständig geliefert: Die Enterprise AI Agent Triade (`F-AI-02`, `F-AI-04`, `F-AI-06`):**
-   - Bildet das Fundament für sichere autonome Agenten in Großunternehmen:
-     - `F-AI-02` (Semantic Grounding): Dynamische Kompilierung von dbt-Docs und OpenMetadata Business Glossaries in MCP-Tool-Signaturen und MCP-Resources (`resources/list`, `resources/read`).
-     - `F-AI-04` (Pre-Flight Cost Guard): AST-basierte Simulation (`simulate_query`) mit Token-Budget-Tracking, Scan-Volumen-Prüfung und Rekursionstiefenschutz (`MaxAstDepth = 40`).
-     - `F-AI-06` (Provenance Footnoting): Automatische Injektion von revisionssicheren `_provenance`-Metadaten-Footnotes in alle MCP-Antworten.
-3. **Vollständig geliefert: F-API-03 Dynamic OData OpenAPI 3.1 & Swagger UI Explorer:**
-   - Beseitigt die "GraphQL-Only Adoption Barrier" im Großunternehmen: Exponiert alle registrierten Datenobjekte per standardkonformem HTTP GET mit dynamisch generierter OpenAPI 3.1 Spezifikation (`/odata/v4/$openapi`, `/odata/v4/{domain}/openapi.json|yaml`) und interaktiver Swagger UI (`/odata/v4/$swagger`, `/docs`). Geschützt mit strikter Content Security Policy und Domain-Sanitisierung.
-4. **Nächste Top-Priorität: F-DOC-01 Omnichannel Documentation Passthrough (Score: 39.9):**
-   - Höchster unvollendeter Quick-Win: Durchschleifen von dbt-Doc-Blocks und OpenMetadata-Beschreibungen in Banana Cake Pop (`DynamicTableType`), MCP Tool-Signaturen, OpenAPI 3.1 Swagger und OData CSDL Annotations zur vollständigen Beseitigung des "Documentation Drift".
-5. **Nächste CI/CD-Schritte: F-DBT-2 & F-DBT-4 (Contract Gate & Webhooks - Scores: 18.0 & 12.9):**
-   - Absicherung von PRs gegen Breaking Changes in dbt Model Contracts (`dbt contract enforcement`) vor dem Merge sowie automatisierte Ingestion von dbt Cloud Webhooks mit HMAC-SHA256 Signatur-Validierung.
-6. **Wave 2 Ausblick: FinOps, Lakehouse Acceleration & Post-Quantum:**
-   - In Wave 2 werden Few-Shot Golden Queries (`F-AI-03`), HitL Step-Up Approvals (`F-AI-05`), MetricFlow Auto-Resolvers (`F-DBT-5`), FinOps Chargeback (`P13`), Arrow Flight Governor (`P14`), Confidential Enclaves (`P15`) und Post-Quantum TLS (`P16`) umgesetzt.
+1. **Vollständig geliefert: Wave 1 (100% General Availability mit 913 grünen Tests):**
+   - **`F-DOC-01` Omnichannel Documentation Passthrough:** dbt-Doc-Blocks und OpenMetadata Business Glossaries werden ohne manuellen Aufwand lückenlos in Banana Cake Pop GraphQL (`DynamicTableType`), MCP Tool-Signaturen & dynamische Ressourcen (`dbt://models/{table}/columns/{col}/docs`), OpenAPI 3.1 Swagger Spezifikationen (`x-long-description`, `x-dbt-meta`) und OData CSDL Core Annotations (`Core.Description`, `Core.LongDescription`) durchgereicht.
+   - **`F-DBT-1` Data Health Circuit Breaker & Quarantäne:** Sofortige Quarantäne korrupter dbt-Modelle (`run_results.json`) mit `TABLE_IN_QUARANTINE` AST-Blockern und RBAC-geschützter Management-API.
+   - **`F-DBT-2` Model Contract CI Gate & Breaking Change Linter:** Schützt Produktivsysteme vor inkompatiblen Schema-Änderungen in dbt Model Contracts.
+   - **`F-DBT-3` Live Telemetry-Driven Exposures:** Reichert `exposures.yaml` zur Laufzeit mit realen Abfrage-Metriken (`monthly_queries`, `p99_latency_ms`, `top_consumers`, `governance_tier`) über den `ITelemetryMetricsProvider` an.
+   - **`F-DBT-4` dbt Cloud HMAC Webhook Receiver:** Timing-sichere HMAC-SHA256 Validierung für Orchestrator-Events (`POST /api/extensions/dbt/webhooks/dbt-cloud`).
+   - **`F-DBT-6` Policy & RLS Auto-Sync:** Übernahme von `meta.casbin_roles` und `meta.rls_filter` aus dbt-Modellen in regulierte 4-Augen-Proposals (`IDbtProposalRepository`).
+   - **`F-API-03` & `F-API-04` Dual REST & OpenAPI Ingestion Layer:** Dynamische OpenAPI 3.1 und Swagger UI Generierung für OData v4 sowie automatisierte Ingestion externer OpenAPI/Swagger REST-Services via `POST /api/governance/catalog/ingest-openapi`.
+   - **`F-AI-02`, `F-AI-04`, `F-AI-06` Semantic AI Agent Triade:** Semantischer MCP Compiler, Pre-Flight Safety Simulator mit Kosten- und Hard-Limits sowie lückenlose `_provenance`-Footnotes (EU AI Act).
+
+2. **Nächste strategische Umsetzungsphase: Wave 2 (FinOps, Lakehouse Acceleration & Post-Quantum):**
+   - In Wave 2 rücken nun Few-Shot Golden Queries (`F-AI-03`), HitL Step-Up Approvals (`F-AI-05`), MetricFlow Auto-Resolvers (`F-DBT-5`), FinOps Chargeback (`P13`), Arrow Flight Governor (`P14`), Confidential Enclaves (`P15`) und Post-Quantum TLS (`P16`) in den Umsetzungsfokus.
 
 ---
 
@@ -668,14 +659,32 @@ Im Rahmen des Releases auf **Hot Chocolate 16.6.7** wurde die Performance-Suite 
 
 ### 5.2 Strategischer Implementierungsplan Wave 1 & Wave 2 (Referenz-Architektur)
 
-Der detaillierte Implementierungsplan des Solution Architects für die Umsetzung von Wave 1 und Wave 2 ist als verbindliche Referenz hinterlegt:
+Die detaillierten Implementierungspläne des Solution Architects für die Umsetzung von Wave 1 und Wave 2 sind als verbindliche Referenz hinterlegt:
 
+👉 **[Wave 1 Architectural Implementation Plan (100% GA Geliefert)](file:///root/.gemini/antigravity-cli/brain/4cea064e-4e35-4614-ae6f-86298552afea/wave1-architectural-implementation-plan.md)**  
 👉 **[Solution Architect Implementierungsplan Wave 1 & Wave 2](file:///root/.gemini/antigravity-cli/brain/4cea064e-4e35-4614-ae6f-86298552afea/implementation-plan-wave1-wave2.md)**
 
-* **Phase 1 (Sprint 1–2 - GA ✅):** dbt Data Health Circuit Breaker & Quarantäne-Engine (`F-DBT-1` geliefert & RBAC-gehärtet).
-* **Phase 2 (Sprint 3 - GA ✅):** Dynamic OData OpenAPI 3.1 & Swagger UI Generator (`F-API-03` geliefert mit CSP-Härtung und Caching).
-* **Phase 3 (Sprint 4–5 - GA ✅):** Semantic MCP Compiler (`F-AI-02`), Pre-Flight Cost Simulator (`F-AI-04`) & Provenance Footnoting (`F-AI-06` geliefert).
-* **Phase 4 (Sprint 6):** dbt Contract Breaking Change Gate (`F-DBT-2`), dbt Cloud Webhooks (`F-DBT-4`) & Exposures Export (`F-DBT-3`).
-* **Wave 2:** Few-Shot Golden Queries (`F-AI-03`), HitL Step-Up Approvals (`F-AI-05`), MetricFlow Auto-Resolvers (`F-DBT-5`), FinOps Chargeback (`P13`), Arrow Flight Governor (`P14`), Confidential Enclaves (`P15`) und Post-Quantum TLS (`P16`).
+* **Wave 1 (Sprint 1–6 - 100% GA Geliefert ✅ - 913 Tests Green):**
+  * `F-DOC-01`: Omnichannel Documentation Passthrough (GQL, MCP, Swagger, OData CSDL).
+  * `F-DBT-1`: dbt Data Health Circuit Breaker & Quarantäne (`run_results.json`).
+  * `F-DBT-2`: dbt Model Contract CI Gate & Breaking Change Linter.
+  * `F-DBT-3`: Live Telemetry-Driven Exposures (`ITelemetryMetricsProvider`).
+  * `F-DBT-4`: dbt Cloud & Orchestrator HMAC-SHA256 Webhook Receiver.
+  * `F-DBT-6`: Policy & RLS Auto-Sync aus dbt Metadaten mit 4-Augen-Proposals.
+  * `F-API-03`: Dynamic OData OpenAPI 3.1 & Swagger UI Explorer (`/odata/v4/$openapi`, `/docs`).
+  * `F-API-04`: Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion (`IOpenApiIngestionService`).
+  * `F-AI-02`: Semantic MCP Schema Compiler (dbt & OpenMetadata Ingestion in Tools & Resources).
+  * `F-AI-04`: Pre-Flight Query Cost & Token Guard (`simulate_query`).
+  * `F-AI-06`: Provenance & Lineage Footnoting (`_provenance` Footnotes).
+* **Wave 2 (Sprint 7–12 - Nächste Umsetzungsphase):**
+  * `F-AI-03`: Dynamic Few-Shot "Golden Query" Injection (Audit Replay).
+  * `F-AI-05`: Human-in-the-Loop Step-Up Approval via MCP (4-Augen).
+  * `F-AI-07`: Vector-Indexed Dynamic Tool Pruning (Scalable Catalog).
+  * `F-DBT-5`: dbt Semantic Layer & MetricFlow Auto-Mapping.
+  * `P13`: Data Contract & FinOps Chargeback Engine.
+  * `P14`: Zero-Trust Lakehouse Arrow Flight Governor.
+  * `P15`: Confidential Compute Enclave Support (SGX/SEV).
+  * `P16`: Post-Quantum Cryptography Hybrid TLS (ML-KEM / PQC).
+  * `F-DBT-7`: dbt Mesh Multi-Project Cross-Model Federation.
 
 

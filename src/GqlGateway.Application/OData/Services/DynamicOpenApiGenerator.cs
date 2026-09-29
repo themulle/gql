@@ -91,15 +91,22 @@ public sealed class DynamicOpenApiGenerator : IDynamicOpenApiGenerator
             var schemaName = FormatSchemaName(table.Identifier);
 
             // 1. Build Entity Schema
-            var entityDesc = !string.IsNullOrWhiteSpace(table.Table.DisplayName)
-                ? table.Table.DisplayName
-                : $"Entity model for {domain}.{schema}.{tableName}";
+            var entityDesc = !string.IsNullOrWhiteSpace(table.Table.Description)
+                ? table.Table.Description
+                : (!string.IsNullOrWhiteSpace(table.Table.DisplayName)
+                    ? table.Table.DisplayName
+                    : $"Entity model for {domain}.{schema}.{tableName}");
 
             var entitySchema = new JsonObject
             {
                 ["type"] = "object",
                 ["description"] = entityDesc
             };
+
+            if (!string.IsNullOrWhiteSpace(table.Table.LongDescription))
+            {
+                entitySchema["x-long-description"] = table.Table.LongDescription;
+            }
 
             var properties = new JsonObject();
             var requiredCols = new JsonArray();
@@ -268,6 +275,26 @@ public sealed class DynamicOpenApiGenerator : IDynamicOpenApiGenerator
             default:
                 node["type"] = "string";
                 break;
+        }
+
+        if (!string.IsNullOrWhiteSpace(col.Description))
+        {
+            node["description"] = col.Description;
+        }
+
+        if (!string.IsNullOrWhiteSpace(col.LongDescription))
+        {
+            node["x-long-description"] = col.LongDescription;
+        }
+
+        if (col.Meta != null && col.Meta.Count > 0)
+        {
+            var metaObj = new JsonObject();
+            foreach (var kvp in col.Meta)
+            {
+                metaObj[kvp.Key] = JsonValue.Create(kvp.Value);
+            }
+            node["x-dbt-meta"] = metaObj;
         }
 
         if (col.IsSensitive)

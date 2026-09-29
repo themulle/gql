@@ -19,12 +19,18 @@ public sealed class DynamicTableType : ObjectType
     protected override void Configure(IObjectTypeDescriptor descriptor)
     {
         descriptor.Name($"{_metadata.Identifier.Domain}_{_metadata.Identifier.TableName}");
-        descriptor.Description(_metadata.Table.DisplayName);
+        descriptor.Description(!string.IsNullOrWhiteSpace(_metadata.Table.Description) ? _metadata.Table.Description : _metadata.Table.DisplayName);
 
         foreach (var col in _metadata.Columns)
         {
             var fieldDesc = descriptor.Field(col.ColumnName);
             ConfigureType(fieldDesc, col.DataType);
+
+            var colDesc = FormatColumnMarkdownDescription(col);
+            if (!string.IsNullOrWhiteSpace(colDesc))
+            {
+                fieldDesc.Description(colDesc);
+            }
 
             fieldDesc.Resolve(ctx =>
             {
@@ -103,5 +109,35 @@ public sealed class DynamicTableType : ObjectType
         {
             field.Type<StringType>();
         }
+    }
+
+    private static string? FormatColumnMarkdownDescription(TableColumn col)
+    {
+        var hasDesc = !string.IsNullOrWhiteSpace(col.Description);
+        var longDesc = !string.IsNullOrWhiteSpace(col.LongDescription)
+            ? col.LongDescription
+            : (col.Meta != null && col.Meta.TryGetValue("long_description", out var ld) && !string.IsNullOrWhiteSpace(ld)
+                ? ld
+                : (col.Meta != null && col.Meta.TryGetValue("specification", out var spec) && !string.IsNullOrWhiteSpace(spec)
+                    ? spec
+                    : null));
+        var hasLongDesc = !string.IsNullOrWhiteSpace(longDesc);
+
+        if (hasDesc && hasLongDesc)
+        {
+            return $"{col.Description}\n\n---\n**Ausführliche Spezifikation:**\n{longDesc}";
+        }
+
+        if (hasDesc)
+        {
+            return col.Description;
+        }
+
+        if (hasLongDesc)
+        {
+            return longDesc;
+        }
+
+        return null;
     }
 }

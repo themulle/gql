@@ -27,6 +27,7 @@ public sealed class GatewayOptions
     [Required] public FederationOptions Federation { get; init; } = new();
     [Required] public ExtensibilityOptions Extensibility { get; init; } = new();
     [Required] public CasbinOptions Casbin { get; init; } = new();
+    [Required] public DbtOptions Dbt { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -651,6 +652,13 @@ public sealed class CasbinOptions
     public bool EnforceInQueryPipeline { get; init; } = true;
     public string? ModelPath { get; init; }
     public string? PolicyPath { get; init; }
+}
+
+public sealed class DbtOptions
+{
+    public bool Enabled { get; init; } = true;
+    public string WebhookSecret { get; init; } = string.Empty;
+    public bool danger_bypass_webhook_signature_validation { get; init; } = false;
 }
 
 

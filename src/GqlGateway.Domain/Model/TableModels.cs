@@ -22,6 +22,8 @@ public sealed class Table
     public string SchemaName { get; init; } = string.Empty;
     public string TableName { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
+    public string? Description { get; init; }
+    public string? LongDescription { get; init; }
     public string Sensitivity { get; init; } = "NORMAL";
     public bool RequiresFourEyes { get; init; }
     public bool IsActive { get; init; } = true;
@@ -46,6 +48,9 @@ public sealed class TableColumn
     public string ColumnName { get; init; } = string.Empty;
     public string DataType { get; init; } = "varchar";
     public bool IsSensitive { get; init; }
+    public string? Description { get; init; }
+    public string? LongDescription { get; init; }
+    public IReadOnlyDictionary<string, string> Meta { get; init; } = new Dictionary<string, string>();
 }
 
 public sealed class MaskingRule

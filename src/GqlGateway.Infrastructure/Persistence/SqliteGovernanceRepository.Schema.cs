@@ -24,6 +24,8 @@ public partial class SqliteGovernanceRepository
                 schema_name TEXT NOT NULL,
                 table_name TEXT NOT NULL,
                 display_name TEXT NOT NULL,
+                description TEXT,
+                long_description TEXT,
                 sensitivity TEXT NOT NULL,
                 requires_four_eyes INTEGER NOT NULL,
                 is_active INTEGER NOT NULL,
@@ -37,7 +39,10 @@ public partial class SqliteGovernanceRepository
                 table_id TEXT NOT NULL,
                 column_name TEXT NOT NULL,
                 data_type TEXT NOT NULL,
-                is_sensitive INTEGER NOT NULL
+                is_sensitive INTEGER NOT NULL,
+                description TEXT,
+                long_description TEXT,
+                meta_json TEXT
             );
 
             CREATE TABLE IF NOT EXISTS COLUMN_MASKING_RULES (
@@ -237,6 +242,7 @@ public partial class SqliteGovernanceRepository
 
         EnsureConsentRowFilterColumns();
         EnsureTableColumns();
+        EnsureTableColumnFields();
         EnsureConsentRequestColumns();
         EnsureConsentColumns();
 
@@ -326,7 +332,9 @@ public partial class SqliteGovernanceRepository
         string[] requiredCols = {
             "data_source_type INTEGER NOT NULL DEFAULT 0",
             "http_endpoint_json TEXT",
-            "plugin_name TEXT"
+            "plugin_name TEXT",
+            "description TEXT",
+            "long_description TEXT"
         };
 
         foreach (var colDef in requiredCols)
@@ -336,6 +344,37 @@ public partial class SqliteGovernanceRepository
             {
                 using var alterCmd = _connection.CreateCommand();
                 alterCmd.CommandText = $"ALTER TABLE TABLES ADD COLUMN {colDef};";
+                alterCmd.ExecuteNonQuery();
+            }
+        }
+    }
+
+    private void EnsureTableColumnFields()
+    {
+        var existingCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA table_info(TABLE_COLUMNS);";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                existingCols.Add(reader.GetString(1));
+            }
+        }
+
+        string[] requiredCols = {
+            "description TEXT",
+            "long_description TEXT",
+            "meta_json TEXT"
+        };
+
+        foreach (var colDef in requiredCols)
+        {
+            var colName = colDef.Split(' ')[0];
+            if (!existingCols.Contains(colName))
+            {
+                using var alterCmd = _connection.CreateCommand();
+                alterCmd.CommandText = $"ALTER TABLE TABLE_COLUMNS ADD COLUMN {colDef};";
                 alterCmd.ExecuteNonQuery();
             }
         }

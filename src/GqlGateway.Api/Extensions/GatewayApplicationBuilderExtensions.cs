@@ -791,6 +791,67 @@ public static class GatewayApplicationBuilderExtensions
             return Results.Ok(new { message = "All table health states reset to healthy." });
         }).RequireAuthorization();
 
+        // F-DBT-4: dbt Cloud & Orchestrator HMAC Webhook Receiver
+        app.MapPost("/api/extensions/dbt/webhooks/dbt-cloud", async (
+            HttpContext context,
+            IDbtWebhookReceiver webhookReceiver) =>
+        {
+            if (context.Request.ContentLength > 10 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "Webhook payload exceeds maximum allowed size (10 MB)." });
+            }
+
+            using var reader = new StreamReader(context.Request.Body, System.Text.Encoding.UTF8);
+            var payload = await reader.ReadToEndAsync(context.RequestAborted);
+
+            string? signatureHeader = null;
+            if (context.Request.Headers.TryGetValue("X-Dbt-Signature", out var dbtSig))
+            {
+                signatureHeader = dbtSig.ToString();
+            }
+            else if (context.Request.Headers.TryGetValue("X-Hub-Signature-256", out var hubSig))
+            {
+                signatureHeader = hubSig.ToString();
+            }
+
+            var result = await webhookReceiver.ProcessWebhookAsync(payload, signatureHeader, context.RequestAborted);
+            if (!result.Success)
+            {
+                return Results.Json(result, statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            return Results.Ok(result);
+        }).AllowAnonymous();
+
+        // F-API-04: Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion
+        app.MapPost("/api/governance/catalog/ingest-openapi", async (
+            HttpContext context,
+            IOpenApiIngestionService ingestionService) =>
+        {
+            if (context.Request.ContentLength > 20 * 1024 * 1024)
+            {
+                return Results.BadRequest(new { error = "OpenAPI specification exceeds maximum allowed size (20 MB)." });
+            }
+
+            var domain = context.Request.Query.TryGetValue("domain", out var dVal) && !string.IsNullOrWhiteSpace(dVal)
+                ? dVal.ToString()
+                : "external";
+            var baseUrl = context.Request.Query.TryGetValue("baseUrl", out var bVal) && !string.IsNullOrWhiteSpace(bVal)
+                ? bVal.ToString()
+                : null;
+
+            using var reader = new StreamReader(context.Request.Body, System.Text.Encoding.UTF8);
+            var json = await reader.ReadToEndAsync(context.RequestAborted);
+
+            var result = await ingestionService.IngestOpenApiJsonAsync(json, domain, baseUrl, context.RequestAborted);
+            if (!result.Success)
+            {
+                return Results.BadRequest(result);
+            }
+
+            return Results.Ok(result);
+        }).RequireAuthorization();
+
 
         // P10: Multi-Tenant Policy Simulation Sandbox ("What-If" Replay via Audit Logs)
         app.MapPost("/api/governance/policy-simulation/replay", async (

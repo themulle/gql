@@ -21,6 +21,7 @@ public sealed class SemanticMcpCompiler(
 {
     private readonly ITableMetadataRepository _metadataRepo = metadataRepo ?? throw new ArgumentNullException(nameof(metadataRepo));
     private readonly ILogger<SemanticMcpCompiler> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private static readonly JsonSerializerOptions CachedIndentedOptions = new() { WriteIndented = true };
 
     public async Task<McpToolDefinition> CompileToolAsync(
         string toolName,
@@ -28,7 +29,9 @@ public sealed class SemanticMcpCompiler(
         CancellationToken ct = default)
     {
         var meta = await _metadataRepo.GetTableMetadataAsync(targetTable, ct).ConfigureAwait(false);
-        var tableDesc = meta?.Table.DisplayName ?? $"Dataset for {targetTable.Domain}.{targetTable.TableName}";
+        var tableDesc = !string.IsNullOrWhiteSpace(meta?.Table.Description)
+            ? meta.Table.Description
+            : (meta?.Table.DisplayName ?? $"Dataset for {targetTable.Domain}.{targetTable.TableName}");
 
         // Enforce Dynamic Compactor constraint: Short description < 120 chars for LLM Tool Picker
         var shortDesc = tableDesc.Length > 110 ? tableDesc[..107] + "..." : tableDesc;
@@ -38,15 +41,43 @@ public sealed class SemanticMcpCompiler(
             shortDesc = shortDesc[..117] + "...";
         }
 
+        var properties = new Dictionary<string, object>
+        {
+            ["first"] = new { type = "integer", description = "Max rows to return (default 10, max 1000)." },
+            ["offset"] = new { type = "integer", description = "Offset for pagination." },
+            ["filter"] = new { type = "string", description = "Zero-Trust filter expression." }
+        };
+
+        if (meta?.Columns != null && meta.Columns.Count > 0)
+        {
+            var colDict = new Dictionary<string, object>();
+            foreach (var col in meta.Columns)
+            {
+                var desc = !string.IsNullOrWhiteSpace(col.Description)
+                    ? col.Description
+                    : $"Column {col.ColumnName} ({col.DataType})";
+                if (desc.Length > 120)
+                {
+                    desc = desc[..117] + "...";
+                }
+                colDict[col.ColumnName] = new
+                {
+                    type = MapDataTypeToJsonType(col.DataType),
+                    description = desc
+                };
+            }
+            properties["columns"] = new
+            {
+                type = "object",
+                description = "Available columns for projection and filtering with business descriptions.",
+                properties = colDict
+            };
+        }
+
         var inputSchemaObj = new
         {
             type = "object",
-            properties = new Dictionary<string, object>
-            {
-                ["first"] = new { type = "integer", description = "Max rows to return (default 10, max 1000)." },
-                ["offset"] = new { type = "integer", description = "Offset for pagination." },
-                ["filter"] = new { type = "string", description = "Zero-Trust filter expression." }
-            }
+            properties = properties
         };
 
         var inputJsonSchema = JsonSerializer.Serialize(inputSchemaObj);
@@ -79,11 +110,17 @@ public sealed class SemanticMcpCompiler(
 
             // 1. Glossary Resource
             var glossaryText = $"# Business Glossary: {domain}.{table}\n\n" +
+                               (!string.IsNullOrWhiteSpace(t.Table.Description) ? $"**Description**: {t.Table.Description}\n\n" : "") +
                                $"* **Domain**: {domain}\n" +
                                $"* **Table**: {table}\n" +
                                $"* **Sensitivity**: {t.Table.Sensitivity}\n" +
                                $"* **Columns**:\n" +
-                               string.Join("\n", t.Columns.Select(c => $"  - `{c.ColumnName}` ({c.DataType}){(c.IsSensitive ? " [SENSITIVE/MASKED]" : "")}"));
+                               string.Join("\n", t.Columns.Select(c =>
+                               {
+                                   var sensitivityTag = c.IsSensitive ? " [SENSITIVE/MASKED]" : "";
+                                   var descTag = !string.IsNullOrWhiteSpace(c.Description) ? $": {c.Description}" : "";
+                                   return $"  - `{c.ColumnName}` ({c.DataType}){sensitivityTag}{descTag}";
+                               }));
 
             resources.Add(new McpResourceItem(
                 Uri: $"glossary://{domain}/{table}",
@@ -107,8 +144,70 @@ public sealed class SemanticMcpCompiler(
                 MimeType: "text/markdown",
                 Text: lineageText
             ));
+
+            // 3. Column-level Docs Resources on Demand
+            foreach (var col in t.Columns)
+            {
+                var hasDesc = !string.IsNullOrWhiteSpace(col.Description);
+                var hasLongDesc = !string.IsNullOrWhiteSpace(col.LongDescription);
+                var hasMeta = col.Meta != null && col.Meta.Count > 0;
+
+                if (hasDesc || hasLongDesc || hasMeta)
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine($"# Column Documentation: {table}.{col.ColumnName}");
+                    sb.AppendLine();
+                    sb.AppendLine($"* **Domain**: {domain}");
+                    sb.AppendLine($"* **Table**: {table}");
+                    sb.AppendLine($"* **Column**: `{col.ColumnName}`");
+                    sb.AppendLine($"* **Data Type**: `{col.DataType}`");
+                    sb.AppendLine($"* **Sensitivity**: {(col.IsSensitive ? "Sensitive/Masked" : "Standard")}");
+                    sb.AppendLine();
+
+                    if (hasDesc)
+                    {
+                        sb.AppendLine("## Description");
+                        sb.AppendLine(col.Description);
+                        sb.AppendLine();
+                    }
+
+                    if (hasLongDesc)
+                    {
+                        sb.AppendLine("## Detailed Specification");
+                        sb.AppendLine(col.LongDescription);
+                        sb.AppendLine();
+                    }
+
+                    if (hasMeta)
+                    {
+                        sb.AppendLine("## dbt / OpenMetadata Meta");
+                        sb.AppendLine("```json");
+                        sb.AppendLine(JsonSerializer.Serialize(col.Meta, CachedIndentedOptions));
+                        sb.AppendLine("```");
+                        sb.AppendLine();
+                    }
+
+                    resources.Add(new McpResourceItem(
+                        Uri: $"dbt://models/{table}/columns/{col.ColumnName}/docs",
+                        Name: $"{table}_{col.ColumnName}_docs",
+                        Description: $"Documentation and metadata for {table}.{col.ColumnName}",
+                        MimeType: "text/markdown",
+                        Text: sb.ToString().TrimEnd()
+                    ));
+                }
+            }
         }
 
         return resources;
+    }
+
+    private static string MapDataTypeToJsonType(string? dataType)
+    {
+        if (string.IsNullOrWhiteSpace(dataType)) return "string";
+        var dt = dataType.Trim().ToLowerInvariant();
+        if (dt.Contains("int") || dt.Contains("long") || dt.Contains("serial")) return "integer";
+        if (dt.Contains("float") || dt.Contains("double") || dt.Contains("decimal") || dt.Contains("numeric") || dt.Contains("money")) return "number";
+        if (dt.Contains("bool")) return "boolean";
+        return "string";
     }
 }
