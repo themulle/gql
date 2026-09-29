@@ -722,12 +722,6 @@ public static class GatewayServiceCollectionExtensions
                     maxAllowedCost: maxCost,
                     maxResponseRows: gatewayOptions.GraphQL.MaxResponseRows,
                     onQueryTooComplex: () => GatewayDiagnostics.QueryTooComplexCounter.Add(1)))
-            .ModifyCostOptions(opt =>
-            {
-                opt.MaxFieldCost = maxCost;
-                opt.MaxTypeCost = maxCost;
-                opt.EnforceCostLimits = true;
-            })
             .ModifyRequestOptions(opt =>
             {
                 opt.ExecutionTimeout = TimeSpan.FromSeconds(gatewayOptions.HighAvailability.QueryTimeoutSeconds);
