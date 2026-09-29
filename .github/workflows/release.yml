@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release Tag (z. B. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Release Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout gql
+        uses: actions/checkout@v4
+
+      - name: Checkout gql_extensions
+        uses: actions/checkout@v4
+        with:
+          repository: themulle/gql_extensions
+          path: gql_extensions_tmp
+
+      - name: Setup sibling directory layout
+        run: |
+          mkdir -p ../gql_extensions
+          cp -r gql_extensions_tmp/* ../gql_extensions/
+          rm -rf gql_extensions_tmp
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build and Package Binaries
+        run: |
+          mkdir -p dist
+          mkdir -p artifacts
+
+          # Targets: RID:ArchiveType:BinaryName
+          TARGETS=(
+            "linux-x64:tar:GqlGateway.Api"
+            "linux-arm64:tar:GqlGateway.Api"
+            "win-x64:zip:GqlGateway.Api.exe"
+            "osx-arm64:tar:GqlGateway.Api"
+          )
+
+          for TARGET in "${TARGETS[@]}"; do
+            IFS=":" read -r RID ARCHIVE BINARY <<< "$TARGET"
+            echo "==> Building for $RID..."
+            OUT_DIR="dist/$RID"
+
+            dotnet publish src/GqlGateway.Api/GqlGateway.Api.csproj \
+              -c Release \
+              -r "$RID" \
+              --self-contained true \
+              -p:PublishSingleFile=true \
+              -o "$OUT_DIR"
+
+            ARCHIVE_NAME="GqlGateway-${RID}"
+            if [ "$ARCHIVE" = "zip" ]; then
+              (cd "$OUT_DIR" && zip -r "../../artifacts/${ARCHIVE_NAME}.zip" .)
+            else
+              tar -czvf "artifacts/${ARCHIVE_NAME}.tar.gz" -C "$OUT_DIR" .
+            fi
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: artifacts/*
+          generate_release_notes: true

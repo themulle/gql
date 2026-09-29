@@ -164,11 +164,39 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             _ = _sessionStore.SendEventAsync(sessionContext.SessionId, "message", progressData);
         }
 
+        // Resolve real TargetTable for ABAC policy and Four-Eyes checks
+        var resolvedTable = ParseTableIdentifierFromTool(tool, request.ArgumentsJson);
+
+        // Security Hardening: For data access tools, target table must be resolvable.
+        // If unresolvable, fail-closed to prevent bypassing Casbin ABAC and Four-Eyes gates.
+        if (resolvedTable == null && (tool.Name.StartsWith("query_", StringComparison.OrdinalIgnoreCase) || !string.IsNullOrWhiteSpace(tool.TargetGraphQLOperation)))
+        {
+            activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+            McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, false, false);
+
+            _logger.LogWarning("Zero-Trust Fail-Closed: Could not determine target table for MCP tool '{ToolName}'. Denying automated AI agent execution.", tool.Name);
+
+            await RecordAuditEventAsync(
+                tool.Name,
+                sessionContext,
+                decision: "DENY",
+                details: "Unresolvable target table for data access tool (fail-closed).",
+                isMasked: false,
+                truncated: false,
+                estimatedTokens: 0,
+                cancellationToken).ConfigureAwait(false);
+
+            return new McpToolCallResult(
+                IsSuccess: false,
+                ContentJson: "{}",
+                ErrorMessage: $"Access denied to tool '{tool.Name}': target data table could not be resolved (fail-closed)."
+            );
+        }
+
         // 2. Pre-Execution Policy Check: Casbin ABAC Enforcement
         if (_policyEnforcementService != null && !_options.Value.IsMcpAuthBypassed)
         {
-            var targetTable = ParseTableIdentifierFromTool(tool);
-            var effectiveTable = targetTable ?? new TableIdentifier("mcp", "tool", tool.Name.ToLowerInvariant());
+            var effectiveTable = resolvedTable ?? new TableIdentifier("mcp", "tool", tool.Name.ToLowerInvariant());
 
             var userSidStr = !string.IsNullOrWhiteSpace(sessionContext.UserSid)
                 ? sessionContext.UserSid
@@ -222,7 +250,6 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         }
 
         // 3. Four-Eyes Justification Gate
-        var resolvedTable = ParseTableIdentifierFromTool(tool);
         if (resolvedTable != null && _tableMetadataRepository != null)
         {
             var meta = await _tableMetadataRepository.GetTableMetadataAsync(resolvedTable.Value, cancellationToken).ConfigureAwait(false);
@@ -339,10 +366,16 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
         try
         {
+            var actorSid = !string.IsNullOrWhiteSpace(sessionContext.UserSid)
+                ? new Sid(sessionContext.UserSid)
+                : new Sid(sessionContext.ServicePrincipalId);
+            var tenantId = TenantId.TryParse(sessionContext.TenantId, out var tid) ? tid : TenantId.LegacySingleTenant;
+
             var entry = new AuditLogEntry
             {
+                TenantId = tenantId,
                 EventType = "MCP_TOOL_EXECUTION",
-                ActorSid = new Sid(sessionContext.ServicePrincipalId),
+                ActorSid = actorSid,
                 TargetTable = toolName,
                 Decision = decision,
                 TraceId = sessionContext.SessionId,
@@ -371,7 +404,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         }
     }
 
-    private static TableIdentifier? ParseTableIdentifierFromTool(McpToolDefinition tool)
+    private static TableIdentifier? ParseTableIdentifierFromTool(McpToolDefinition tool, string? argumentsJson = null)
     {
         if (tool.TargetTable != null)
             return tool.TargetTable;
@@ -382,6 +415,22 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             return new TableIdentifier("finance", "dbo", "invoices");
         if (tool.Name.Equals("query_data_catalog", StringComparison.OrdinalIgnoreCase))
             return new TableIdentifier("governance", "catalog", "assets");
+
+        if (tool.Name.Equals("simulate_query", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(argumentsJson))
+            {
+                var m = Regex.Match(argumentsJson, @"table\s*\\?\(\s*domain:\s*\\*""([^""\\]+)\\*""\s*,\s*(?:schema:\s*\\*""([^""\\]+)\\*""\s*,\s*)?name:\s*\\*""([^""\\]+)\\*""", RegexOptions.IgnoreCase, DefaultRegexTimeout);
+                if (m.Success)
+                {
+                    var d = m.Groups[1].Value;
+                    var s = m.Groups[2].Success ? m.Groups[2].Value : "dbo";
+                    var n = m.Groups[3].Value;
+                    return new TableIdentifier(d, s, n);
+                }
+            }
+            return new TableIdentifier("governance", "simulator", "ast");
+        }
 
         if (!string.IsNullOrWhiteSpace(tool.TargetGraphQLOperation))
         {

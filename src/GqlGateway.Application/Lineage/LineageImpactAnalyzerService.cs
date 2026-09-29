@@ -237,6 +237,7 @@ public sealed class LineageImpactAnalyzerService : ILineageImpactAnalyzerService
                 targetTable: rootTableId,
                 since: since,
                 limit: 5000,
+                tenantId: callerContext?.TenantId,
                 ct: ct).ConfigureAwait(false);
 
             var allowedEntries = auditEntries
@@ -366,6 +367,7 @@ public sealed class LineageImpactAnalyzerService : ILineageImpactAnalyzerService
                 actorSid: subjectSid,
                 since: since,
                 limit: 5000,
+                tenantId: callerContext?.TenantId,
                 ct: ct).ConfigureAwait(false)
             : Array.Empty<AuditLogEntry>();
 

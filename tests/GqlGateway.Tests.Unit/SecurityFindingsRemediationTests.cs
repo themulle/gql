@@ -828,6 +828,57 @@ public class SecurityFindingsRemediationTests
         ex.Message.ShouldContain("enthält nicht erlaubte Zeichen");
     }
 
+    [Fact]
+    public void ValidateGatewayOptions_SeedDemoData_InProduction_ThrowsValidationException()
+    {
+        var options = new GatewayOptions
+        {
+            GovernanceDb = new GovernanceDbOptions
+            {
+                SeedDemoData = true
+            }
+        };
+
+        var env = Substitute.For<IHostEnvironment>();
+        env.EnvironmentName.Returns("Production");
+
+        var ex = Should.Throw<ValidationException>(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, env));
+        ex.Message.ShouldContain("SeedDemoData");
+    }
+
+    [Fact]
+    public void SqliteGovernanceRepository_FileDatabase_WithoutDevEnvironment_ThrowsInvalidOperationException()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"sec_test_{Guid.NewGuid():N}.db");
+        try
+        {
+            var options = Microsoft.Extensions.Options.Options.Create(new GatewayOptions
+            {
+                GovernanceDb = new GovernanceDbOptions
+                {
+                    ConnectionString = $"Data Source={tempFile}"
+                }
+            });
+
+            var epochMock = Substitute.For<IEpochValidationService>();
+            var env = Substitute.For<IHostEnvironment>();
+            env.EnvironmentName.Returns("Production");
+
+            // No secret provider and non-dev environment -> must throw InvalidOperationException
+            var ex = Should.Throw<InvalidOperationException>(() =>
+                new SqliteGovernanceRepository(epochMock, options, env, secretProvider: null));
+            ex.Message.ShouldContain("Audit HMAC secret is missing");
+        }
+        finally
+        {
+            if (File.Exists(tempFile))
+            {
+                File.Delete(tempFile);
+            }
+        }
+    }
+
     private sealed class TestPolicyEnforcementService : IPolicyEnforcementService
     {
         private readonly Func<SecurityEvaluationContext, TableAccessDecision> _decider;

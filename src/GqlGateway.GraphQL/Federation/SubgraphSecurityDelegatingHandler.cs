@@ -5,8 +5,11 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Federation.Interfaces;
+using GqlGateway.Application.Services;
+using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 /// <summary>
 /// HTTP DelegatingHandler attached to federated Subgraph HTTP clients.
@@ -18,23 +21,31 @@ public sealed class SubgraphSecurityDelegatingHandler : DelegatingHandler
     private readonly ISubgraphContextPropagationService _propagationService;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<SubgraphSecurityDelegatingHandler> _logger;
+    private readonly bool _isDev;
 
     public SubgraphSecurityDelegatingHandler(
         string subgraphName,
         ISubgraphContextPropagationService propagationService,
         IHttpContextAccessor httpContextAccessor,
-        ILogger<SubgraphSecurityDelegatingHandler> logger)
+        ILogger<SubgraphSecurityDelegatingHandler> logger,
+        IOptions<GatewayOptions>? options = null)
     {
         _subgraphName = subgraphName ?? throw new ArgumentNullException(nameof(subgraphName));
         _propagationService = propagationService ?? throw new ArgumentNullException(nameof(propagationService));
         _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _isDev = options?.Value.HasAnySecurityBypassActive == true;
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
+        if (request.RequestUri != null)
+        {
+            await DeclarativeHttpDataSourceExecutor.ValidateDestinationUrlAsync(request.RequestUri, _isDev, cancellationToken).ConfigureAwait(false);
+        }
+
         var httpContext = _httpContextAccessor.HttpContext;
         var principal = httpContext?.User;
 

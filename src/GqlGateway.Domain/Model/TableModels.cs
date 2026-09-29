@@ -24,6 +24,7 @@ public sealed class Table
     public string DisplayName { get; init; } = string.Empty;
     public string? Description { get; init; }
     public string? LongDescription { get; init; }
+    public string? DocumentationSource { get; init; }
     public string Sensitivity { get; init; } = "NORMAL";
     public bool RequiresFourEyes { get; init; }
     public bool IsActive { get; init; } = true;
@@ -50,6 +51,7 @@ public sealed class TableColumn
     public bool IsSensitive { get; init; }
     public string? Description { get; init; }
     public string? LongDescription { get; init; }
+    public string? DocumentationSource { get; init; }
     public IReadOnlyDictionary<string, string> Meta { get; init; } = new Dictionary<string, string>();
 }
 

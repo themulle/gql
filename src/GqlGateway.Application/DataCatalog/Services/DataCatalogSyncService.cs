@@ -88,7 +88,8 @@ public sealed class DataCatalogSyncService : IDataCatalogSyncService
                     ColumnName = col.ColumnName,
                     DataType = col.DataType,
                     IsSensitive = isSensitive,
-                    Description = col.Description
+                    Description = col.Description,
+                    DocumentationSource = "DataCatalog"
                 });
             }
 
@@ -102,6 +103,7 @@ public sealed class DataCatalogSyncService : IDataCatalogSyncService
                     TableName = tableAsset.Identifier.TableName,
                     DisplayName = tableAsset.DisplayName ?? tableAsset.Identifier.TableName,
                     Description = tableAsset.Description,
+                    DocumentationSource = "DataCatalog",
                     DataSourceType = DataSourceType.Sql,
                     SourceType = tableAsset.SourceType,
                     Sensitivity = isArt9 ? "HIGH" : "NORMAL",

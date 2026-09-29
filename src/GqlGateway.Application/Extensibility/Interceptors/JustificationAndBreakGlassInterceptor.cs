@@ -27,11 +27,11 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
 
     public int Order => 10;
 
-    public ValueTask<IngressResult> OnIngressAsync(IngressContext context, CancellationToken cancellationToken = default)
+    public async ValueTask<IngressResult> OnIngressAsync(IngressContext context, CancellationToken cancellationToken = default)
     {
         if (!_options.Extensibility.Enabled)
         {
-            return ValueTask.FromResult(IngressResult.Continue());
+            return IngressResult.Continue();
         }
 
         var extOptions = _options.Extensibility;
@@ -53,7 +53,7 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
             if (!extOptions.EnableBreakGlass)
             {
                 _logger.LogWarning("Break-glass access attempt rejected: Break-glass is disabled globally.");
-                return ValueTask.FromResult(IngressResult.Deny("Break-glass emergency bypass is disabled by gateway policy.", 403));
+                return IngressResult.Deny("Break-glass emergency bypass is disabled by gateway policy.", 403);
             }
 
             if (extOptions.RequireJustificationForBreakGlass)
@@ -69,10 +69,10 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
                         { "X-Challenge-Reason", "Valid enterprise ticket required (e.g., INC-12345, CHG-9876, SEC-001)" }
                     };
 
-                    return ValueTask.FromResult(IngressResult.Challenge(
+                    return IngressResult.Challenge(
                         "Break-glass emergency access requires a valid justification ticket (e.g., INC-12345, CHG-9876).",
                         412,
-                        challengeHeaders));
+                        challengeHeaders);
                 }
             }
 
@@ -95,7 +95,7 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
                         "Break-glass access denied: User '{User}' does not possess any authorized break-glass role ({Roles}).",
                         user.Identity?.Name ?? "Anonymous",
                         string.Join(", ", extOptions.BreakGlassAllowedRoles));
-                    return ValueTask.FromResult(IngressResult.Deny("User is not authorized to invoke emergency break-glass bypass.", 403));
+                    return IngressResult.Deny("User is not authorized to invoke emergency break-glass bypass.", 403);
                 }
             }
 
@@ -108,12 +108,14 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
             if (_governanceRepo != null)
             {
                 var userSid = context.User?.Identity?.Name ?? "Anonymous";
-                var tenantId = context.User?.FindFirst("tenant_id")?.Value ?? "default";
+                var tenantIdStr = context.User?.FindFirst("tenant_id")?.Value;
+                var tenantId = GqlGateway.Domain.Common.TenantId.TryParse(tenantIdStr, out var tid) ? tid : GqlGateway.Domain.Common.TenantId.LegacySingleTenant;
                 var clientIp = context.GetHeader("X-Forwarded-For") ?? "unknown";
                 var auditEntry = new GqlGateway.Domain.Model.AuditLogEntry
                 {
                     Id = Guid.NewGuid(),
                     OccurredAt = DateTimeOffset.UtcNow,
+                    TenantId = tenantId,
                     EventType = "BREAK_GLASS_ACTIVATED",
                     ActorSid = new GqlGateway.Domain.Common.Sid(userSid),
                     TargetTable = "GATEWAY_INGRESS",
@@ -121,7 +123,7 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
                     TraceId = Guid.NewGuid().ToString("N"),
                     DetailsJson = System.Text.Json.JsonSerializer.Serialize(new
                     {
-                        tenantId,
+                        tenantId = tenantId.Value,
                         clientIp,
                         action = "BREAK_GLASS",
                         resource = "GATEWAY_INGRESS",
@@ -129,10 +131,19 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
                         breakGlassActive = true
                     })
                 };
-                _ = _governanceRepo.RecordAuditEventAsync(auditEntry, cancellationToken);
+
+                try
+                {
+                    await _governanceRepo.RecordAuditEventAsync(auditEntry, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to record break-glass audit event. Aborting emergency break-glass bypass (fail-closed).");
+                    return IngressResult.Deny("Audit recording failed during emergency break-glass invocation. Access denied (fail-closed).", 500);
+                }
             }
         }
 
-        return ValueTask.FromResult(IngressResult.Continue());
+        return IngressResult.Continue();
     }
 }

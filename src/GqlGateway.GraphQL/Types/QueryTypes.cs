@@ -41,6 +41,8 @@ public sealed class Query
         var (rows, decision) = await executionService.ExecuteTableQueryAsync(
             principal, tableId, first, after, queryArguments: null, requestedFields: null, requestHeaders: headers, ct: ct);
 
+        PropagateCdnCacheFlags(httpContext, decision);
+
         var jsonList = rows.Select(r => JsonSerializer.Serialize(r)).ToList();
         return new TableRecordPayload
         {
@@ -48,6 +50,19 @@ public sealed class Query
             TotalCount = jsonList.Count,
             JsonRows = jsonList
         };
+    }
+
+    internal static void PropagateCdnCacheFlags(HttpContext? httpContext, TableAccessDecision decision)
+    {
+        if (httpContext == null) return;
+        if (!string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
+        {
+            httpContext.Items["RlsApplied"] = true;
+        }
+        if (decision.ColumnAccess.Values.Any(v => v == ColumnAccessLevel.Mask))
+        {
+            httpContext.Items["MaskingApplied"] = true;
+        }
     }
 
     public FinanceQuery GetFinance() => new();
@@ -316,6 +331,7 @@ public sealed class FinanceQuery
 
         var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
         var (rows, decision) = await executionService.ExecuteTableQueryAsync(principal, tableId, first, after, ct);
+        Query.PropagateCdnCacheFlags(httpContextAccessor?.HttpContext, decision);
 
         var jsonList = rows.Select(r => JsonSerializer.Serialize(r)).ToList();
         return new TableRecordPayload
@@ -342,7 +358,8 @@ public sealed class FinanceQuery
         }
 
         var parentTableId = new TableIdentifier("finance", "dbo", "finance_table_1");
-        var (rows, _) = await executionService.ExecuteTableQueryAsync(principal, parentTableId, first, 0, ct);
+        var (rows, decision) = await executionService.ExecuteTableQueryAsync(principal, parentTableId, first, 0, ct);
+        Query.PropagateCdnCacheFlags(httpContextAccessor?.HttpContext, decision);
 
         List<InvoiceRecord> invoices = [];
         foreach (var r in rows)
@@ -379,6 +396,7 @@ public sealed class HrQuery
 
         var tableId = new TableIdentifier("hr", "dbo", "hr_table_1");
         var (rows, decision) = await executionService.ExecuteTableQueryAsync(principal, tableId, first, after, ct);
+        Query.PropagateCdnCacheFlags(httpContextAccessor?.HttpContext, decision);
 
         var jsonList = rows.Select(r => JsonSerializer.Serialize(r)).ToList();
         return new TableRecordPayload

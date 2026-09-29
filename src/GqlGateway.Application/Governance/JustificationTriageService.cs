@@ -56,6 +56,7 @@ public sealed class JustificationTriageService : IJustificationTriageService
 
             await _auditRepo.RecordAuditEventAsync(new AuditLogEntry
             {
+                TenantId = tenant,
                 EventType = "JUSTIFICATION_SECURITY_ALERT",
                 ActorSid = userSid,
                 TargetTable = table.ToString(),
@@ -74,6 +75,7 @@ public sealed class JustificationTriageService : IJustificationTriageService
         {
             await _auditRepo.RecordAuditEventAsync(new AuditLogEntry
             {
+                TenantId = tenant,
                 EventType = "AUTO_GRANT_LOW_SENSITIVITY",
                 ActorSid = userSid,
                 TargetTable = table.ToString(),

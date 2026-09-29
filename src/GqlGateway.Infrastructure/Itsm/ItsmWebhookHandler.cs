@@ -285,9 +285,7 @@ public sealed class ItsmWebhookHandler(
                         {
                             action = "REJECT";
                         }
-                        else if (stateStr == "3" ||
-                                 string.Equals(stateStr, "approved", StringComparison.OrdinalIgnoreCase) ||
-                                 string.Equals(stateStr, "closed_complete", StringComparison.OrdinalIgnoreCase))
+                        else if (string.Equals(stateStr, "approved", StringComparison.OrdinalIgnoreCase))
                         {
                             action = "APPROVE";
                         }
@@ -322,30 +320,38 @@ public sealed class ItsmWebhookHandler(
 
                 if (issueProp.TryGetProperty("fields", out var fieldsProp))
                 {
+                    string? resolutionName = null;
+                    if (fieldsProp.TryGetProperty("resolution", out var resProp) &&
+                        resProp.TryGetProperty("name", out var resNameProp))
+                    {
+                        resolutionName = resNameProp.GetString();
+                        if (reason == null) reason = resolutionName;
+                    }
+
                     if (fieldsProp.TryGetProperty("status", out var statusProp) &&
                         statusProp.TryGetProperty("name", out var statusNameProp))
                     {
                         var statusName = statusNameProp.GetString() ?? string.Empty;
+                        bool isResolutionRejected = resolutionName != null &&
+                            (resolutionName.Contains("Won't", StringComparison.OrdinalIgnoreCase) ||
+                             resolutionName.Equals("Declined", StringComparison.OrdinalIgnoreCase) ||
+                             resolutionName.Equals("Cancelled", StringComparison.OrdinalIgnoreCase) ||
+                             resolutionName.Equals("Rejected", StringComparison.OrdinalIgnoreCase));
+
                         if (statusName.Equals("Rejected", StringComparison.OrdinalIgnoreCase) ||
                             statusName.Equals("Declined", StringComparison.OrdinalIgnoreCase) ||
                             statusName.Equals("Cancelled", StringComparison.OrdinalIgnoreCase) ||
-                            statusName.Contains("Won't", StringComparison.OrdinalIgnoreCase))
+                            statusName.Contains("Won't", StringComparison.OrdinalIgnoreCase) ||
+                            isResolutionRejected)
                         {
                             action = "REJECT";
                         }
                         else if (statusName.Equals("Approved", StringComparison.OrdinalIgnoreCase) ||
-                                 statusName.Equals("Done", StringComparison.OrdinalIgnoreCase) ||
-                                 statusName.Equals("Resolved", StringComparison.OrdinalIgnoreCase) ||
-                                 statusName.Equals("Authorized", StringComparison.OrdinalIgnoreCase))
+                                 statusName.Equals("Authorized", StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(resolutionName, "Approved", StringComparison.OrdinalIgnoreCase))
                         {
                             action = "APPROVE";
                         }
-                    }
-
-                    if (reason == null && fieldsProp.TryGetProperty("resolution", out var resProp) &&
-                        resProp.TryGetProperty("name", out var resNameProp))
-                    {
-                        reason = resNameProp.GetString();
                     }
                 }
 

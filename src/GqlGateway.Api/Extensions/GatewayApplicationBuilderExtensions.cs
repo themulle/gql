@@ -202,7 +202,7 @@ public static class GatewayApplicationBuilderExtensions
 
     public static WebApplication MapGatewayEndpoints(this WebApplication app, GatewayOptions gatewayOptions)
     {
-        app.MapMetrics();
+        app.MapMetrics().RequireAuthorization();
         app.MapGet("/health/live", () =>
         {
             if (app.Environment.IsDevelopment())
@@ -479,6 +479,15 @@ public static class GatewayApplicationBuilderExtensions
                 signature = sigHeader.FirstOrDefault();
             }
 
+            if (string.IsNullOrWhiteSpace(signature))
+            {
+                if (!opts.IsWebhookSignatureBypassed)
+                {
+                    return Results.Unauthorized();
+                }
+                signature = "bypassed";
+            }
+
             DateTimeOffset? timestamp = null;
             if (context.Request.Headers.TryGetValue("X-Catalog-Timestamp", out var tsHeader) ||
                 context.Request.Headers.TryGetValue("X-Timestamp", out tsHeader))
@@ -546,6 +555,16 @@ public static class GatewayApplicationBuilderExtensions
                 context.Request.Headers.TryGetValue("X-Hub-Signature-256", out sigHeader))
             {
                 signature = sigHeader.FirstOrDefault();
+            }
+
+            var opts = options.Value;
+            if (string.IsNullOrWhiteSpace(signature))
+            {
+                if (!opts.IsWebhookSignatureBypassed)
+                {
+                    return Results.Unauthorized();
+                }
+                signature = "bypassed";
             }
 
             DateTimeOffset? timestamp = null;
@@ -657,6 +676,14 @@ public static class GatewayApplicationBuilderExtensions
             IDbtExposurePublisher exposurePublisher,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var yaml = await exposurePublisher.GenerateExposuresYamlAsync(context.RequestAborted);
             return Results.Content(yaml, "text/yaml; charset=utf-8");
         }).RequireAuthorization();
@@ -665,6 +692,14 @@ public static class GatewayApplicationBuilderExtensions
             IDbtMetadataIngestionService dbtService,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             TableIdentifier? table = null;
             if (context.Request.Query.TryGetValue("database", out var db) &&
                 context.Request.Query.TryGetValue("schema", out var schema) &&
@@ -881,6 +916,14 @@ public static class GatewayApplicationBuilderExtensions
             IPolicySimulationService simulationService,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var result = await simulationService.SimulateAsync(request, context.RequestAborted);
             return Results.Ok(result);
         }).RequireAuthorization();
@@ -891,6 +934,15 @@ public static class GatewayApplicationBuilderExtensions
             ISchemaSunsettingService sunsettingService,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("SchemaAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var rules = await sunsettingService.GetRulesAsync(context.RequestAborted);
             return Results.Ok(rules);
         }).RequireAuthorization();
@@ -917,6 +969,16 @@ public static class GatewayApplicationBuilderExtensions
             ISchemaSunsettingService sunsettingService,
             HttpContext context) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("SchemaAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner") ||
+                               context.User.IsInRole("Developer");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var evaluation = await sunsettingService.EvaluateFieldAsync(
                 request.TargetTable,
                 request.FieldName,
@@ -968,6 +1030,22 @@ public static class GatewayApplicationBuilderExtensions
             IDifferentialPrivacyEngine dpEngine,
             HttpContext context) =>
         {
+            var authenticatedClientId = context.User.FindFirst("client_id")?.Value
+                                        ?? context.User.FindFirst("azp")?.Value
+                                        ?? context.User.FindFirst("sub")?.Value
+                                        ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                                        ?? context.User.Identity?.Name;
+
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("PrivacyAdmin") ||
+                               context.User.IsInRole("DataProtectionOfficer") ||
+                               context.User.IsInRole("ClusterAdmin");
+
+            if (!isPrivileged && !string.Equals(clientId, authenticatedClientId, StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var budget = await dpEngine.GetBudgetAsync(clientId, context.RequestAborted);
             return Results.Ok(budget);
         }).RequireAuthorization();
@@ -997,6 +1075,27 @@ public static class GatewayApplicationBuilderExtensions
         {
             try
             {
+                // CRIT-3: Derive authenticated client identity from verified principal to prevent client-side budget spoofing
+                var authenticatedClientId = context.User.FindFirst("client_id")?.Value
+                                            ?? context.User.FindFirst("azp")?.Value
+                                            ?? context.User.FindFirst("sub")?.Value
+                                            ?? context.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+                                            ?? context.User.Identity?.Name;
+
+                var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                                   context.User.IsInRole("PrivacyAdmin") ||
+                                   context.User.IsInRole("DataProtectionOfficer") ||
+                                   context.User.IsInRole("ClusterAdmin");
+
+                if (!isPrivileged || string.IsNullOrWhiteSpace(request.ClientId))
+                {
+                    if (string.IsNullOrWhiteSpace(authenticatedClientId))
+                    {
+                        return Results.Unauthorized();
+                    }
+                    request = request with { ClientId = authenticatedClientId };
+                }
+
                 var result = await dpEngine.PerturbAsync(request, context.RequestAborted);
                 context.Response.Headers["X-Privacy-Budget-Consumed"] = result.ConsumedEpsilon.ToString("F2");
                 context.Response.Headers["X-Privacy-Budget-Remaining"] = result.RemainingEpsilon.ToString("F2");
@@ -1452,6 +1551,21 @@ public static class GatewayApplicationBuilderExtensions
             ClaimsPrincipal principal,
             CancellationToken ct) =>
         {
+            var canPublish = principal.IsInRole("GovernanceAdmin") ||
+                             principal.IsInRole("SchemaAdmin") ||
+                             principal.IsInRole("GatewayAdmin") ||
+                             principal.IsInRole("PlatformAdmin") ||
+                             principal.IsInRole("ClusterAdmin") ||
+                             principal.IsInRole("Developer") ||
+                             principal.IsInRole("DataOwner") ||
+                             principal.HasClaim(c => (c.Type == "role" || c.Type == ClaimTypes.Role) &&
+                                 (c.Value == "GovernanceAdmin" || c.Value == "SchemaAdmin" || c.Value == "GatewayAdmin" || c.Value == "PlatformAdmin" || c.Value == "ClusterAdmin" || c.Value == "Developer" || c.Value == "DataOwner"));
+
+            if (!canPublish)
+            {
+                return Results.Json(new { error = "Publishing schemas requires Developer, SchemaAdmin, or ClusterAdmin privileges." }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
             if (request.ForceIfBreaking)
             {
                 var isPrivileged = principal.IsInRole("GovernanceAdmin") ||
@@ -1580,6 +1694,14 @@ public static class GatewayApplicationBuilderExtensions
             HttpContext context,
             CancellationToken ct) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var tenantId = context.User.FindFirst("tenant_id")?.Value ?? "default";
             var success = await openLineageClient.PushLineageGraphAsync(new TenantId(tenantId), ct);
             return success

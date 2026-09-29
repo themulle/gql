@@ -89,6 +89,7 @@ public class DbtIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     {
         var client = _factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-USER-1");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "GovernanceAdmin");
 
         var response = await client.GetAsync("/api/extensions/dbt/exposures");
         response.StatusCode.ShouldBe(HttpStatusCode.OK);
@@ -96,6 +97,17 @@ public class DbtIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         yaml.ShouldContain("version: 2");
         yaml.ShouldContain("exposures:");
 
+    }
+
+    [Fact]
+    public async Task DbtExposuresEndpoint_NonPrivilegedUser_ReturnsForbidden()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-USER-1");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "Viewer");
+
+        var response = await client.GetAsync("/api/extensions/dbt/exposures");
+        response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
     }
 
     [Fact]

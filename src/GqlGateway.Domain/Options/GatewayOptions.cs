@@ -560,6 +560,20 @@ public sealed class DataCatalogOptions
     public string OpenLineageEndpoint { get; init; } = "http://localhost:5000/api/v1/lineage";
     public string OpenLineageApiKey { get; init; } = string.Empty;
 
+    /// <summary>
+    /// Rangfolge der Dokumentationsquellen von höchster zu niedrigster Priorität.
+    /// Quellen mit niedrigerem Rang können bestehende Beschreibungen ranghöherer Quellen nicht überschreiben.
+    /// </summary>
+    public List<string> DocumentationSourcePrecedence { get; init; } =
+    [
+        "Manual",
+        "DataCatalog",
+        "dbt",
+        "OpenApi",
+        "Database",
+        "Default"
+    ];
+
 
     public Dictionary<string, string> TagToMaskingRuleMap { get; init; } = new(StringComparer.OrdinalIgnoreCase)
     {

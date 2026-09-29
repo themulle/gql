@@ -15,6 +15,8 @@ public sealed class GatewayExtensibilityMiddleware
     private readonly GatewayOptions _options;
     private readonly ILogger<GatewayExtensibilityMiddleware> _logger;
 
+    private const long MaxExtensibilityBufferBytes = 16 * 1024 * 1024; // 16 MB limit to prevent LOH DoS / OOM
+
     public GatewayExtensibilityMiddleware(
         RequestDelegate _next,
         IExtensibilityPipeline pipeline,
@@ -106,6 +108,17 @@ public sealed class GatewayExtensibilityMiddleware
         finally
         {
             sw.Stop();
+        }
+
+        // Buffer limit protection: Prevent unbounded buffering for massive payloads
+        if (memoryStream.Length > MaxExtensibilityBufferBytes)
+        {
+            _logger.LogWarning("Response body size ({Size} bytes) exceeded extensibility buffering limit of {Limit} bytes. Streaming directly without egress transformation.",
+                memoryStream.Length, MaxExtensibilityBufferBytes);
+            context.Response.Body = originalBodyStream;
+            memoryStream.Position = 0;
+            await memoryStream.CopyToAsync(originalBodyStream, context.RequestAborted);
+            return;
         }
 
         memoryStream.Position = 0;

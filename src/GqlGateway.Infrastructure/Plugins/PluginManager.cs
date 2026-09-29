@@ -90,7 +90,8 @@ public sealed class PluginManager : IPluginManager, IDisposable
         foreach (var dllFile in dllFiles)
         {
             var fullDllPath = Path.GetFullPath(dllFile);
-            if (!fullDllPath.StartsWith(fullDirectoryPath, StringComparison.Ordinal))
+            var relativePath = Path.GetRelativePath(fullDirectoryPath, fullDllPath);
+            if (relativePath.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relativePath))
             {
                 _logger.LogWarning("Skipping plugin DLL outside configured directory: '{DllPath}'", dllFile);
                 continue;

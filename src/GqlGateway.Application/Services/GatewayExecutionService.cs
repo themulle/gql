@@ -241,6 +241,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         var traceId = Guid.NewGuid().ToString("N");
         await _auditLogRepository.RecordAuditEventAsync(new AuditLogEntry
         {
+            TenantId = tenantId,
             EventType = "TABLE_QUERY",
             ActorSid = userSid,
             TargetTable = table.ToString(),
@@ -636,9 +637,54 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             await _cacheService.SetCachedDecisionAsync(tenantId, userSid, table, decision, ttl, contextHash, ct);
         }
 
+        // Casbin ABAC & Row-Level Security (RLS) Pushdown Evaluation for Child/Relation Access
+        if (_policyEnforcementService != null && _policyEnforcementService.HasPolicies(tenantId) && _options?.IsConsentBypassed != true)
+        {
+            var attributes = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var claim in principal.Claims)
+            {
+                attributes[claim.Type] = claim.Value;
+            }
+
+            var clientIp = System.Net.IPAddress.Loopback;
+            if (principal.FindFirst("ip")?.Value is { Length: > 0 } ipStr && System.Net.IPAddress.TryParse(ipStr, out var parsedIp))
+            {
+                clientIp = parsedIp;
+            }
+
+            var purpose = principal.FindFirst("purpose")?.Value ?? principal.FindFirst("purpose_id")?.Value;
+
+            var secContext = new SecurityEvaluationContext(
+                UserSid: userSid,
+                GroupSids: groupSids,
+                Tenant: tenantId,
+                TargetTable: table,
+                RequestedColumns: metadata.Columns.Select(c => c.ColumnName).ToList(),
+                ClientIp: clientIp,
+                Timestamp: DateTimeOffset.UtcNow,
+                PurposeId: purpose,
+                Attributes: attributes
+            );
+
+            var casbinDecision = await _policyEnforcementService.EvaluatePolicyAsync(secContext, ct);
+            if (!casbinDecision.IsAllowed)
+            {
+                decision = TableAccessDecision.Denied(table, $"Casbin ABAC Policy Denial: Access denied for subject '{userSid.Value}' in tenant '{tenantId.Value}'.");
+            }
+            else if (!string.IsNullOrWhiteSpace(casbinDecision.CombinedRowFilterSql))
+            {
+                var mergedFilter = !string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql)
+                    ? $"({decision.CombinedRowFilterSql}) AND ({casbinDecision.CombinedRowFilterSql})"
+                    : casbinDecision.CombinedRowFilterSql;
+
+                decision = decision with { CombinedRowFilterSql = mergedFilter };
+            }
+        }
+
         var traceId = Guid.NewGuid().ToString("N");
         await _auditLogRepository.RecordAuditEventAsync(new AuditLogEntry
         {
+            TenantId = tenantId,
             EventType = "CHILD_RELATION_CHECK",
             ActorSid = userSid,
             TargetTable = table.ToString(),

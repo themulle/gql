@@ -805,6 +805,11 @@ public static class GatewayServiceCollectionExtensions
 
         if (!environment.IsDevelopment())
         {
+            if (options.GovernanceDb.SeedDemoData == true)
+            {
+                throw new ValidationException("Sicherheitsverletzung: GovernanceDb.SeedDemoData darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
+            }
+
             if (options.Authentication.EnableTestAuthHandler)
             {
                 throw new ValidationException("Sicherheitsverletzung: EnableTestAuthHandler darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");

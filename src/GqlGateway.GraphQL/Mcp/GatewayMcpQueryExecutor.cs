@@ -149,13 +149,21 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
         {
             try
             {
+                var effectiveCallerSid = !string.IsNullOrWhiteSpace(sessionContext.UserSid)
+                    ? new Sid(sessionContext.UserSid)
+                    : new Sid(sessionContext.ServicePrincipalId);
+
+                var groupSids = sessionContext.GroupSids != null && sessionContext.GroupSids.Count > 0
+                    ? sessionContext.GroupSids.Select(s => new Sid(s)).ToArray()
+                    : Array.Empty<Sid>();
+
                 var executor = await _executorProvider.GetExecutorAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
                 var requestBuilder = OperationRequestBuilder.New()
                     .SetDocument(tool.TargetGraphQLOperation)
                     .AddGlobalState("ClaimsPrincipal", principal)
                     .AddGlobalState("CallerSecurityContext", new CallerSecurityContext(
-                        new Sid(sessionContext.ServicePrincipalId),
-                        Array.Empty<Sid>(),
+                        effectiveCallerSid,
+                        groupSids,
                         new[] { "AiAgent", "Reader" },
                         new TenantId(sessionContext.TenantId),
                         IsGovernanceAdmin: false,

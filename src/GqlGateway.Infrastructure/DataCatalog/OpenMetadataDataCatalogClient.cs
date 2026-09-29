@@ -40,7 +40,7 @@ public sealed class OpenMetadataDataCatalogClient : IDataCatalogClient
         var serverUrl = string.IsNullOrWhiteSpace(openMetaOpts.ServerUrl) ? "https://openmetadata.corp.internal/api/v1" : openMetaOpts.ServerUrl.TrimEnd('/');
         DeclarativeHttpDataSourceExecutor.ValidateUrl(new Uri(serverUrl));
 
-        var endpoint = $"{serverUrl}/tables?fields=columns,tags,owner,customProperties&limit=100";
+        var endpoint = $"{serverUrl}/tables?fields=columns,tags&limit=100";
         using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
 
         if (!string.IsNullOrWhiteSpace(openMetaOpts.AuthToken))

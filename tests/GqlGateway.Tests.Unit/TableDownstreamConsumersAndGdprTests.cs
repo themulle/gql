@@ -61,6 +61,7 @@ public class TableDownstreamConsumersAndGdprTests
             actorSid: null,
             since: Arg.Any<DateTimeOffset>(),
             limit: Arg.Any<int>(),
+            tenantId: Arg.Any<TenantId?>(),
             ct: Arg.Any<CancellationToken>())
             .Returns(fakeLogs);
 
@@ -192,6 +193,7 @@ public class TableDownstreamConsumersAndGdprTests
             actorSid: null,
             since: Arg.Any<DateTimeOffset>(),
             limit: Arg.Any<int>(),
+            tenantId: Arg.Any<TenantId?>(),
             ct: Arg.Any<CancellationToken>())
             .Returns(auditLogs);
 

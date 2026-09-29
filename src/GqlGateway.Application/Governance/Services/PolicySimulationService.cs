@@ -65,6 +65,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
             actorSid: null,
             since: request.Since,
             limit: limit,
+            tenantId: request.Tenant,
             ct: cancellationToken
         ).ConfigureAwait(false);
 

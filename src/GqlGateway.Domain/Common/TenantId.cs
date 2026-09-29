@@ -56,4 +56,7 @@ public sealed record CallerSecurityContext(
     bool IsGovernanceAdmin,
     bool IsClusterAdmin,
     GqlGateway.Domain.Model.SubjectIdentity? Subject = null
-);
+)
+{
+    public TenantId TenantId => Tenant;
+}

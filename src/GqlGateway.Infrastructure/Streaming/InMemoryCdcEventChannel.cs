@@ -21,8 +21,25 @@ public sealed class InMemoryCdcEventChannel : ICdcEventChannel
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+    private const int MaxChannels = 1_000;
+
     private Channel<CdcEvent> GetOrCreateChannel(string topic)
     {
+        if (string.IsNullOrWhiteSpace(topic) || topic.Length > 128)
+        {
+            throw new ArgumentException("Invalid CDC topic name.", nameof(topic));
+        }
+
+        if (_channels.TryGetValue(topic, out var existing))
+        {
+            return existing;
+        }
+
+        if (_channels.Count >= MaxChannels)
+        {
+            throw new InvalidOperationException($"CDC event channel limit of {MaxChannels} topics exceeded.");
+        }
+
         return _channels.GetOrAdd(topic, _ =>
             Channel.CreateBounded<CdcEvent>(new BoundedChannelOptions(10_000)
             {

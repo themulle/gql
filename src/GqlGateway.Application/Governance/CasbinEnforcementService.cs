@@ -116,6 +116,17 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         @"^[a-zA-Z0-9_.\s()|&!=<>',\[\]""+\-/*]+$",
         RegexOptions.Compiled);
 
+    private static readonly Regex SafeRlsFilterPattern = new(
+        @"^[a-zA-Z0-9_.\s()=<>!,'""$+\-*/%:@{}]+$",
+        RegexOptions.Compiled);
+
+    private static readonly string[] DangerousSqlTokens =
+    [
+        ";", "--", "/*", "*/", "@@",
+        "DROP ", "ALTER ", "TRUNCATE ", "DELETE ", "INSERT ", "UPDATE ", "EXEC ", "EXECUTE ",
+        "UNION ", "INTO ", "INFORMATION_SCHEMA", "XP_", "SP_"
+    ];
+
     private static void ValidateSubRuleTokens(string subRule, string? rlsFilter)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(subRule);
@@ -130,9 +141,25 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
             throw new ArgumentException("Sicherheitsfehler: Casbin sub_rule enthält nicht erlaubte Zeichen.", nameof(subRule));
         }
 
-        if (!string.IsNullOrWhiteSpace(rlsFilter) && rlsFilter.Length > 1000)
+        if (!string.IsNullOrWhiteSpace(rlsFilter))
         {
-            throw new ArgumentException("Sicherheitsfehler: Casbin rls_filter überschreitet die maximale Länge von 1000 Zeichen.", nameof(rlsFilter));
+            if (rlsFilter.Length > 1000)
+            {
+                throw new ArgumentException("Sicherheitsfehler: Casbin rls_filter überschreitet die maximale Länge von 1000 Zeichen.", nameof(rlsFilter));
+            }
+
+            if (!SafeRlsFilterPattern.IsMatch(rlsFilter))
+            {
+                throw new ArgumentException("Sicherheitsfehler: Casbin rls_filter enthält nicht erlaubte Zeichen.", nameof(rlsFilter));
+            }
+
+            foreach (var sqlToken in DangerousSqlTokens)
+            {
+                if (rlsFilter.Contains(sqlToken, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ArgumentException($"Sicherheitsfehler: Casbin rls_filter enthält nicht erlaubten SQL-Ausdruck '{sqlToken.Trim()}'.", nameof(rlsFilter));
+                }
+            }
         }
 
         foreach (var token in DangerousSubRuleTokens)

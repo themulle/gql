@@ -35,7 +35,8 @@ public static class FusionGatewayExtensions
                 subgraphName,
                 sp.GetRequiredService<ISubgraphContextPropagationService>(),
                 sp.GetRequiredService<IHttpContextAccessor>(),
-                sp.GetRequiredService<ILogger<SubgraphSecurityDelegatingHandler>>()
+                sp.GetRequiredService<ILogger<SubgraphSecurityDelegatingHandler>>(),
+                sp.GetService<Microsoft.Extensions.Options.IOptions<GqlGateway.Domain.Options.GatewayOptions>>()
             ));
 
             services.AddHttpClient(subgraphName, client =>

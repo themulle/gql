@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Mcp.Interfaces;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using HotChocolate.Execution;
 using HotChocolate.Language;
@@ -66,12 +67,37 @@ public sealed class McpSchemaDiscoveryService : IHostedService
                         var inputSchema = BuildInputJsonSchema(field.Arguments);
                         var targetOp = BuildGraphQLOperation(field);
 
-                        var toolDef = new McpToolDefinition(toolName, description, inputSchema, targetOp);
+                        TableIdentifier? targetTable = null;
+                        if (directive.Arguments.TryGetValue("targetTable", out var ttVal) && ttVal is StringValueNode ttn)
+                        {
+                            var parts = ttn.Value.Split('.');
+                            if (parts.Length == 3) targetTable = new TableIdentifier(parts[0], parts[1], parts[2]);
+                        }
+                        else if (directive.Arguments.TryGetValue("table", out var tVal) && tVal is StringValueNode tn)
+                        {
+                            var parts = tn.Value.Split('.');
+                            if (parts.Length == 3) targetTable = new TableIdentifier(parts[0], parts[1], parts[2]);
+                        }
+
+                        if (targetTable == null)
+                        {
+                            var parts = field.Name.Split('_');
+                            if (parts.Length >= 3)
+                            {
+                                targetTable = new TableIdentifier(parts[0], parts[1], string.Join('_', parts.Skip(2)));
+                            }
+                            else
+                            {
+                                targetTable = new TableIdentifier("default", "dbo", field.Name.ToLowerInvariant());
+                            }
+                        }
+
+                        var toolDef = new McpToolDefinition(toolName, description, inputSchema, targetOp, targetTable);
                         _toolRegistry.RegisterTool(toolDef);
                         discoveredCount++;
 
-                        _logger.LogInformation("Discovered and registered MCP Tool '{ToolName}' from GraphQL field '{FieldName}'.",
-                            toolName, field.Name);
+                        _logger.LogInformation("Discovered and registered MCP Tool '{ToolName}' (Target: {Table}) from GraphQL field '{FieldName}'.",
+                            toolName, targetTable, field.Name);
                     }
                 }
 

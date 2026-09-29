@@ -125,8 +125,33 @@ public sealed class DifferentialPrivacyEngine(ILogger<DifferentialPrivacyEngine>
         ));
     }
 
+    private const int MaxTrackedClients = 10_000;
+
     private ClientBudgetState GetOrCreateState(string clientId)
     {
+        if (_budgets.TryGetValue(clientId, out var existing))
+        {
+            return existing;
+        }
+
+        if (_budgets.Count >= MaxTrackedClients)
+        {
+            // Evict stale clients older than 48 hours
+            var cutoff = DateTimeOffset.UtcNow.AddHours(-48);
+            foreach (var (key, state) in _budgets)
+            {
+                if (state.LastResetUtc < cutoff)
+                {
+                    _budgets.TryRemove(key, out _);
+                }
+            }
+
+            if (_budgets.Count >= MaxTrackedClients)
+            {
+                throw new InvalidOperationException($"Differential privacy budget tracker exceeded maximum capacity of {MaxTrackedClients} clients.");
+            }
+        }
+
         return _budgets.GetOrAdd(clientId, id => new ClientBudgetState(id, DefaultDailyEpsilonBudget));
     }
 

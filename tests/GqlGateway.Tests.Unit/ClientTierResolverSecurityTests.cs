@@ -22,9 +22,9 @@ public sealed class ClientTierResolverSecurityTests
     {
         var context = await _resolver.ResolveAsync(null, maliciousApiKey, "127.0.0.1");
 
-        // SEC-1: Must not grant Enterprise tier just because the key contains "enterprise"
+        // SEC-1 / SEC-06: Must not grant Enterprise or Standard tier just because the key contains "enterprise"
         context.Tier.ShouldNotBe(ClientTier.Enterprise);
-        context.Tier.ShouldBe(ClientTier.Standard);
+        context.Tier.ShouldBe(ClientTier.Free);
         context.SubjectId.ShouldNotBe("api_enterprise");
     }
 
@@ -36,8 +36,24 @@ public sealed class ClientTierResolverSecurityTests
         var context = await _resolver.ResolveAsync(null, maliciousApiKey, "127.0.0.1");
 
         context.Tier.ShouldNotBe(ClientTier.Internal);
-        context.Tier.ShouldBe(ClientTier.Standard);
+        context.Tier.ShouldBe(ClientTier.Free);
         context.SubjectId.ShouldNotBe("api_internal");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_RegisteredApiKey_GrantsAssignedTier()
+    {
+        _resolver.RegisterApiKey("valid-prod-key-123", ClientTier.Standard);
+        _resolver.RegisterApiKey("enterprise-vip-client", ClientTier.Enterprise);
+
+        var context1 = await _resolver.ResolveAsync(null, "valid-prod-key-123", "127.0.0.1");
+        context1.Tier.ShouldBe(ClientTier.Standard);
+
+        var context2 = await _resolver.ResolveAsync(null, "enterprise-vip-client", "127.0.0.1");
+        context2.Tier.ShouldBe(ClientTier.Enterprise);
+
+        var unknownContext = await _resolver.ResolveAsync(null, "random-unregistered-key", "127.0.0.1");
+        unknownContext.Tier.ShouldBe(ClientTier.Free);
     }
 
     [Fact]

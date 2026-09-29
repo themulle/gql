@@ -50,6 +50,7 @@ public sealed class PolicySimulationAndSunsettingTests
             Arg.Any<Sid?>(),
             Arg.Any<DateTimeOffset?>(),
             Arg.Any<int>(),
+            Arg.Any<TenantId?>(),
             Arg.Any<CancellationToken>()
         ).Returns(auditEntries);
 

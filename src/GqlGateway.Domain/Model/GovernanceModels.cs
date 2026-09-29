@@ -85,6 +85,7 @@ public sealed class PolicyEpoch
 public sealed class AuditLogEntry
 {
     public Guid Id { get; init; } = Guid.NewGuid();
+    public TenantId TenantId { get; init; } = TenantId.LegacySingleTenant;
     public DateTimeOffset OccurredAt { get; init; } = DateTimeOffset.UtcNow;
     public string EventType { get; init; } = string.Empty;
     public Sid ActorSid { get; init; }

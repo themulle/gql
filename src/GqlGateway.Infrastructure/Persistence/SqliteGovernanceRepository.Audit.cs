@@ -44,7 +44,7 @@ public partial class SqliteGovernanceRepository
 
         // Compute cryptographic HMAC-SHA256 hash chain
         entry.PrevHash = _lastAuditHash;
-        var payload = $"{entry.Id}|{entry.PrevHash}|{entry.OccurredAt:O}|{EscapeField(entry.EventType)}|{EscapeField(entry.ActorSid.Value)}|{EscapeField(entry.TargetTable)}|{EscapeField(entry.TargetColumn)}|{EscapeField(entry.Decision)}|{EscapeField(entry.TraceId)}|{EscapeField(entry.DetailsJson)}";
+        var payload = $"{entry.Id}|{entry.PrevHash}|{entry.OccurredAt:O}|{EscapeField(entry.EventType)}|{EscapeField(entry.ActorSid.Value)}|{EscapeField(entry.TargetTable)}|{EscapeField(entry.TargetColumn)}|{EscapeField(entry.Decision)}|{EscapeField(entry.TraceId)}|{EscapeField(entry.DetailsJson)}|{EscapeField(entry.TenantId.Value)}";
         Span<byte> hashBytes = stackalloc byte[32];
         HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload), hashBytes);
         entry.EntryHash = Convert.ToHexString(hashBytes);
@@ -52,8 +52,8 @@ public partial class SqliteGovernanceRepository
         using (var cmd = _connection.CreateCommand())
         {
             cmd.Transaction = tx;
-            cmd.CommandText = @"INSERT INTO AUDIT_LOG_ENTRIES (id, occurred_at, event_type, actor_sid, target_table, target_column, decision, trace_id, details_json, prev_hash, entry_hash)
-                                VALUES (@id, @occ, @event, @actor, @target, @col, @dec, @trace, @det, @prev, @hash)";
+            cmd.CommandText = @"INSERT INTO AUDIT_LOG_ENTRIES (id, occurred_at, event_type, actor_sid, target_table, target_column, decision, trace_id, details_json, prev_hash, entry_hash, tenant_id)
+                                VALUES (@id, @occ, @event, @actor, @target, @col, @dec, @trace, @det, @prev, @hash, @tenantId)";
             cmd.Parameters.AddWithValue("@id", entry.Id.ToString());
             cmd.Parameters.AddWithValue("@occ", entry.OccurredAt.ToString("O"));
             cmd.Parameters.AddWithValue("@event", entry.EventType);
@@ -65,6 +65,7 @@ public partial class SqliteGovernanceRepository
             cmd.Parameters.AddWithValue("@det", entry.DetailsJson);
             cmd.Parameters.AddWithValue("@prev", entry.PrevHash);
             cmd.Parameters.AddWithValue("@hash", entry.EntryHash);
+            cmd.Parameters.AddWithValue("@tenantId", entry.TenantId.Value);
 
             await cmd.ExecuteNonQueryAsync(ct);
         }
@@ -73,18 +74,23 @@ public partial class SqliteGovernanceRepository
         _lastAuditHash = entry.EntryHash;
     }
 
-    public async Task<IReadOnlyList<AuditLogEntry>> GetAuditLogEntriesAsync(int limit = 100, CancellationToken ct = default)
+    public async Task<IReadOnlyList<AuditLogEntry>> GetAuditLogEntriesAsync(int limit = 100, TenantId? tenantId = null, CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct);
         try
         {
             var list = new List<AuditLogEntry>();
             using var cmd = _connection.CreateCommand();
-            cmd.CommandText = @"SELECT id, occurred_at, event_type, actor_sid, target_table, target_column,
-                                       decision, trace_id, details_json, prev_hash, entry_hash
-                                FROM AUDIT_LOG_ENTRIES
-                                ORDER BY rowid ASC
-                                LIMIT @lim";
+            var sql = new StringBuilder(@"SELECT id, occurred_at, event_type, actor_sid, target_table, target_column,
+                                       decision, trace_id, details_json, prev_hash, entry_hash, tenant_id
+                                FROM AUDIT_LOG_ENTRIES");
+            if (tenantId.HasValue)
+            {
+                sql.Append(" WHERE tenant_id = @tenantId");
+                cmd.Parameters.AddWithValue("@tenantId", tenantId.Value.Value);
+            }
+            sql.Append(" ORDER BY rowid ASC LIMIT @lim");
+            cmd.CommandText = sql.ToString();
             cmd.Parameters.AddWithValue("@lim", limit);
 
             using var reader = await cmd.ExecuteReaderAsync(ct);
@@ -102,7 +108,8 @@ public partial class SqliteGovernanceRepository
                     TraceId = reader.GetString(7),
                     DetailsJson = reader.GetString(8),
                     PrevHash = reader.GetString(9),
-                    EntryHash = reader.GetString(10)
+                    EntryHash = reader.GetString(10),
+                    TenantId = reader.IsDBNull(11) ? TenantId.LegacySingleTenant : (TenantId.TryParse(reader.GetString(11), out var tid) ? tid : TenantId.LegacySingleTenant)
                 });
             }
             return list;
@@ -118,6 +125,7 @@ public partial class SqliteGovernanceRepository
         Sid? actorSid = null,
         DateTimeOffset? since = null,
         int limit = 1000,
+        TenantId? tenantId = null,
         CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct);
@@ -126,7 +134,7 @@ public partial class SqliteGovernanceRepository
             var list = new List<AuditLogEntry>();
             using var cmd = _connection.CreateCommand();
             var sql = new StringBuilder(@"SELECT id, occurred_at, event_type, actor_sid, target_table, target_column,
-                                               decision, trace_id, details_json, prev_hash, entry_hash
+                                               decision, trace_id, details_json, prev_hash, entry_hash, tenant_id
                                         FROM AUDIT_LOG_ENTRIES
                                         WHERE 1=1");
 
@@ -144,6 +152,11 @@ public partial class SqliteGovernanceRepository
             {
                 sql.Append(" AND occurred_at >= @since");
                 cmd.Parameters.AddWithValue("@since", since.Value.ToString("O"));
+            }
+            if (tenantId.HasValue)
+            {
+                sql.Append(" AND tenant_id = @tenantId");
+                cmd.Parameters.AddWithValue("@tenantId", tenantId.Value.Value);
             }
 
             sql.Append(" ORDER BY occurred_at DESC LIMIT @lim");
@@ -165,7 +178,8 @@ public partial class SqliteGovernanceRepository
                     TraceId = reader.GetString(7),
                     DetailsJson = reader.GetString(8),
                     PrevHash = reader.GetString(9),
-                    EntryHash = reader.GetString(10)
+                    EntryHash = reader.GetString(10),
+                    TenantId = reader.IsDBNull(11) ? TenantId.LegacySingleTenant : (TenantId.TryParse(reader.GetString(11), out var tid) ? tid : TenantId.LegacySingleTenant)
                 });
             }
             return list;
@@ -177,14 +191,13 @@ public partial class SqliteGovernanceRepository
     }
 
     public async Task<bool> VerifyAuditHashChainAsync(CancellationToken ct = default)
-
     {
         await _lock.WaitAsync(ct);
         try
         {
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"SELECT id, occurred_at, event_type, actor_sid, target_table, target_column,
-                                       decision, trace_id, details_json, prev_hash, entry_hash
+                                       decision, trace_id, details_json, prev_hash, entry_hash, tenant_id
                                 FROM AUDIT_LOG_ENTRIES
                                 ORDER BY rowid ASC";
 
@@ -204,6 +217,7 @@ public partial class SqliteGovernanceRepository
                 var detailsJson = reader.GetString(8);
                 var prevHash = reader.GetString(9);
                 var entryHash = reader.GetString(10);
+                var tenantId = reader.IsDBNull(11) ? TenantId.LegacySingleTenant.Value : reader.GetString(11);
 
                 if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(prevHash), Encoding.UTF8.GetBytes(expectedPrevHash)))
                 {
@@ -211,7 +225,7 @@ public partial class SqliteGovernanceRepository
                 }
 
                 var parsedOccurredAt = DateTimeOffset.Parse(occurredAt);
-                var payload = $"{id}|{prevHash}|{parsedOccurredAt:O}|{EscapeField(eventType)}|{EscapeField(actorSid)}|{EscapeField(targetTable)}|{EscapeField(targetColumn)}|{EscapeField(decision)}|{EscapeField(traceId)}|{EscapeField(detailsJson)}";
+                var payload = $"{id}|{prevHash}|{parsedOccurredAt:O}|{EscapeField(eventType)}|{EscapeField(actorSid)}|{EscapeField(targetTable)}|{EscapeField(targetColumn)}|{EscapeField(decision)}|{EscapeField(traceId)}|{EscapeField(detailsJson)}|{EscapeField(tenantId)}";
                 var computedBytes = HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload));
                 var computedHash = Convert.ToHexString(computedBytes);
 

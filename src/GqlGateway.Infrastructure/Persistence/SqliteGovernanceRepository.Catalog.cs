@@ -13,6 +13,29 @@ namespace GqlGateway.Infrastructure.Persistence;
 
 public partial class SqliteGovernanceRepository
 {
+    private bool ShouldOverwriteDocumentation(string? existingSource, string? newSource)
+    {
+        if (string.IsNullOrWhiteSpace(existingSource))
+        {
+            return true;
+        }
+        if (string.IsNullOrWhiteSpace(newSource))
+        {
+            return false;
+        }
+
+        var precedence = _options?.Catalog?.DocumentationSourcePrecedence ??
+            new List<string> { "Manual", "DataCatalog", "dbt", "OpenApi", "Database", "Default" };
+
+        int existingRank = precedence.FindIndex(s => string.Equals(s, existingSource, StringComparison.OrdinalIgnoreCase));
+        int newRank = precedence.FindIndex(s => string.Equals(s, newSource, StringComparison.OrdinalIgnoreCase));
+
+        if (existingRank < 0) existingRank = int.MaxValue;
+        if (newRank < 0) newRank = int.MaxValue;
+
+        return newRank <= existingRank;
+    }
+
     public async Task<TableMetadata?> GetTableMetadataAsync(TableIdentifier table, CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct);
@@ -23,7 +46,7 @@ public partial class SqliteGovernanceRepository
 
             using (var cmd = _connection.CreateCommand())
             {
-                cmd.CommandText = @"SELECT id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active, data_source_type, http_endpoint_json, plugin_name, description, long_description
+                cmd.CommandText = @"SELECT id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active, data_source_type, http_endpoint_json, plugin_name, description, long_description, doc_source
                                     FROM TABLES
                                     WHERE source_name = @domain COLLATE NOCASE AND schema_name = @schema COLLATE NOCASE AND table_name = @table COLLATE NOCASE";
                 cmd.Parameters.AddWithValue("@domain", table.Domain);
@@ -56,7 +79,8 @@ public partial class SqliteGovernanceRepository
                         HttpEndpoint = httpEndpoint,
                         PluginName = pluginName,
                         Description = reader.IsDBNull(12) ? null : reader.GetString(12),
-                        LongDescription = reader.IsDBNull(13) ? null : reader.GetString(13)
+                        LongDescription = reader.IsDBNull(13) ? null : reader.GetString(13),
+                        DocumentationSource = reader.IsDBNull(14) ? null : reader.GetString(14)
                     };
                 }
             }
@@ -70,7 +94,7 @@ public partial class SqliteGovernanceRepository
             {
                 cmd.CommandText = @"SELECT c.id, c.column_name, c.data_type, c.is_sensitive,
                                            m.id, m.rule_type, m.pattern_or_format, m.replacement, m.hmac_key_id,
-                                           c.description, c.long_description, c.meta_json
+                                           c.description, c.long_description, c.meta_json, c.doc_source
                                     FROM TABLE_COLUMNS c
                                     LEFT JOIN COLUMN_MASKING_RULES m ON c.id = m.table_column_id
                                     WHERE c.table_id = @tid";
@@ -95,6 +119,7 @@ public partial class SqliteGovernanceRepository
                         IsSensitive = reader.GetInt32(3) == 1,
                         Description = reader.IsDBNull(9) ? null : reader.GetString(9),
                         LongDescription = reader.IsDBNull(10) ? null : reader.GetString(10),
+                        DocumentationSource = reader.IsDBNull(12) ? null : reader.GetString(12),
                         Meta = metaDict
                     };
                     columns.Add(col);
@@ -143,7 +168,7 @@ public partial class SqliteGovernanceRepository
                                            t.display_name, t.sensitivity, t.requires_four_eyes, t.is_active,
                                            COALESCE(t.source_name, p.domain, 'default') as domain,
                                            t.data_source_type, t.http_endpoint_json, t.plugin_name,
-                                           t.description, t.long_description
+                                           t.description, t.long_description, t.doc_source
                                     FROM TABLES t
                                     LEFT JOIN POLICY_EPOCHS p ON t.id = p.table_id
                                     WHERE t.is_active = 1";
@@ -177,7 +202,8 @@ public partial class SqliteGovernanceRepository
                         HttpEndpoint = httpEndpoint,
                         PluginName = pluginName,
                         Description = reader.IsDBNull(13) ? null : reader.GetString(13),
-                        LongDescription = reader.IsDBNull(14) ? null : reader.GetString(14)
+                        LongDescription = reader.IsDBNull(14) ? null : reader.GetString(14),
+                        DocumentationSource = reader.IsDBNull(15) ? null : reader.GetString(15)
                     };
                     tableRows.Add((id, domain, name, table));
                 }
@@ -186,7 +212,7 @@ public partial class SqliteGovernanceRepository
             var columnsByTable = new Dictionary<Guid, List<TableColumn>>();
             using (var cmd = _connection.CreateCommand())
             {
-                cmd.CommandText = @"SELECT id, table_id, column_name, data_type, is_sensitive, description, long_description, meta_json FROM TABLE_COLUMNS";
+                cmd.CommandText = @"SELECT id, table_id, column_name, data_type, is_sensitive, description, long_description, meta_json, doc_source FROM TABLE_COLUMNS";
                 using var reader = await cmd.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))
                 {
@@ -210,6 +236,7 @@ public partial class SqliteGovernanceRepository
                         IsSensitive = reader.GetInt32(4) == 1,
                         Description = reader.IsDBNull(5) ? null : reader.GetString(5),
                         LongDescription = reader.IsDBNull(6) ? null : reader.GetString(6),
+                        DocumentationSource = reader.IsDBNull(8) ? null : reader.GetString(8),
                         Meta = metaDict
                     });
                 }
@@ -249,17 +276,34 @@ public partial class SqliteGovernanceRepository
                 using (var selectCmd = _connection.CreateCommand())
                 {
                     selectCmd.Transaction = tx;
-                    selectCmd.CommandText = @"SELECT id FROM TABLES 
+                    selectCmd.CommandText = @"SELECT id, description, long_description, doc_source FROM TABLES 
                                               WHERE source_name = @domain COLLATE NOCASE 
                                                 AND schema_name = @schema COLLATE NOCASE 
                                                 AND table_name = @table COLLATE NOCASE";
                     selectCmd.Parameters.AddWithValue("@domain", metadata.Identifier.Domain);
                     selectCmd.Parameters.AddWithValue("@schema", metadata.Identifier.Schema);
                     selectCmd.Parameters.AddWithValue("@table", metadata.Identifier.TableName);
-                    var existingIdObj = await selectCmd.ExecuteScalarAsync(ct);
-                    if (existingIdObj != null && existingIdObj != DBNull.Value)
+                    using var selectReader = await selectCmd.ExecuteReaderAsync(ct);
+                    if (await selectReader.ReadAsync(ct))
                     {
-                        tableId = Guid.Parse(existingIdObj.ToString()!);
+                        tableId = Guid.Parse(selectReader.GetString(0));
+                        var existingDesc = selectReader.IsDBNull(1) ? null : selectReader.GetString(1);
+                        var existingLongDesc = selectReader.IsDBNull(2) ? null : selectReader.GetString(2);
+                        var existingDocSource = selectReader.IsDBNull(3) ? null : selectReader.GetString(3);
+                        await selectReader.CloseAsync();
+
+                        bool canOverwriteDesc = string.IsNullOrWhiteSpace(existingDesc) ||
+                                                (!string.IsNullOrWhiteSpace(metadata.Table.Description) &&
+                                                 ShouldOverwriteDocumentation(existingDocSource, metadata.Table.DocumentationSource));
+
+                        bool canOverwriteLongDesc = string.IsNullOrWhiteSpace(existingLongDesc) ||
+                                                    (!string.IsNullOrWhiteSpace(metadata.Table.LongDescription) &&
+                                                     ShouldOverwriteDocumentation(existingDocSource, metadata.Table.DocumentationSource));
+
+                        var targetDesc = canOverwriteDesc ? metadata.Table.Description : existingDesc;
+                        var targetLongDesc = canOverwriteLongDesc ? metadata.Table.LongDescription : existingLongDesc;
+                        var targetDocSource = canOverwriteDesc ? (metadata.Table.DocumentationSource ?? existingDocSource) : existingDocSource;
+
                         using var updateCmd = _connection.CreateCommand();
                         updateCmd.Transaction = tx;
                         updateCmd.CommandText = @"UPDATE TABLES 
@@ -272,7 +316,8 @@ public partial class SqliteGovernanceRepository
                                                       http_endpoint_json = @httpEndpointJson,
                                                       plugin_name = @pluginName,
                                                       description = @description,
-                                                      long_description = @longDescription
+                                                      long_description = @longDescription,
+                                                      doc_source = @docSource
                                                   WHERE id = @id";
                         updateCmd.Parameters.AddWithValue("@sourceType", metadata.Table.SourceType);
                         updateCmd.Parameters.AddWithValue("@displayName", metadata.Table.DisplayName);
@@ -282,18 +327,20 @@ public partial class SqliteGovernanceRepository
                         updateCmd.Parameters.AddWithValue("@dataSourceType", (int)metadata.Table.DataSourceType);
                         updateCmd.Parameters.AddWithValue("@httpEndpointJson", metadata.Table.HttpEndpoint != null ? JsonSerializer.Serialize(metadata.Table.HttpEndpoint) : (object)DBNull.Value);
                         updateCmd.Parameters.AddWithValue("@pluginName", (object?)metadata.Table.PluginName ?? DBNull.Value);
-                        updateCmd.Parameters.AddWithValue("@description", (object?)metadata.Table.Description ?? DBNull.Value);
-                        updateCmd.Parameters.AddWithValue("@longDescription", (object?)metadata.Table.LongDescription ?? DBNull.Value);
+                        updateCmd.Parameters.AddWithValue("@description", (object?)targetDesc ?? DBNull.Value);
+                        updateCmd.Parameters.AddWithValue("@longDescription", (object?)targetLongDesc ?? DBNull.Value);
+                        updateCmd.Parameters.AddWithValue("@docSource", (object?)targetDocSource ?? DBNull.Value);
                         updateCmd.Parameters.AddWithValue("@id", tableId.ToString());
                         await updateCmd.ExecuteNonQueryAsync(ct);
                     }
                     else
                     {
+                        await selectReader.CloseAsync();
                         tableId = metadata.Table.Id == Guid.Empty ? Guid.NewGuid() : metadata.Table.Id;
                         using var insertCmd = _connection.CreateCommand();
                         insertCmd.Transaction = tx;
-                        insertCmd.CommandText = @"INSERT INTO TABLES (id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active, data_source_type, http_endpoint_json, plugin_name, description, long_description)
-                                                  VALUES (@id, @sourceType, @sourceName, @schemaName, @tableName, @displayName, @sensitivity, @requiresFourEyes, @isActive, @dataSourceType, @httpEndpointJson, @pluginName, @description, @longDescription)";
+                        insertCmd.CommandText = @"INSERT INTO TABLES (id, source_type, source_name, schema_name, table_name, display_name, sensitivity, requires_four_eyes, is_active, data_source_type, http_endpoint_json, plugin_name, description, long_description, doc_source)
+                                                  VALUES (@id, @sourceType, @sourceName, @schemaName, @tableName, @displayName, @sensitivity, @requiresFourEyes, @isActive, @dataSourceType, @httpEndpointJson, @pluginName, @description, @longDescription, @docSource)";
                         insertCmd.Parameters.AddWithValue("@id", tableId.ToString());
                         insertCmd.Parameters.AddWithValue("@sourceType", metadata.Table.SourceType);
                         insertCmd.Parameters.AddWithValue("@sourceName", metadata.Identifier.Domain);
@@ -308,20 +355,26 @@ public partial class SqliteGovernanceRepository
                         insertCmd.Parameters.AddWithValue("@pluginName", (object?)metadata.Table.PluginName ?? DBNull.Value);
                         insertCmd.Parameters.AddWithValue("@description", (object?)metadata.Table.Description ?? DBNull.Value);
                         insertCmd.Parameters.AddWithValue("@longDescription", (object?)metadata.Table.LongDescription ?? DBNull.Value);
+                        insertCmd.Parameters.AddWithValue("@docSource", (object?)metadata.Table.DocumentationSource ?? DBNull.Value);
                         await insertCmd.ExecuteNonQueryAsync(ct);
                     }
                 }
 
-                var columnIdsByName = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+                var existingColsByName = new Dictionary<string, (Guid Id, string? Description, string? LongDescription, string? DocSource)>(StringComparer.OrdinalIgnoreCase);
                 using (var getColsCmd = _connection.CreateCommand())
                 {
                     getColsCmd.Transaction = tx;
-                    getColsCmd.CommandText = "SELECT id, column_name FROM TABLE_COLUMNS WHERE table_id = @tableId";
+                    getColsCmd.CommandText = "SELECT id, column_name, description, long_description, doc_source FROM TABLE_COLUMNS WHERE table_id = @tableId";
                     getColsCmd.Parameters.AddWithValue("@tableId", tableId.ToString());
                     using var reader = await getColsCmd.ExecuteReaderAsync(ct);
                     while (await reader.ReadAsync(ct))
                     {
-                        columnIdsByName[reader.GetString(1)] = Guid.Parse(reader.GetString(0));
+                        var cId = Guid.Parse(reader.GetString(0));
+                        var cName = reader.GetString(1);
+                        var cDesc = reader.IsDBNull(2) ? null : reader.GetString(2);
+                        var cLongDesc = reader.IsDBNull(3) ? null : reader.GetString(3);
+                        var cDocSource = reader.IsDBNull(4) ? null : reader.GetString(4);
+                        existingColsByName[cName] = (cId, cDesc, cLongDesc, cDocSource);
                     }
                 }
 
@@ -329,18 +382,34 @@ public partial class SqliteGovernanceRepository
                 {
                     Guid colId;
                     var metaJson = col.Meta.Count > 0 ? JsonSerializer.Serialize(col.Meta) : null;
-                    if (columnIdsByName.TryGetValue(col.ColumnName, out var existingColId))
+                    var incomingColSource = col.DocumentationSource ?? metadata.Table.DocumentationSource;
+
+                    if (existingColsByName.TryGetValue(col.ColumnName, out var existingCol))
                     {
-                        colId = existingColId;
+                        colId = existingCol.Id;
+
+                        bool canOverwriteColDesc = string.IsNullOrWhiteSpace(existingCol.Description) ||
+                                                   (!string.IsNullOrWhiteSpace(col.Description) &&
+                                                    ShouldOverwriteDocumentation(existingCol.DocSource, incomingColSource));
+
+                        bool canOverwriteColLongDesc = string.IsNullOrWhiteSpace(existingCol.LongDescription) ||
+                                                       (!string.IsNullOrWhiteSpace(col.LongDescription) &&
+                                                        ShouldOverwriteDocumentation(existingCol.DocSource, incomingColSource));
+
+                        var targetColDesc = canOverwriteColDesc ? col.Description : existingCol.Description;
+                        var targetColLongDesc = canOverwriteColLongDesc ? col.LongDescription : existingCol.LongDescription;
+                        var targetColDocSource = canOverwriteColDesc ? (incomingColSource ?? existingCol.DocSource) : existingCol.DocSource;
+
                         using var updateColCmd = _connection.CreateCommand();
                         updateColCmd.Transaction = tx;
                         updateColCmd.CommandText = @"UPDATE TABLE_COLUMNS 
-                                                    SET data_type = @dataType, is_sensitive = @isSensitive, description = @description, long_description = @longDescription, meta_json = @metaJson
+                                                    SET data_type = @dataType, is_sensitive = @isSensitive, description = @description, long_description = @longDescription, doc_source = @docSource, meta_json = @metaJson
                                                     WHERE id = @id";
                         updateColCmd.Parameters.AddWithValue("@dataType", col.DataType);
                         updateColCmd.Parameters.AddWithValue("@isSensitive", col.IsSensitive ? 1 : 0);
-                        updateColCmd.Parameters.AddWithValue("@description", (object?)col.Description ?? DBNull.Value);
-                        updateColCmd.Parameters.AddWithValue("@longDescription", (object?)col.LongDescription ?? DBNull.Value);
+                        updateColCmd.Parameters.AddWithValue("@description", (object?)targetColDesc ?? DBNull.Value);
+                        updateColCmd.Parameters.AddWithValue("@longDescription", (object?)targetColLongDesc ?? DBNull.Value);
+                        updateColCmd.Parameters.AddWithValue("@docSource", (object?)targetColDocSource ?? DBNull.Value);
                         updateColCmd.Parameters.AddWithValue("@metaJson", (object?)metaJson ?? DBNull.Value);
                         updateColCmd.Parameters.AddWithValue("@id", colId.ToString());
                         await updateColCmd.ExecuteNonQueryAsync(ct);
@@ -350,8 +419,8 @@ public partial class SqliteGovernanceRepository
                         colId = col.Id == Guid.Empty ? Guid.NewGuid() : col.Id;
                         using var insertColCmd = _connection.CreateCommand();
                         insertColCmd.Transaction = tx;
-                        insertColCmd.CommandText = @"INSERT INTO TABLE_COLUMNS (id, table_id, column_name, data_type, is_sensitive, description, long_description, meta_json)
-                                                    VALUES (@id, @tableId, @columnName, @dataType, @isSensitive, @description, @longDescription, @metaJson)";
+                        insertColCmd.CommandText = @"INSERT INTO TABLE_COLUMNS (id, table_id, column_name, data_type, is_sensitive, description, long_description, doc_source, meta_json)
+                                                    VALUES (@id, @tableId, @columnName, @dataType, @isSensitive, @description, @longDescription, @docSource, @metaJson)";
                         insertColCmd.Parameters.AddWithValue("@id", colId.ToString());
                         insertColCmd.Parameters.AddWithValue("@tableId", tableId.ToString());
                         insertColCmd.Parameters.AddWithValue("@columnName", col.ColumnName);
@@ -359,9 +428,9 @@ public partial class SqliteGovernanceRepository
                         insertColCmd.Parameters.AddWithValue("@isSensitive", col.IsSensitive ? 1 : 0);
                         insertColCmd.Parameters.AddWithValue("@description", (object?)col.Description ?? DBNull.Value);
                         insertColCmd.Parameters.AddWithValue("@longDescription", (object?)col.LongDescription ?? DBNull.Value);
+                        insertColCmd.Parameters.AddWithValue("@docSource", (object?)incomingColSource ?? DBNull.Value);
                         insertColCmd.Parameters.AddWithValue("@metaJson", (object?)metaJson ?? DBNull.Value);
                         await insertColCmd.ExecuteNonQueryAsync(ct);
-                        columnIdsByName[col.ColumnName] = colId;
                     }
 
                     if (metadata.ColumnMaskingRules.TryGetValue(col.ColumnName, out var maskRule))

@@ -26,6 +26,7 @@ public partial class SqliteGovernanceRepository
                 display_name TEXT NOT NULL,
                 description TEXT,
                 long_description TEXT,
+                doc_source TEXT,
                 sensitivity TEXT NOT NULL,
                 requires_four_eyes INTEGER NOT NULL,
                 is_active INTEGER NOT NULL,
@@ -42,6 +43,7 @@ public partial class SqliteGovernanceRepository
                 is_sensitive INTEGER NOT NULL,
                 description TEXT,
                 long_description TEXT,
+                doc_source TEXT,
                 meta_json TEXT
             );
 
@@ -162,7 +164,8 @@ public partial class SqliteGovernanceRepository
                 trace_id TEXT NOT NULL,
                 details_json TEXT NOT NULL,
                 prev_hash TEXT NOT NULL,
-                entry_hash TEXT NOT NULL
+                entry_hash TEXT NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'legacy-single-tenant'
             );
 
             CREATE INDEX IF NOT EXISTS idx_audit_target_table ON AUDIT_LOG_ENTRIES (target_table, occurred_at);
@@ -245,6 +248,7 @@ public partial class SqliteGovernanceRepository
         EnsureTableColumnFields();
         EnsureConsentRequestColumns();
         EnsureConsentColumns();
+        EnsureAuditLogColumns();
 
         using (var lastHashCmd = _connection.CreateCommand())
         {
@@ -334,7 +338,8 @@ public partial class SqliteGovernanceRepository
             "http_endpoint_json TEXT",
             "plugin_name TEXT",
             "description TEXT",
-            "long_description TEXT"
+            "long_description TEXT",
+            "doc_source TEXT"
         };
 
         foreach (var colDef in requiredCols)
@@ -365,6 +370,7 @@ public partial class SqliteGovernanceRepository
         string[] requiredCols = {
             "description TEXT",
             "long_description TEXT",
+            "doc_source TEXT",
             "meta_json TEXT"
         };
 
@@ -770,5 +776,32 @@ public partial class SqliteGovernanceRepository
         cmd.Parameters.AddWithValue("@sid", sid);
         var existing = cmd.ExecuteScalar()?.ToString();
         return !string.IsNullOrEmpty(existing) ? existing : fallbackId;
+    }
+
+    private void EnsureAuditLogColumns()
+    {
+        var existingCols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.CommandText = "PRAGMA table_info(AUDIT_LOG_ENTRIES);";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                existingCols.Add(reader.GetString(1));
+            }
+        }
+
+        if (!existingCols.Contains("tenant_id"))
+        {
+            using var alterCmd = _connection.CreateCommand();
+            alterCmd.CommandText = "ALTER TABLE AUDIT_LOG_ENTRIES ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy-single-tenant';";
+            alterCmd.ExecuteNonQuery();
+        }
+
+        using (var idxCmd = _connection.CreateCommand())
+        {
+            idxCmd.CommandText = "CREATE INDEX IF NOT EXISTS idx_audit_tenant_id ON AUDIT_LOG_ENTRIES (tenant_id, occurred_at);";
+            idxCmd.ExecuteNonQuery();
+        }
     }
 }

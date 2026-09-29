@@ -56,6 +56,12 @@ public sealed class SubgraphResultMaskingMiddleware
 
             if (maskedObj != null)
             {
+                if (httpContext != null)
+                {
+                    httpContext.Items["MaskingApplied"] = true;
+                }
+                context.ContextData["MaskingApplied"] = true;
+
                 var newData = new OperationResultData(maskedObj, isValueNull: false, originalData.Formatter, originalData.MemoryHolder);
                 var newResult = new OperationResult(
                     newData,

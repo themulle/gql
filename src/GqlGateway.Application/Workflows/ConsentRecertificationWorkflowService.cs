@@ -149,6 +149,7 @@ public sealed class ConsentRecertificationWorkflowService : IConsentRecertificat
         {
             var auditEntry = new AuditLogEntry
             {
+                TenantId = consent.TenantId,
                 EventType = "CONSENT_RECERTIFIED_AND_EXTENDED",
                 ActorSid = approverSid,
                 TargetTable = consent.TableIdentifier.ToString(),

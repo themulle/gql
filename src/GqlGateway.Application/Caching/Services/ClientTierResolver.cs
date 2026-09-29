@@ -15,10 +15,17 @@ public sealed class ClientTierResolver : IClientTierResolver
 {
     private readonly ILogger<ClientTierResolver> _logger;
     private readonly ConcurrentDictionary<string, (ClientTier Tier, DateTimeOffset Expiry)> _apiKeyCache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ClientTier> _registeredKeys = new(StringComparer.Ordinal);
 
     public ClientTierResolver(ILogger<ClientTierResolver> logger)
     {
         _logger = logger;
+    }
+
+    public void RegisterApiKey(string apiKey, ClientTier tier)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
+        _registeredKeys[apiKey.Trim()] = tier;
     }
 
     public Task<ClientQuotaContext> ResolveAsync(
@@ -79,9 +86,16 @@ public sealed class ClientTierResolver : IClientTierResolver
             return (subjectId, cached.Tier);
         }
 
-        // Unregistered / untrusted API keys default to Standard tier.
-        // Enterprise or Internal tiers must never be granted via client-supplied substring keywords.
-        var tier = ClientTier.Standard;
+        // Check if key is registered in validated store
+        if (_registeredKeys.TryGetValue(apiKey, out var registeredTier))
+        {
+            _apiKeyCache[subjectId] = (registeredTier, now.AddMinutes(10));
+            return (subjectId, registeredTier);
+        }
+
+        // SEC-06: Unregistered / untrusted API keys default to Free tier instead of Standard,
+        // preventing unauthorized quota and rate-limit escalation.
+        var tier = ClientTier.Free;
         _apiKeyCache[subjectId] = (tier, now.AddMinutes(10));
         return (subjectId, tier);
     }

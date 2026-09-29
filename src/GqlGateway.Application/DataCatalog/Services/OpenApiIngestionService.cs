@@ -132,6 +132,7 @@ public sealed class OpenApiIngestionService : IOpenApiIngestionService
                             DataType = effectiveType,
                             Description = colDesc,
                             LongDescription = colLongDesc,
+                            DocumentationSource = "OpenApi",
                             IsSensitive = isSensitive,
                             Meta = metaDict
                         });
@@ -191,6 +192,7 @@ public sealed class OpenApiIngestionService : IOpenApiIngestionService
                         DisplayName = schemaName,
                         Description = schemaDesc,
                         LongDescription = schemaLongDesc,
+                        DocumentationSource = "OpenApi",
                         DataSourceType = DataSourceType.HttpDeclarative,
                         HttpEndpoint = new HttpEndpointDescriptor
                         {

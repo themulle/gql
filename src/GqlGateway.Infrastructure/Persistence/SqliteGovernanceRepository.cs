@@ -19,6 +19,7 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
     private readonly SemaphoreSlim _lock = new(1, 1);
     private string _lastAuditHash = "GENESIS_0000000000000000000000000000000000000000000000000000000000000000";
     private readonly byte[] _auditHmacKey;
+    private readonly GatewayOptions? _options;
 
     public SqliteGovernanceRepository(
         IEpochValidationService epochValidationService,
@@ -27,6 +28,7 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
         IKeyVaultSecretProvider? secretProvider = null)
     {
         _epochValidationService = epochValidationService;
+        _options = options?.Value;
         var connStr = options?.Value?.GovernanceDb?.ConnectionString ?? $"Data Source=governance_{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
         _connection = new SqliteConnection(connStr);
         _connection.Open();
@@ -80,11 +82,14 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
             isMemory = false;
         }
 
-        bool isDev = environment == null || string.Equals(environment.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
+        var envName = environment?.EnvironmentName ??
+                      Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ??
+                      Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+        bool isExplicitNonDev = !string.IsNullOrEmpty(envName) && !string.Equals(envName, "Development", StringComparison.OrdinalIgnoreCase);
 
         if (key == null)
         {
-            if (!isDev && !isMemory)
+            if (isExplicitNonDev && !isMemory)
             {
                 throw new InvalidOperationException(
                     "Security critical: Audit HMAC secret is missing or could not be resolved from Key Vault in a non-development environment. Tamper-evident audit logging cannot use default fallback keys.");
@@ -95,7 +100,7 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
         {
             _auditHmacKey = key;
         }
-        bool shouldSeed = options?.Value?.GovernanceDb?.SeedDemoData ?? (isMemory && isDev);
+        bool shouldSeed = options?.Value?.GovernanceDb?.SeedDemoData ?? (isMemory && !isExplicitNonDev);
         if (shouldSeed)
         {
             SeedInitialCatalog();

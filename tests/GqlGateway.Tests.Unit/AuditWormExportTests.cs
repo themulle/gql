@@ -77,7 +77,7 @@ public sealed class AuditWormExportTests
                 }
             };
 
-            auditRepo.QueryAuditLogsAsync(Arg.Any<string?>(), Arg.Any<Sid?>(), Arg.Any<DateTimeOffset?>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            auditRepo.QueryAuditLogsAsync(Arg.Any<string?>(), Arg.Any<Sid?>(), Arg.Any<DateTimeOffset?>(), Arg.Any<int>(), Arg.Any<TenantId?>(), Arg.Any<CancellationToken>())
                 .Returns(Task.FromResult<IReadOnlyList<AuditLogEntry>>(entries));
 
             var options = Options.Create(new GatewayOptions
@@ -176,7 +176,7 @@ public sealed class AuditWormExportTests
             }
         };
 
-        auditRepo.QueryAuditLogsAsync(Arg.Any<string?>(), Arg.Any<Sid?>(), Arg.Any<DateTimeOffset?>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+        auditRepo.QueryAuditLogsAsync(Arg.Any<string?>(), Arg.Any<Sid?>(), Arg.Any<DateTimeOffset?>(), Arg.Any<int>(), Arg.Any<TenantId?>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<AuditLogEntry>>(entries));
 
         var options = Options.Create(new GatewayOptions

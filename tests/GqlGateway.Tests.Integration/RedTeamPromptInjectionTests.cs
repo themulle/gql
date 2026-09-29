@@ -219,9 +219,14 @@ public class RedTeamPromptInjectionTests
             return Task.CompletedTask;
         }
 
-        public Task<IReadOnlyList<AuditLogEntry>> GetAuditLogEntriesAsync(int limit = 100, System.Threading.CancellationToken ct = default)
+        public Task<IReadOnlyList<AuditLogEntry>> GetAuditLogEntriesAsync(int limit = 100, TenantId? tenantId = null, System.Threading.CancellationToken ct = default)
         {
-            return Task.FromResult<IReadOnlyList<AuditLogEntry>>(RecordedEvents);
+            var query = RecordedEvents.AsEnumerable();
+            if (tenantId.HasValue)
+            {
+                query = query.Where(e => e.TenantId == tenantId.Value);
+            }
+            return Task.FromResult<IReadOnlyList<AuditLogEntry>>(query.Take(limit).ToList());
         }
 
         public Task<IReadOnlyList<AuditLogEntry>> QueryAuditLogsAsync(
@@ -229,9 +234,14 @@ public class RedTeamPromptInjectionTests
             Sid? actorSid = null,
             DateTimeOffset? since = null,
             int limit = 1000,
+            TenantId? tenantId = null,
             System.Threading.CancellationToken ct = default)
         {
             var query = RecordedEvents.AsEnumerable();
+            if (tenantId.HasValue)
+            {
+                query = query.Where(e => e.TenantId == tenantId.Value);
+            }
             if (!string.IsNullOrWhiteSpace(targetTable))
             {
                 query = query.Where(e => string.Equals(e.TargetTable, targetTable, StringComparison.OrdinalIgnoreCase));
