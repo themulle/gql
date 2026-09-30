@@ -17,10 +17,12 @@ using Microsoft.Extensions.Logging;
 /// </summary>
 public sealed class SemanticMcpCompiler(
     ITableMetadataRepository metadataRepo,
-    ILogger<SemanticMcpCompiler> logger) : ISemanticMcpCompiler
+    ILogger<SemanticMcpCompiler> logger,
+    IGoldenQueryService? goldenQueryService = null) : ISemanticMcpCompiler
 {
     private readonly ITableMetadataRepository _metadataRepo = metadataRepo ?? throw new ArgumentNullException(nameof(metadataRepo));
     private readonly ILogger<SemanticMcpCompiler> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+    private readonly IGoldenQueryService? _goldenQueryService = goldenQueryService;
     private static readonly JsonSerializerOptions CachedIndentedOptions = new() { WriteIndented = true };
 
     public async Task<McpToolDefinition> CompileToolAsync(
@@ -193,6 +195,47 @@ public sealed class SemanticMcpCompiler(
                         Description: $"Documentation and metadata for {table}.{col.ColumnName}",
                         MimeType: "text/markdown",
                         Text: sb.ToString().TrimEnd()
+                    ));
+                }
+            }
+
+            // 4. Golden Queries / Few-Shot Examples Resource (examples://{domain}/{table})
+            if (_goldenQueryService != null)
+            {
+                var goldens = await _goldenQueryService.GetGoldenQueriesAsync(domain, table, ct).ConfigureAwait(false);
+                if (goldens.Count > 0)
+                {
+                    var sbExamples = new System.Text.StringBuilder();
+                    sbExamples.AppendLine($"# Golden Queries & Verified Few-Shot Examples: {domain}.{table}");
+                    sbExamples.AppendLine();
+                    sbExamples.AppendLine("Use these verified queries as few-shot patterns to eliminate hallucinations on this dataset:");
+                    sbExamples.AppendLine();
+                    foreach (var g in goldens)
+                    {
+                        sbExamples.AppendLine($"## {g.Title}");
+                        if (!string.IsNullOrWhiteSpace(g.Description))
+                        {
+                            sbExamples.AppendLine(g.Description);
+                        }
+                        sbExamples.AppendLine("```graphql");
+                        sbExamples.AppendLine(g.QueryText.Trim());
+                        sbExamples.AppendLine("```");
+                        if (!string.IsNullOrWhiteSpace(g.VariablesJson))
+                        {
+                            sbExamples.AppendLine("Variables:");
+                            sbExamples.AppendLine("```json");
+                            sbExamples.AppendLine(g.VariablesJson.Trim());
+                            sbExamples.AppendLine("```");
+                        }
+                        sbExamples.AppendLine();
+                    }
+
+                    resources.Add(new McpResourceItem(
+                        Uri: $"examples://{domain}/{table}",
+                        Name: $"{domain}_{table}_golden_queries",
+                        Description: $"Verified golden GraphQL queries and few-shot examples for {domain}.{table}",
+                        MimeType: "text/markdown",
+                        Text: sbExamples.ToString().TrimEnd()
                     ));
                 }
             }

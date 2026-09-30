@@ -37,6 +37,8 @@ using GqlGateway.Application.DataCatalog.Services;
 using GqlGateway.Infrastructure.DataCatalog;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Application.Mcp.Services;
+using GqlGateway.Application.ResourceGroups;
+using GqlGateway.Application.Observability;
 using GqlGateway.Application.OData.Interfaces;
 using GqlGateway.Application.OData.Services;
 using GqlGateway.Infrastructure.Itsm;
@@ -424,6 +426,7 @@ public static class GatewayServiceCollectionExtensions
 
         // Model Context Protocol (MCP) Server & AI Data Guardrails
         services.AddSingleton<ISemanticPromptGuardrail, SemanticPromptGuardrail>();
+        services.AddSingleton<IGoldenQueryService, GoldenQueryService>();
         services.AddSingleton<ISemanticMcpCompiler, SemanticMcpCompiler>();
         services.AddTransient<IPreFlightQuerySimulator, PreFlightQuerySimulator>();
         services.AddSingleton<IMcpProvenanceEnricher, McpProvenanceEnricher>();
@@ -434,6 +437,12 @@ public static class GatewayServiceCollectionExtensions
         services.AddScoped<IMcpProtocolHandler, McpProtocolHandler>();
         services.AddScoped<IMcpStdioRunner, McpStdioRunner>();
         services.AddHostedService<GqlGateway.GraphQL.Mcp.McpSchemaDiscoveryService>();
+
+        // Resource Groups & Workload Isolation (F-PERF-08)
+        services.AddSingleton<IResourceGroupManager, ResourceGroupManager>();
+
+        // Canonical System Metadata & Monitoring (F-API-07)
+        services.AddSingleton<IGatewaySystemMetricsService, GatewaySystemMetricsService>();
 
 
         // HA & Traffic Drain

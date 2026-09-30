@@ -29,6 +29,9 @@ public sealed class GatewayOptions
     [Required] public CasbinOptions Casbin { get; init; } = new();
     [Required] public DbtOptions Dbt { get; init; } = new();
     [Required] public BackstageIntegrationOptions Backstage { get; init; } = new();
+    [Required] public ResourceGroupsOptions ResourceGroups { get; init; } = new();
+    [Required] public SystemMetricsOptions SystemMetrics { get; init; } = new();
+    [Required] public GoldenQueryOptions GoldenQueries { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -694,5 +697,44 @@ public sealed class BackstageIntegrationOptions
     public bool IncludeTablesAsApis { get; init; } = true;
     public string BaseUrl { get; init; } = string.Empty;
 }
+
+public sealed class ResourceGroupsOptions
+{
+    public bool Enabled { get; init; } = true;
+    public ResourceGroupTierConfigOptions Interactive { get; init; } = new(50, 20, 5);
+    public ResourceGroupTierConfigOptions AutonomousAgents { get; init; } = new(10, 50, 15);
+    public ResourceGroupTierConfigOptions BulkAnalytics { get; init; } = new(5, 100, 60);
+}
+
+public sealed record ResourceGroupTierConfigOptions(
+    [Range(1, 1000)] int MaxConcurrency,
+    [Range(0, 10000)] int MaxQueueDepth,
+    [Range(1, 600)] int TimeoutSeconds
+);
+
+public sealed class SystemMetricsOptions
+{
+    public bool Enabled { get; init; } = true;
+    public bool ExposeRestEndpoints { get; init; } = true;
+}
+
+public sealed class GoldenQueryOptions
+{
+    public bool Enabled { get; init; } = true;
+    public int MaxResultsPerRequest { get; init; } = 20;
+    public List<GoldenQueryDefinition> InitialQueries { get; init; } = [];
+}
+
+public sealed record GoldenQueryDefinition(
+    string Id,
+    string Domain,
+    string TableName,
+    string Title,
+    string Description,
+    string QueryText,
+    string? VariablesJson = null,
+    List<string>? Tags = null
+);
+
 
 

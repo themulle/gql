@@ -32,6 +32,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
     private readonly ITableMetadataRepository? _tableMetadataRepository;
     private readonly IMcpSessionStore? _sessionStore;
     private readonly ISemanticPromptGuardrail _promptGuardrail;
+    private readonly IGoldenQueryService? _goldenQueryService;
 
     private static readonly TimeSpan DefaultRegexTimeout = TimeSpan.FromMilliseconds(250);
 
@@ -60,7 +61,8 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         IPolicyEnforcementService? policyEnforcementService = null,
         ITableMetadataRepository? tableMetadataRepository = null,
         IMcpSessionStore? sessionStore = null,
-        ISemanticPromptGuardrail? promptGuardrail = null)
+        ISemanticPromptGuardrail? promptGuardrail = null,
+        IGoldenQueryService? goldenQueryService = null)
     {
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -71,6 +73,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         _tableMetadataRepository = tableMetadataRepository;
         _sessionStore = sessionStore;
         _promptGuardrail = promptGuardrail ?? new SemanticPromptGuardrail();
+        _goldenQueryService = goldenQueryService;
     }
 
 
@@ -282,7 +285,30 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         // 4. Execution Bridge: Execute operation via IMcpQueryExecutor or test fallback
         string rawDataJson;
         var argsJson = request.ArgumentsJson ?? "{}";
-        if (_queryExecutor != null)
+        if (tool.Name.Equals("get_golden_queries", StringComparison.OrdinalIgnoreCase) && _goldenQueryService != null)
+        {
+            string? domain = null;
+            string? tableName = null;
+            try
+            {
+                using var argDoc = JsonDocument.Parse(argsJson);
+                if (argDoc.RootElement.TryGetProperty("domain", out var dProp) && dProp.ValueKind == JsonValueKind.String)
+                {
+                    domain = dProp.GetString();
+                }
+                if (argDoc.RootElement.TryGetProperty("tableName", out var tProp) && tProp.ValueKind == JsonValueKind.String)
+                {
+                    tableName = tProp.GetString();
+                }
+            }
+            catch (JsonException)
+            {
+            }
+
+            var queries = await _goldenQueryService.GetGoldenQueriesAsync(domain, tableName, cancellationToken).ConfigureAwait(false);
+            rawDataJson = JsonSerializer.Serialize(new { tenantId = sessionContext.TenantId, queries });
+        }
+        else if (_queryExecutor != null)
         {
             rawDataJson = await _queryExecutor.ExecuteOperationAsync(tool, argsJson, sessionContext, cancellationToken).ConfigureAwait(false);
         }
@@ -415,6 +441,8 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             return new TableIdentifier("finance", "dbo", "invoices");
         if (tool.Name.Equals("query_data_catalog", StringComparison.OrdinalIgnoreCase))
             return new TableIdentifier("governance", "catalog", "assets");
+        if (tool.Name.Equals("get_golden_queries", StringComparison.OrdinalIgnoreCase))
+            return new TableIdentifier("governance", "mcp", "golden_queries");
 
         if (tool.Name.Equals("simulate_query", StringComparison.OrdinalIgnoreCase))
         {
@@ -541,6 +569,21 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
                   "sensitivity": "HIGH",
                   "owner": "data-steward-sales@company.com",
                   "tags": ["PII", "GDPR.Article9", "Financial"]
+                }
+              ]
+            }
+            """,
+
+            "get_golden_queries" => $$"""
+            {
+              "tenantId": "{{encodedTenant}}",
+              "queries": [
+                {
+                  "id": "golden_customers_active",
+                  "domain": "finance",
+                  "tableName": "customers",
+                  "title": "Get Active Customers with Account Details",
+                  "queryText": "query GetActiveCustomers { customers(filter: { status: \"ACTIVE\" }) { id name email iban } }"
                 }
               ]
             }

@@ -39,3 +39,16 @@ public sealed class TableNotFoundException : GatewaySecurityException
         Table = table;
     }
 }
+
+public sealed class ResourceGroupExhaustedException : GatewaySecurityException
+{
+    public Model.ResourceGroupTier Tier { get; }
+    public string RejectionReason { get; }
+
+    public ResourceGroupExhaustedException(Model.ResourceGroupTier tier, string rejectionReason)
+        : base($"Resource group '{tier}' request rejected: {rejectionReason}.", rejectionReason == "QueueFull" ? "RESOURCE_GROUP_QUEUE_FULL" : "RESOURCE_GROUP_TIMEOUT")
+    {
+        Tier = tier;
+        RejectionReason = rejectionReason;
+    }
+}

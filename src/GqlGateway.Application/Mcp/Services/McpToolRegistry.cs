@@ -109,6 +109,22 @@ public sealed class McpToolRegistry : IMcpToolRegistry
             TargetGraphQLOperation: "simulate_query"
         ));
 
+        // 5. Built-in tool: get_golden_queries (F-AI-03 Dynamic Few-Shot Golden Query Injection)
+        RegisterTool(new McpToolDefinition(
+            Name: "get_golden_queries",
+            Description: "Retrieves curated golden queries and verified few-shot query patterns to prevent LLM hallucinations on complex schemas.",
+            InputJsonSchema: """
+            {
+              "type": "object",
+              "properties": {
+                "domain": { "type": "string", "description": "Optional business domain filter (e.g. 'finance', 'crm')." },
+                "tableName": { "type": "string", "description": "Optional table name filter (e.g. 'customers', 'invoices')." }
+              }
+            }
+            """,
+            TargetGraphQLOperation: "get_golden_queries"
+        ));
+
         // Register any explicitly declared operations
         if (allowedOperations != null)
         {

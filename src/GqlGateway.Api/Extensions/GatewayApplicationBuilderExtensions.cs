@@ -186,6 +186,7 @@ public static class GatewayApplicationBuilderExtensions
         app.UseAuthorization();
         app.UseMiddleware<PostAuthSidRateLimitingMiddleware>();
         app.UseMiddleware<TenantResolutionMiddleware>();
+        app.UseMiddleware<ResourceGroupMiddleware>();
         app.UseMiddleware<OpenTelemetryTracingMiddleware>();
         app.UseMiddleware<GatewayExtensibilityMiddleware>();
 
@@ -219,6 +220,7 @@ public static class GatewayApplicationBuilderExtensions
         app.MapStreamingCdcEndpoints();
         app.MapDbtEndpoints();
         app.MapGovernanceEndpoints();
+        app.MapSystemEndpoints();
         app.MapODataEndpoints(gatewayOptions);
         app.MapMcpEndpoints(gatewayOptions);
         app.MapSchemaRegistryEndpoints();
