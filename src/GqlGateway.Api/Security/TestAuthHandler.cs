@@ -99,6 +99,11 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
             claims.Add(new Claim("idtyp", idTypHeader.ToString().Trim()));
         }
 
+        if (headers.TryGetValue("X-Test-Tier", out var tierHeader) && !string.IsNullOrWhiteSpace(tierHeader))
+        {
+            claims.Add(new Claim("tier", tierHeader.ToString().Trim()));
+        }
+
         if (headers.TryGetValue("X-Test-Group-Sids", out var groupSidsVal) && !string.IsNullOrWhiteSpace(groupSidsVal))
         {
             var groups = groupSidsVal.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);

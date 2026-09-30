@@ -35,11 +35,26 @@ public static class StreamingCdcEndpoints
             try
             {
                 var user = request.HttpContext.User;
+                var sid = user.FindFirst(System.Security.Claims.ClaimTypes.PrimarySid)?.Value
+                          ?? user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                var isClusterAdmin = user.IsInRole("ClusterAdmin") ||
+                                     user.IsInRole("PlatformAdmin") ||
+                                     (sid != null && sid.Contains("ADMIN", StringComparison.OrdinalIgnoreCase)) ||
+                                     (user.Identity?.Name != null && user.Identity.Name.Contains("ADMIN", StringComparison.OrdinalIgnoreCase));
+
+                var isAuthorizedIngestion = isClusterAdmin ||
+                                            user.IsInRole("CdcIngestionService") ||
+                                            user.IsInRole("StreamingAdmin") ||
+                                            user.IsInRole("GovernanceAdmin");
+
+                if (!isAuthorizedIngestion)
+                {
+                    return Results.StatusCode(StatusCodes.Status403Forbidden);
+                }
+
                 var callerTenant = user.FindFirst("tenant_id")?.Value
                                   ?? user.FindFirst("tid")?.Value
                                   ?? user.FindFirst("tenant")?.Value;
-
-                var isClusterAdmin = user.IsInRole("ClusterAdmin") || user.IsInRole("PlatformAdmin");
 
                 var cdcEvent = DebeziumCdcParser.Parse(body);
 

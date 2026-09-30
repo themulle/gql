@@ -52,27 +52,16 @@ public sealed class WebSocketAuthInterceptorTests
         token.ShouldBeNull();
     }
 
-#pragma warning disable CS0618
     [Fact]
-    public void CreatePrincipalFromToken_PopulatesClaimsCorrectly()
+    public void ExtractToken_WithMixedCaseAuthorization_ExtractsCleanToken()
     {
-        var principal = WebSocketAuthInterceptor.CreatePrincipalFromToken("ALICE");
+        var dict = new Dictionary<string, object?>
+        {
+            ["authorization"] = "Bearer token-abc"
+        };
 
-        principal.Identity.ShouldNotBeNull();
-        principal.Identity.IsAuthenticated.ShouldBeTrue();
-        principal.FindFirst(ClaimTypes.NameIdentifier)?.Value.ShouldBe("ALICE");
-        principal.FindFirst(ClaimTypes.PrimarySid)?.Value.ShouldBe("S-1-5-21-ALICE");
-        principal.FindFirst("tenant_id")?.Value.ShouldBe("default");
-    }
+        var token = WebSocketAuthInterceptor.ExtractToken(dict);
 
-    [Theory]
-    [InlineData("S-1-5-32-544")] // Builtin Administrators
-    [InlineData("S-1-5-32-545")] // Builtin Users
-    [InlineData("S-1-5-21-123456789-500")] // Domain Administrator
-    public void CreatePrincipalFromToken_WithPrivilegedSid_ThrowsSecurityException(string privilegedSid)
-    {
-        Should.Throw<System.Security.SecurityException>(() =>
-            WebSocketAuthInterceptor.CreatePrincipalFromToken(privilegedSid));
+        token.ShouldBe("token-abc");
     }
-#pragma warning restore CS0618
 }

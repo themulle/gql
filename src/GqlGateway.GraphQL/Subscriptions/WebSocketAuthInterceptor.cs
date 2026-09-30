@@ -92,25 +92,4 @@ public sealed class WebSocketAuthInterceptor : DefaultSocketSessionInterceptor
         }
         return null;
     }
-
-    [Obsolete("Insecure: Bypasses cryptographic token signature validation. Only for test fixtures. Use ISocketTokenValidator in production.", error: false)]
-    internal static ClaimsPrincipal CreatePrincipalFromToken(string token)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(token);
-
-        // SEC-2: Block direct injection of privileged domain/local admin SIDs
-        if (token.StartsWith("S-1-5-32-", StringComparison.OrdinalIgnoreCase) ||
-            token.EndsWith("-500", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new System.Security.SecurityException("Direkte Injektion privilegierter Windows-SIDs über WebSocket-Token ist verboten.");
-        }
-
-        var identity = new ClaimsIdentity("WebSocketAuth");
-        identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, token));
-        identity.AddClaim(new Claim("sub", token));
-        identity.AddClaim(new Claim(ClaimTypes.PrimarySid, token.StartsWith("S-", StringComparison.OrdinalIgnoreCase) ? token : $"S-1-5-21-{token}"));
-        identity.AddClaim(new Claim("tenant_id", "default"));
-
-        return new ClaimsPrincipal(identity);
-    }
 }

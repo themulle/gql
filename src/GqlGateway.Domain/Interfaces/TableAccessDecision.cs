@@ -6,7 +6,8 @@ public record TableAccessDecision(
     IReadOnlyDictionary<string, ColumnAccessLevel> ColumnAccess,
     string? CombinedRowFilterSql,
     IReadOnlyList<string> DeniedReasons,
-    bool HasUnconstrainedColumnAllow = false
+    bool HasUnconstrainedColumnAllow = false,
+    IReadOnlyDictionary<string, object?>? RowFilterParameters = null
 )
 {
     public ColumnAccessLevel GetColumnAccess(string columnName)
@@ -28,6 +29,7 @@ public record TableAccessDecision(
         TableIdentifier table,
         IReadOnlyDictionary<string, ColumnAccessLevel> columnAccess,
         string? rowFilterSql = null,
-        bool hasUnconstrainedColumnAllow = false) =>
-        new(table, true, columnAccess, rowFilterSql, Array.Empty<string>(), hasUnconstrainedColumnAllow);
+        bool hasUnconstrainedColumnAllow = false,
+        IReadOnlyDictionary<string, object?>? rowFilterParameters = null) =>
+        new(table, true, columnAccess, rowFilterSql, Array.Empty<string>(), hasUnconstrainedColumnAllow, rowFilterParameters);
 }

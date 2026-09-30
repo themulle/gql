@@ -228,8 +228,23 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         return enforcer;
     }
 
+    [GeneratedRegex(@"^[a-zA-Z0-9_.\s()=<>!,'""+\-*/%:]+$", RegexOptions.Compiled)]
+    private static partial Regex SafeSubRulePattern();
+
     private static void ValidateSubRule(string subRule)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subRule);
+
+        if (subRule.Length > 500)
+        {
+            throw new ArgumentException("Security validation error: Casbin sub_rule exceeds maximum length of 500 characters.", nameof(subRule));
+        }
+
+        if (!SafeSubRulePattern().IsMatch(subRule))
+        {
+            throw new ArgumentException("Security validation error: Casbin sub_rule contains disallowed characters.", nameof(subRule));
+        }
+
         foreach (var token in DangerousSubRuleTokens)
         {
             if (subRule.Contains(token, StringComparison.OrdinalIgnoreCase))

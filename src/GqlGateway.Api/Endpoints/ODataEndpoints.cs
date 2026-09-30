@@ -124,8 +124,9 @@ public static class ODataEndpoints
             {
                 return Results.Unauthorized();
             }
-            context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
-            return Results.Content(SwaggerUiHtml, "text/html;charset=utf-8");
+            var nonce = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+            context.Response.Headers.ContentSecurityPolicy = $"default-src 'self'; script-src 'self' 'nonce-{nonce}' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
+            return Results.Content(GetSwaggerUiHtml(nonce), "text/html;charset=utf-8");
         });
 
         app.MapGet("/docs", (HttpContext context, IWebHostEnvironment env) =>
@@ -134,8 +135,9 @@ public static class ODataEndpoints
             {
                 return Results.Unauthorized();
             }
-            context.Response.Headers.ContentSecurityPolicy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
-            return Results.Content(SwaggerUiHtml, "text/html;charset=utf-8");
+            var nonce = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+            context.Response.Headers.ContentSecurityPolicy = $"default-src 'self'; script-src 'self' 'nonce-{nonce}' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
+            return Results.Content(GetSwaggerUiHtml(nonce), "text/html;charset=utf-8");
         });
 
         app.MapGet("/odata/v4/{domain}/{schema}/{tableName}", async (
@@ -199,7 +201,7 @@ public static class ODataEndpoints
         return app;
     }
 
-    private const string SwaggerUiHtml = """
+    private static string GetSwaggerUiHtml(string nonce) => $$"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -211,7 +213,7 @@ public static class ODataEndpoints
     <body>
     <div id="swagger-ui"></div>
     <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js" crossorigin="anonymous"></script>
-    <script>
+    <script nonce="{{nonce}}">
       window.onload = () => {
         window.ui = SwaggerUIBundle({
           url: '/odata/v4/$openapi',

@@ -62,7 +62,7 @@ public sealed class ConsentResolutionService : IConsentResolutionService
             }
         }
 
-        // Rule 3: Column Access Levels (Maximum over A, unless hard DENY from D)
+        // Rule 3: Column Access Levels (Bounded by row-filter scope to prevent consent-blending privilege escalation)
         var allReferencedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in applicable)
         {
@@ -73,6 +73,8 @@ public sealed class ConsentResolutionService : IConsentResolutionService
         }
 
         var columnAccess = new Dictionary<string, ColumnAccessLevel>(StringComparer.OrdinalIgnoreCase);
+        var unconstrainedConsents = aConsents.Where(c => c.RowFilters.Count == 0).ToList();
+        bool hasUnconstrained = unconstrainedConsents.Count > 0;
 
         foreach (var column in allReferencedColumns)
         {
@@ -82,38 +84,84 @@ public sealed class ConsentResolutionService : IConsentResolutionService
                 continue;
             }
 
-            // Calculate maximum over A
-            var maxLevel = ColumnAccessLevel.Deny;
-            var isExplicitlyGrantedOrUnconstrained = false;
-
-            foreach (var allowConsent in aConsents)
+            if (hasUnconstrained)
             {
-                // Consent without column rule delivers CLEAR for all columns
-                if (allowConsent.ColumnRules.Count == 0)
+                // When unconstrained consents exist, table rows are unfiltered.
+                // Columns can ONLY be elevated to what unconstrained consents grant, preventing
+                // row-constrained grants (e.g. region='EU' -> Clear) from leaking cleartext on all rows!
+                var unconstrainedMax = ColumnAccessLevel.Deny;
+                var hasUnconstrainedGrant = false;
+
+                foreach (var uc in unconstrainedConsents)
                 {
-                    maxLevel = ColumnAccessLevel.Clear;
-                    isExplicitlyGrantedOrUnconstrained = true;
-                    break;
+                    if (uc.ColumnRules.Count == 0)
+                    {
+                        unconstrainedMax = ColumnAccessLevel.Clear;
+                        hasUnconstrainedGrant = true;
+                        break;
+                    }
+
+                    var r = uc.ColumnRules.FirstOrDefault(cr => string.Equals(cr.ColumnName, column, StringComparison.OrdinalIgnoreCase));
+                    if (r != null)
+                    {
+                        hasUnconstrainedGrant = true;
+                        if (r.AccessLevel > unconstrainedMax) unconstrainedMax = r.AccessLevel;
+                    }
                 }
 
-                var rule = allowConsent.ColumnRules.FirstOrDefault(r => string.Equals(r.ColumnName, column, StringComparison.OrdinalIgnoreCase));
-                if (rule != null)
+                if (hasUnconstrainedGrant)
                 {
-                    isExplicitlyGrantedOrUnconstrained = true;
-                    if (rule.AccessLevel > maxLevel)
+                    columnAccess[column] = unconstrainedMax;
+                }
+                else
+                {
+                    // Column was ONLY granted under row-constrained consents, but table access is unconstrained.
+                    // Under Zero Trust, column cannot be exposed globally without row constraint -> Deny globally
+                    columnAccess[column] = ColumnAccessLevel.Deny;
+                }
+            }
+            else
+            {
+                // All applicable allow consents are row-constrained.
+                // If consents have diverging row filters with different access levels, choose the safest (minimum).
+                var grantingConsents = new List<(Consent Consent, ColumnAccessLevel Level)>();
+                foreach (var ac in aConsents)
+                {
+                    if (ac.ColumnRules.Count == 0)
                     {
-                        maxLevel = rule.AccessLevel;
+                        grantingConsents.Add((ac, ColumnAccessLevel.Clear));
+                    }
+                    else
+                    {
+                        var r = ac.ColumnRules.FirstOrDefault(cr => string.Equals(cr.ColumnName, column, StringComparison.OrdinalIgnoreCase));
+                        if (r != null)
+                        {
+                            grantingConsents.Add((ac, r.AccessLevel));
+                        }
+                    }
+                }
+
+                if (grantingConsents.Count == 0)
+                {
+                    columnAccess[column] = ColumnAccessLevel.Deny;
+                }
+                else
+                {
+                    var distinctFilters = grantingConsents
+                        .Select(g => _sqlBuilder.BuildCombinedRowFilter(new[] { g.Consent }, Array.Empty<Consent>(), dialect))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Count();
+
+                    if (distinctFilters <= 1)
+                    {
+                        columnAccess[column] = grantingConsents.Max(g => g.Level);
+                    }
+                    else
+                    {
+                        columnAccess[column] = grantingConsents.Min(g => g.Level);
                     }
                 }
             }
-
-            // If no consent granted access to this column (and no unconstrained consent exists), default deny under Zero Trust
-            if (!isExplicitlyGrantedOrUnconstrained)
-            {
-                maxLevel = ColumnAccessLevel.Deny;
-            }
-
-            columnAccess[column] = maxLevel;
         }
 
         // Rule 4: Row Predicate resolution delegated to dedicated IRowFilterSqlBuilder

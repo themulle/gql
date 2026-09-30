@@ -758,11 +758,20 @@ public static class GatewayServiceCollectionExtensions
 
         var gqlBuilder = services
             .AddGraphQLServer()
+            .UseInstrumentation()
+            .UseExceptions()
+            .UseTimeout()
+            .UseDocumentCache()
+            .UseDocumentParser()
+            .UseDocumentValidation()
             .UseRequest<GqlGateway.GraphQL.Interceptors.DbtHealthExecutionMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CostAndQuotaMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CdnCacheTagMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Federation.SubgraphResultMaskingMiddleware>()
-            .UseDefaultPipeline()
+            .UseOperationCache()
+            .UseOperationResolver()
+            .UseOperationVariableCoercion()
+            .UseOperationExecution()
             .AddApplicationService<IHostEnvironment>()
             .AddApplicationService<ErrorSanitizingFilter>()
             .AddApplicationService<WebSocketAuthInterceptor>()
@@ -916,6 +925,37 @@ public static class GatewayServiceCollectionExtensions
                 !options.Plugins.RequireIntegrityManifest)
             {
                 throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development erfordert ein konfiguriertes Plugin-Verzeichnis zwingend Plugins.RequireIntegrityManifest = true!");
+            }
+
+            if (options.Authentication.BasicAuth.Enabled)
+            {
+                if (options.Authentication.BasicAuth.Users.Any(u => string.IsNullOrWhiteSpace(u.Password) || !u.Password.StartsWith("$pbkdf2$", StringComparison.OrdinalIgnoreCase)))
+                {
+                    throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development müssen BasicAuth-Passwörter zwingend als PBKDF2-Hash ($pbkdf2$...) gespeichert sein!");
+                }
+            }
+
+            if (options.Authentication.EntraId.Enabled && (string.IsNullOrWhiteSpace(options.Authentication.EntraId.Audience) || (string.IsNullOrWhiteSpace(options.Authentication.EntraId.TenantId) && string.IsNullOrWhiteSpace(options.Authentication.EntraId.Instance))))
+            {
+                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development müssen EntraId.Audience und TenantId/Instance zwingend konfiguriert sein!");
+            }
+
+            if (options.Authentication.Adfs.Enabled && (string.IsNullOrWhiteSpace(options.Authentication.Adfs.Audience) || string.IsNullOrWhiteSpace(options.Authentication.Adfs.Authority)))
+            {
+                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development müssen Adfs.Audience und Authority zwingend konfiguriert sein!");
+            }
+
+            if (options.Audit.Worm.Enabled && string.Equals(options.Audit.Worm.StorageType, "S3", StringComparison.OrdinalIgnoreCase) && options.Audit.Worm.EnforceObjectLock &&
+                (string.IsNullOrWhiteSpace(options.Audit.Worm.S3AccessKey) || string.IsNullOrWhiteSpace(options.Audit.Worm.S3SecretKey)))
+            {
+                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development müssen für S3-WORM mit EnforceObjectLock zwingend S3AccessKey und S3SecretKey konfiguriert sein!");
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.GovernanceDb.ConnectionString) &&
+                (options.GovernanceDb.ConnectionString.Contains(":memory:", StringComparison.OrdinalIgnoreCase) ||
+                 options.GovernanceDb.ConnectionString.Contains("Mode=Memory", StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new ValidationException("Sicherheitsverletzung: In-Memory SQLite-Datenbanken (GovernanceDb.ConnectionString) sind außerhalb von Development streng verboten!");
             }
         }
 

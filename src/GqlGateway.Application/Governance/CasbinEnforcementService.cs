@@ -231,7 +231,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         var groupsStr = context.GroupSids != null && context.GroupSids.Count > 0
             ? string.Join(",", context.GroupSids.Select(g => g.Value).OrderBy(s => s, StringComparer.Ordinal))
             : string.Empty;
-        var cacheKey = $"{context.Tenant.Value}:{context.UserSid.Value}:{tableStr}:{context.PurposeId}:{context.Department}:{context.Region}:{context.ClearanceLevel}:G[{groupsStr}]";
+        var cacheKey = $"{context.Tenant.Value}:{context.UserSid.Value}:{tableStr}:{context.PurposeId}:{context.Department}:{context.Region}:{context.ClearanceLevel}:{context.ClientIp}:G[{groupsStr}]";
 
         if (_decisionCache.TryGetValue(cacheKey, out var cachedEntry))
         {
@@ -240,6 +240,11 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
                 return ValueTask.FromResult(cachedEntry.Decision);
             }
             _decisionCache.TryRemove(cacheKey, out _);
+        }
+
+        if (_decisionCache.Count >= 10_000)
+        {
+            _decisionCache.Clear();
         }
 
         var sw = Stopwatch.StartNew();
@@ -387,20 +392,17 @@ PolicyDone:
                     continue;
                 }
 
-                // Handle Correlated Row Filter
+                // Handle Correlated Row Filter (Fail-closed on generation failure)
                 if (rule.CorrelatedRowFilter != null)
                 {
-                    try
+                    var subquery = _rlsFilterGenerator.BuildCorrelatedSubquery(rule.CorrelatedRowFilter);
+                    if (!string.IsNullOrWhiteSpace(subquery))
                     {
-                        var subquery = _rlsFilterGenerator.BuildCorrelatedSubquery(rule.CorrelatedRowFilter);
-                        if (!string.IsNullOrWhiteSpace(subquery))
-                        {
-                            result.Add(subquery);
-                        }
+                        result.Add(subquery);
                     }
-                    catch
+                    else
                     {
-                        // Ignore generation error on incompatible dialect or skip
+                        throw new SecurityException($"Sicherheitsfehler: Korrelierter RLS-Filter für Tabelle '{tableStr}' konnte nicht generiert werden.");
                     }
                 }
 
@@ -462,6 +464,31 @@ PolicyDone:
 
     private static string InterpolateRlsFilter(string filterTemplate, SecurityEvaluationContext context)
     {
+        // Fail-Closed: Required attributes MUST be present in security context if referenced in template
+        if ((filterTemplate.Contains("${department}", StringComparison.OrdinalIgnoreCase) || filterTemplate.Contains("${r.ctx.Department}", StringComparison.OrdinalIgnoreCase)) &&
+            string.IsNullOrWhiteSpace(context.Department))
+        {
+            throw new SecurityException($"Sicherheitsfehler: Erforderliches RLS-Attribut 'Department' fehlt im Kontext für Template '{filterTemplate}'.");
+        }
+
+        if ((filterTemplate.Contains("${region}", StringComparison.OrdinalIgnoreCase) || filterTemplate.Contains("${r.ctx.Region}", StringComparison.OrdinalIgnoreCase)) &&
+            string.IsNullOrWhiteSpace(context.Region))
+        {
+            throw new SecurityException($"Sicherheitsfehler: Erforderliches RLS-Attribut 'Region' fehlt im Kontext für Template '{filterTemplate}'.");
+        }
+
+        if ((filterTemplate.Contains("${clearance}", StringComparison.OrdinalIgnoreCase) || filterTemplate.Contains("${r.ctx.ClearanceLevel}", StringComparison.OrdinalIgnoreCase)) &&
+            string.IsNullOrWhiteSpace(context.ClearanceLevel))
+        {
+            throw new SecurityException($"Sicherheitsfehler: Erforderliches RLS-Attribut 'ClearanceLevel' fehlt im Kontext für Template '{filterTemplate}'.");
+        }
+
+        if ((filterTemplate.Contains("${purpose}", StringComparison.OrdinalIgnoreCase) || filterTemplate.Contains("${r.ctx.PurposeId}", StringComparison.OrdinalIgnoreCase)) &&
+            string.IsNullOrWhiteSpace(context.PurposeId))
+        {
+            throw new SecurityException($"Sicherheitsfehler: Erforderliches RLS-Attribut 'PurposeId' fehlt im Kontext für Template '{filterTemplate}'.");
+        }
+
         var userSid = SanitizeClaimForSql(context.UserSid.Value, "user_sid");
         var tenant = SanitizeClaimForSql(context.Tenant.Value, "tenant");
         var department = SanitizeClaimForSql(context.Department, "department");
@@ -495,6 +522,11 @@ PolicyDone:
                         .Replace($"${{{k}}}", sanitized, StringComparison.OrdinalIgnoreCase);
                 }
             }
+        }
+
+        if (Regex.IsMatch(result, @"\$\{[a-zA-Z0-9_.]+\}"))
+        {
+            throw new SecurityException($"Sicherheitsfehler: Unaufgelöster RLS-Parameter im Template '{filterTemplate}'.");
         }
 
         return result;

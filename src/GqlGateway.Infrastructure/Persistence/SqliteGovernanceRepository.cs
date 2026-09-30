@@ -85,22 +85,36 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
         var envName = environment?.EnvironmentName ??
                       Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ??
                       Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
-        bool isExplicitNonDev = !string.IsNullOrEmpty(envName) && !string.Equals(envName, "Development", StringComparison.OrdinalIgnoreCase);
+        bool isDevOrTest = string.IsNullOrEmpty(envName) ||
+                           string.Equals(envName, "Development", StringComparison.OrdinalIgnoreCase) ||
+                           string.Equals(envName, "Testing", StringComparison.OrdinalIgnoreCase) ||
+                           string.Equals(envName, "Test", StringComparison.OrdinalIgnoreCase);
 
-        if (key == null)
+        if (!isDevOrTest)
         {
-            if (isExplicitNonDev && !isMemory)
+            if (isMemory)
+            {
+                throw new InvalidOperationException(
+                    "Security critical: In-Memory SQLite governance database is strictly forbidden in non-development/production environments. A persistent database must be configured.");
+            }
+
+            if (key == null)
             {
                 throw new InvalidOperationException(
                     "Security critical: Audit HMAC secret is missing or could not be resolved from Key Vault in a non-development environment. Tamper-evident audit logging cannot use default fallback keys.");
             }
+        }
+
+        if (key == null)
+        {
             _auditHmacKey = "GqlGatewayAuditLogHmacTamperEvidenceSecret2026!"u8.ToArray();
         }
         else
         {
             _auditHmacKey = key;
         }
-        bool shouldSeed = options?.Value?.GovernanceDb?.SeedDemoData ?? (isMemory && !isExplicitNonDev);
+
+        bool shouldSeed = options?.Value?.GovernanceDb?.SeedDemoData ?? (isMemory && isDevOrTest);
         if (shouldSeed)
         {
             SeedInitialCatalog();

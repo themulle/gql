@@ -167,6 +167,17 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
                 context.AccessDecision.CombinedRowFilterSql,
                 "CombinedRowFilterSql");
             whereParts.Add($"({context.AccessDecision.CombinedRowFilterSql})");
+
+            if (context.AccessDecision.RowFilterParameters != null)
+            {
+                foreach (var (pName, pVal) in context.AccessDecision.RowFilterParameters)
+                {
+                    var p = command.CreateParameter();
+                    p.ParameterName = pName;
+                    p.Value = pVal ?? DBNull.Value;
+                    command.Parameters.Add(p);
+                }
+            }
         }
 
         foreach (var (argKey, argVal) in context.Arguments)

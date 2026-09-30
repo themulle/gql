@@ -3,6 +3,8 @@ namespace GqlGateway.Infrastructure.OpenJev;
 using System;
 using System.Collections.Concurrent;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -113,7 +115,9 @@ public sealed partial class OpenJevClient : IOpenJevClient
             lower.Contains("sudo grant") ||
             lower.Contains("prompt leakage"))
         {
-            _logger.LogWarning("Prompt-Injection erkannt in Justification für User {UserSid}: {Pattern}", userSid.Value, text);
+            var hashPrefix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)))[..12];
+            _logger.LogWarning("Prompt-Injection erkannt in Justification für User {UserSid}. PatternCategory: SuspiciousExfiltration, TextLength: {Length}, HashPrefix: {Hash}",
+                userSid.Value, text.Length, hashPrefix);
             return Task.FromResult(new JustificationTriageResult(
                 JustificationCategory.SuspiciousExfiltration,
                 0.99,

@@ -69,49 +69,7 @@ public sealed class JwtSocketTokenValidator : ISocketTokenValidator
                 return (true, new ClaimsPrincipal(identity));
             }
 
-            // In non-development environment: reject if no signing keys are configured (Fail-Closed)
-            if (!_environment.IsDevelopment())
-            {
-                _logger.LogWarning("WebSocket token rejected: No cryptographic IssuerSigningKey configured in non-development environment.");
-                return (false, null);
-            }
-
-            // In Development ONLY: allow test token if EnableTestAuthHandler is explicitly active
-            if (_gatewayOptions.Value.Authentication.EnableTestAuthHandler)
-            {
-                var parts = token.Split('.');
-                if (parts.Length == 3)
-                {
-                    var payloadJson = System.Text.Encoding.UTF8.GetString(Base64UrlDecode(parts[1]));
-                    using var doc = System.Text.Json.JsonDocument.Parse(payloadJson);
-                    var root = doc.RootElement;
-
-                    if (root.TryGetProperty("exp", out var expProp) && expProp.TryGetInt64(out var expSeconds))
-                    {
-                        var expDate = DateTimeOffset.FromUnixTimeSeconds(expSeconds);
-                        if (expDate < DateTimeOffset.UtcNow)
-                        {
-                            _logger.LogWarning("WebSocket JWT dev token is expired (exp: {ExpDate}).", expDate);
-                            return (false, null);
-                        }
-                    }
-
-                    var sub = root.TryGetProperty("sub", out var subProp) ? subProp.GetString() : null;
-                    var tenant = root.TryGetProperty("tenant_id", out var tProp) ? tProp.GetString() : "default";
-
-                    var identity = new ClaimsIdentity("WebSocketDevAuth");
-                    if (!string.IsNullOrWhiteSpace(sub))
-                    {
-                        identity.AddClaim(new Claim(ClaimTypes.NameIdentifier, sub));
-                        identity.AddClaim(new Claim("sub", sub));
-                        identity.AddClaim(new Claim(ClaimTypes.PrimarySid, sub.StartsWith("S-", StringComparison.OrdinalIgnoreCase) ? sub : $"S-1-5-21-{sub}"));
-                    }
-                    identity.AddClaim(new Claim("tenant_id", tenant ?? "default"));
-
-                    return (true, new ClaimsPrincipal(identity));
-                }
-            }
-
+            _logger.LogWarning("WebSocket token rejected: No cryptographic IssuerSigningKey configured.");
             return (false, null);
         }
         catch (Exception ex)
@@ -119,16 +77,5 @@ public sealed class JwtSocketTokenValidator : ISocketTokenValidator
             _logger.LogWarning(ex, "Unexpected error during WebSocket token validation.");
             return (false, null);
         }
-    }
-
-    private static byte[] Base64UrlDecode(string input)
-    {
-        var output = input.Replace('-', '+').Replace('_', '/');
-        switch (output.Length % 4)
-        {
-            case 2: output += "=="; break;
-            case 3: output += "="; break;
-        }
-        return Convert.FromBase64String(output);
     }
 }

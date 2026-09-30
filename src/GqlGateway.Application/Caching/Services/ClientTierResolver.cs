@@ -17,6 +17,8 @@ public sealed class ClientTierResolver : IClientTierResolver
     private readonly ConcurrentDictionary<string, (ClientTier Tier, DateTimeOffset Expiry)> _apiKeyCache = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, ClientTier> _registeredKeys = new(StringComparer.Ordinal);
 
+    private const int MaxCacheSize = 10_000;
+
     public ClientTierResolver(ILogger<ClientTierResolver> logger)
     {
         _logger = logger;
@@ -34,15 +36,23 @@ public sealed class ClientTierResolver : IClientTierResolver
         string? clientIp,
         CancellationToken ct = default)
     {
-        // 1. Check API Key
+        // 1. Check registered API Key
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
             var cleanKey = apiKey.Trim();
-            var (subjectId, tier) = ResolveApiKey(cleanKey);
-            return Task.FromResult(new ClientQuotaContext(subjectId, tier, ClientQuotaPolicy.ForTier(tier)));
+            if (_registeredKeys.TryGetValue(cleanKey, out var registeredTier))
+            {
+                var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(cleanKey));
+                var hexHash = Convert.ToHexString(hashBytes).ToLowerInvariant();
+                var subjectId = "key_" + hexHash[..16];
+
+                EnsureCacheCapacity();
+                _apiKeyCache[subjectId] = (registeredTier, DateTimeOffset.UtcNow.AddMinutes(10));
+                return Task.FromResult(new ClientQuotaContext(subjectId, registeredTier, ClientQuotaPolicy.ForTier(registeredTier)));
+            }
         }
 
-        // 2. Check JWT Claims from Principal
+        // 2. Check JWT Claims from Principal (Authenticated user has precedence over unregistered API keys)
         if (principal?.Identity?.IsAuthenticated == true)
         {
             var tierClaim = principal.FindFirst("tier")?.Value ??
@@ -66,37 +76,43 @@ public sealed class ClientTierResolver : IClientTierResolver
             return Task.FromResult(new ClientQuotaContext(subjectId, ClientTier.Standard, ClientQuotaPolicy.ForTier(ClientTier.Standard)));
         }
 
-        // 3. Fallback: Anonymous / Free tier
+        // 3. Fallback: Unregistered API Key for Anonymous Client (always Free tier, deterministic subjectId, bounded cache)
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            var cleanKey = apiKey.Trim();
+            var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(cleanKey));
+            var hexHash = Convert.ToHexString(hashBytes).ToLowerInvariant();
+            var subjectId = "key_" + hexHash[..16];
+
+            EnsureCacheCapacity();
+            _apiKeyCache[subjectId] = (ClientTier.Free, DateTimeOffset.UtcNow.AddMinutes(10));
+            return Task.FromResult(new ClientQuotaContext(subjectId, ClientTier.Free, ClientQuotaPolicy.ForTier(ClientTier.Free)));
+        }
+
+        // 4. Fallback: Pure Anonymous / Free tier with IP
         var ip = !string.IsNullOrWhiteSpace(clientIp) ? clientIp : "anonymous";
         var freeSubject = $"anon_{ip}";
         return Task.FromResult(new ClientQuotaContext(freeSubject, ClientTier.Free, ClientQuotaPolicy.ForTier(ClientTier.Free)));
     }
 
-    private (string SubjectId, ClientTier Tier) ResolveApiKey(string apiKey)
+    private void EnsureCacheCapacity()
     {
-        // SEC-1: Cryptographically hash the API key to ensure a unique, deterministic SubjectId
-        // and eliminate shared-identity collision and substring-based tier privilege escalation.
-        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(apiKey));
-        var hexHash = Convert.ToHexString(hashBytes).ToLowerInvariant();
-        var subjectId = "key_" + hexHash[..16];
-
-        var now = DateTimeOffset.UtcNow;
-        if (_apiKeyCache.TryGetValue(subjectId, out var cached) && cached.Expiry > now)
+        if (_apiKeyCache.Count >= MaxCacheSize)
         {
-            return (subjectId, cached.Tier);
-        }
+            var now = DateTimeOffset.UtcNow;
+            foreach (var kvp in _apiKeyCache)
+            {
+                if (kvp.Value.Expiry <= now)
+                {
+                    _apiKeyCache.TryRemove(kvp.Key, out _);
+                }
+            }
 
-        // Check if key is registered in validated store
-        if (_registeredKeys.TryGetValue(apiKey, out var registeredTier))
-        {
-            _apiKeyCache[subjectId] = (registeredTier, now.AddMinutes(10));
-            return (subjectId, registeredTier);
+            // If still over capacity after removing expired entries, clear half
+            if (_apiKeyCache.Count >= MaxCacheSize)
+            {
+                _apiKeyCache.Clear();
+            }
         }
-
-        // SEC-06: Unregistered / untrusted API keys default to Free tier instead of Standard,
-        // preventing unauthorized quota and rate-limit escalation.
-        var tier = ClientTier.Free;
-        _apiKeyCache[subjectId] = (tier, now.AddMinutes(10));
-        return (subjectId, tier);
     }
 }

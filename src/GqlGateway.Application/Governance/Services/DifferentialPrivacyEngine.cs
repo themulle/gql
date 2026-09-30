@@ -58,9 +58,9 @@ public sealed class DifferentialPrivacyEngine(ILogger<DifferentialPrivacyEngine>
             throw new ArgumentOutOfRangeException(nameof(request), "Epsilon must be strictly positive (> 0).");
         }
 
-        if (request.Sensitivity <= 0.0)
+        if (request.Sensitivity < 0.01)
         {
-            throw new ArgumentOutOfRangeException(nameof(request), "Sensitivity (Delta f) must be strictly positive (> 0).");
+            throw new ArgumentOutOfRangeException(nameof(request), "Sensitivity (Delta f) must be at least 0.01 to ensure effective differential privacy noise.");
         }
 
         var state = GetOrCreateState(request.ClientId);

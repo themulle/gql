@@ -83,21 +83,45 @@ public static class GatewayApplicationBuilderExtensions
                 return;
             }
 
-            if ((HttpMethods.IsPost(context.Request.Method) ||
+            bool isGraphQLEndpoint = (HttpMethods.IsPost(context.Request.Method) ||
                  (HttpMethods.IsGet(context.Request.Method) && context.Request.Query.ContainsKey("query")))
-                && context.Request.Path.StartsWithSegments(endpoint))
-            {
-                bool hasPreflightHeader = context.Request.Headers.ContainsKey("GraphQL-Preflight") ||
-                                          context.Request.Headers.ContainsKey("X-Requested-With");
+                && context.Request.Path.StartsWithSegments(endpoint);
 
-                if (!hasPreflightHeader)
+            bool isStateChangingRestEndpoint = (HttpMethods.IsPost(context.Request.Method) ||
+                                                HttpMethods.IsPut(context.Request.Method) ||
+                                                HttpMethods.IsDelete(context.Request.Method) ||
+                                                HttpMethods.IsPatch(context.Request.Method))
+                                               && (context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/odata"));
+
+            if (isGraphQLEndpoint || isStateChangingRestEndpoint)
+            {
+                // For REST endpoints, CSRF attack vectors require browser execution with ambient credentials (Cookie, cached Basic/Negotiate)
+                // indicated by Cookie, Sec-Fetch-*, or Origin/Referer headers.
+                // Exclude explicit login exchange (/api/auth/login) unless ambient Cookie is present.
+                bool isLoginEndpoint = context.Request.Path.Equals("/api/auth/login", StringComparison.OrdinalIgnoreCase);
+                bool hasBrowserIndicators = context.Request.Headers.ContainsKey("Cookie") ||
+                                            context.Request.Headers.ContainsKey("Origin") ||
+                                            context.Request.Headers.ContainsKey("Referer") ||
+                                            context.Request.Headers.ContainsKey("Sec-Fetch-Site");
+
+                bool requiresCsrfProtection = isGraphQLEndpoint || (!isLoginEndpoint && hasBrowserIndicators);
+
+                if (requiresCsrfProtection)
                 {
-                    context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                    await context.Response.WriteAsJsonAsync(new
+                    bool hasPreflightHeader = context.Request.Headers.ContainsKey("GraphQL-Preflight") ||
+                                              context.Request.Headers.ContainsKey("X-Requested-With") ||
+                                              context.Request.Headers.ContainsKey("X-CSRF-Token");
+
+                    if (!hasPreflightHeader)
                     {
-                        error = "CSRF Protection: Missing custom preflight header ('GraphQL-Preflight: 1' or 'X-Requested-With')."
-                    });
-                    return;
+                        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                        var endpointType = isGraphQLEndpoint ? "GraphQL" : "REST";
+                        await context.Response.WriteAsJsonAsync(new
+                        {
+                            error = $"CSRF Protection: Missing custom preflight header ('GraphQL-Preflight: 1', 'X-Requested-With', or 'X-CSRF-Token') on {endpointType} request."
+                        });
+                        return;
+                    }
                 }
 
                 // Origin / Referer validation

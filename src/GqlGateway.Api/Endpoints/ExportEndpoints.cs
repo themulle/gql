@@ -56,11 +56,11 @@ public static partial class ExportEndpoints
                 FlattenNested: flatten ?? options.Value.ParquetEgress.FlattenNestedStructures
             );
 
-            // In typical execution, rows are fetched from the collocated store with RLS applied.
-            // For export endpoint without specific store query, generate an empty or default set if empty.
-            var mockRows = new List<IReadOnlyDictionary<string, object?>>();
+            // Direct endpoint invocation without an executing query pipeline returns a typed Parquet skeleton/schema file (zero rows).
+            // Full data exports with row-level security and column masking are driven via GraphQL query operations and executor pipelines.
+            var schemaSkeletonRows = new List<IReadOnlyDictionary<string, object?>>();
 
-            var exportResult = parquetService.ExportToParquet(exportRequest, mockRows);
+            var exportResult = parquetService.ExportToParquet(exportRequest, schemaSkeletonRows);
 
             context.Response.Headers["X-Export-Truncated"] = exportResult.IsTruncated ? "true" : "false";
             context.Response.Headers["X-Row-Count"] = exportResult.RowCount.ToString();

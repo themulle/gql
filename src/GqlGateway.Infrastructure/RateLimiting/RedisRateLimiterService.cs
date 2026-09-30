@@ -150,10 +150,16 @@ public sealed class RedisRateLimiterService : IRateLimiterService
         catch (Exception ex)
         {
             RateLimiterRedisErrors.WithLabels("pre_auth_ip").Inc();
-            _logger.LogWarning(ex, "Redis rate limiting failed for IP {Ip}. Falling back to local in-memory rate limiter.", ip);
+            _logger.LogWarning(ex, "Redis rate limiting failed for IP {Ip}. Falling back to local in-memory rate limiter with conservative degraded budget.", ip);
             try
             {
-                return await _inMemoryFallback.CheckPreAuthIpAsync(ip, options, ct).ConfigureAwait(false);
+                var degradedOptions = new PreAuthIpRateLimitOptions
+                {
+                    PermitLimit = Math.Max(1, options.PermitLimit / 2),
+                    WindowSeconds = options.WindowSeconds,
+                    QueueLimit = options.QueueLimit
+                };
+                return await _inMemoryFallback.CheckPreAuthIpAsync(ip, degradedOptions, ct).ConfigureAwait(false);
             }
             catch (Exception fallbackEx)
             {
@@ -197,15 +203,25 @@ public sealed class RedisRateLimiterService : IRateLimiterService
 
             RateLimiterRedisErrors.WithLabels("post_auth_sid").Inc();
             _logger.LogWarning("Redis post-auth rate limiting returned unexpected result for SID {Sid}. Falling back to in-memory limiter.", sid);
-            return await _inMemoryFallback.CheckPostAuthSidAsync(sid, options, ct).ConfigureAwait(false);
+            var degradedFallback = new PostAuthSidRateLimitOptions
+            {
+                TokenBucketCapacity = Math.Max(1, options.TokenBucketCapacity / 2),
+                TokensPerSecond = Math.Max(1, options.TokensPerSecond / 2)
+            };
+            return await _inMemoryFallback.CheckPostAuthSidAsync(sid, degradedFallback, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             RateLimiterRedisErrors.WithLabels("post_auth_sid").Inc();
-            _logger.LogWarning(ex, "Redis post-auth rate limiting failed for SID {Sid}. Falling back to local in-memory token bucket.", sid);
+            _logger.LogWarning(ex, "Redis post-auth rate limiting failed for SID {Sid}. Falling back to local in-memory token bucket with conservative degraded budget.", sid);
             try
             {
-                return await _inMemoryFallback.CheckPostAuthSidAsync(sid, options, ct).ConfigureAwait(false);
+                var degradedOptions = new PostAuthSidRateLimitOptions
+                {
+                    TokenBucketCapacity = Math.Max(1, options.TokenBucketCapacity / 2),
+                    TokensPerSecond = Math.Max(1, options.TokensPerSecond / 2)
+                };
+                return await _inMemoryFallback.CheckPostAuthSidAsync(sid, degradedOptions, ct).ConfigureAwait(false);
             }
             catch (Exception fallbackEx)
             {

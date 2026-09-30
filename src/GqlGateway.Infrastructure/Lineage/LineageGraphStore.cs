@@ -21,5 +21,7 @@ public sealed class LineageGraphStore : ILineageGraphStore
         _nodes = nodes.ToFrozenDictionary(n => n.Id, n => n);
     }
 
+    public IReadOnlyCollection<LineageNode> GetAllNodes() => _nodes.Values;
+
     public int Count => _nodes.Count;
 }

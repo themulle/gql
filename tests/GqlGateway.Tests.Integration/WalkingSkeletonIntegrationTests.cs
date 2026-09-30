@@ -380,6 +380,7 @@ public class WalkingSkeletonIntegrationTests : IClassFixture<WebApplicationFacto
         var client = CreateClient();
         var userSid = new Sid("S-1-5-21-REL-LARGE-BATCH");
         client.DefaultRequestHeaders.Add("X-Test-User-Sid", userSid.Value);
+        client.DefaultRequestHeaders.Add("X-Test-Tier", "Enterprise");
 
         using (var scope = _factory.Services.CreateScope())
         {

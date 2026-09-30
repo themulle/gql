@@ -50,20 +50,29 @@ public sealed class SubgraphSecurityDelegatingHandler : DelegatingHandler
         var principal = httpContext?.User;
 
         string? tenantId = null;
-        if (httpContext?.Items.TryGetValue("TenantId", out var tObj) == true && tObj is string tStr)
+        if (httpContext?.Items.TryGetValue("TenantId", out var tObj) == true && tObj != null)
         {
-            tenantId = tStr;
+            tenantId = tObj switch
+            {
+                GqlGateway.Domain.Common.TenantId tid => tid.Value,
+                string tStr => tStr,
+                _ => tObj.ToString()
+            };
         }
 
         // Apply Zero-Trust Security headers (Subject SID, Tenant, Roles) & SSRF check
         _propagationService.ApplySecurityHeaders(request, _subgraphName, principal, tenantId);
 
-        // Forward Authorization Bearer token downstream if present and caller has one
+        // Forward Authorization Bearer token downstream ONLY (NEVER forward Basic credentials to prevent confused deputy credential leaks)
         if (httpContext?.Request.Headers.TryGetValue("Authorization", out var authVals) == true && authVals.Count > 0)
         {
-            if (!request.Headers.Contains("Authorization"))
+            var firstAuth = authVals[0];
+            if (firstAuth != null && firstAuth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             {
-                request.Headers.TryAddWithoutValidation("Authorization", authVals.ToArray());
+                if (!request.Headers.Contains("Authorization"))
+                {
+                    request.Headers.TryAddWithoutValidation("Authorization", firstAuth);
+                }
             }
         }
 

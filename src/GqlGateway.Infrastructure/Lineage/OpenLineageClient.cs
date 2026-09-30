@@ -54,15 +54,26 @@ public sealed class OpenLineageClient : IOpenLineageClient
 
         var inputs = new List<OpenLineageDataset>();
         var outputs = new List<OpenLineageDataset>();
+        var rootNamespace = tenant.Value;
 
         // Build dataset list from active LineageGraphStore
-        for (int i = 0; i < _graphStore.Count; i++)
+        foreach (var node in _graphStore.GetAllNodes())
         {
-            // Traverse store nodes
-        }
+            var dataset = new OpenLineageDataset(rootNamespace, node.Id, new Dictionary<string, object>
+            {
+                ["type"] = node.Type.ToString(),
+                ["name"] = node.Name
+            });
 
-        // We can inspect all tables and their downstream nodes
-        var rootNamespace = tenant.Value;
+            if (node.DownstreamNodeIds.Count > 0)
+            {
+                inputs.Add(dataset);
+            }
+            else
+            {
+                outputs.Add(dataset);
+            }
+        }
 
         var runEvent = new OpenLineageRunEvent(
             EventType: "COMPLETE",
