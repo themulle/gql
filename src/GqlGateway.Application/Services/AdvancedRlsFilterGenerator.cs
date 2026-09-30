@@ -194,48 +194,54 @@ public static partial class AdvancedRlsFilterGenerator
             {
                 foreach (var elem in doc.RootElement.EnumerateArray())
                 {
-                    if (elem.ValueKind == JsonValueKind.Object)
+                    if (elem.ValueKind != JsonValueKind.Object)
                     {
-                        if (!elem.TryGetProperty("column", out var colElem) || colElem.ValueKind != JsonValueKind.String)
-                        {
-                            throw new InvalidOperationException("Subquery-Prädikat muss ein gültiges 'column'-Property enthalten.");
-                        }
-                        var col = colElem.GetString()!;
-                        ValidateQualifiedIdentifier(col, "SubqueryPredicate.Column");
-                        var op = elem.TryGetProperty("op", out var opProp) ? opProp.GetString()?.ToUpperInvariant() ?? "EQ" : "EQ";
-                        if (!AllowedSubqueryOperators.Contains(op))
-                        {
-                            throw new InvalidOperationException($"Nicht unterstützter Operator '{op}' im Subquery-Prädikat.");
-                        }
+                        throw new InvalidOperationException("Subquery-Prädikat-Array darf nur JSON-Objekte enthalten.");
+                    }
 
-                        if (!elem.TryGetProperty("value", out var rawVal))
-                        {
-                            throw new InvalidOperationException("Subquery-Prädikat muss ein 'value'-Property enthalten.");
-                        }
-                        var quotedCol = QuoteQualifiedColumn(col, dialect);
+                    if (!elem.TryGetProperty("column", out var colElem) || colElem.ValueKind != JsonValueKind.String)
+                    {
+                        throw new InvalidOperationException("Subquery-Prädikat muss ein gültiges 'column'-Property enthalten.");
+                    }
+                    var col = colElem.GetString()!;
+                    ValidateQualifiedIdentifier(col, "SubqueryPredicate.Column");
+                    var op = elem.TryGetProperty("op", out var opProp) ? opProp.GetString()?.ToUpperInvariant() ?? "EQ" : "EQ";
+                    if (!AllowedSubqueryOperators.Contains(op))
+                    {
+                        throw new InvalidOperationException($"Nicht unterstützter Operator '{op}' im Subquery-Prädikat.");
+                    }
 
-                        if (rawVal.ValueKind == JsonValueKind.Null)
+                    if (!elem.TryGetProperty("value", out var rawVal))
+                    {
+                        throw new InvalidOperationException("Subquery-Prädikat muss ein 'value'-Property enthalten.");
+                    }
+                    var quotedCol = QuoteQualifiedColumn(col, dialect);
+
+                    if (rawVal.ValueKind == JsonValueKind.Null)
+                    {
+                        conditions.Add(op == "NEQ" ? $"{quotedCol} IS NOT NULL" : $"{quotedCol} IS NULL");
+                    }
+                    else
+                    {
+                        var formattedVal = FormatLiteralValue(rawVal, dialect);
+                        var cond = op switch
                         {
-                            conditions.Add(op == "NEQ" ? $"{quotedCol} IS NOT NULL" : $"{quotedCol} IS NULL");
-                        }
-                        else
-                        {
-                            var formattedVal = FormatLiteralValue(rawVal, dialect);
-                            var cond = op switch
-                            {
-                                "EQ" => $"{quotedCol} = {formattedVal}",
-                                "NEQ" => $"{quotedCol} <> {formattedVal}",
-                                "LT" => $"{quotedCol} < {formattedVal}",
-                                "GT" => $"{quotedCol} > {formattedVal}",
-                                "LTE" => $"{quotedCol} <= {formattedVal}",
-                                "GTE" => $"{quotedCol} >= {formattedVal}",
-                                "LIKE" => $"{quotedCol} LIKE {formattedVal}",
-                                _ => $"{quotedCol} = {formattedVal}"
-                            };
-                            conditions.Add(cond);
-                        }
+                            "EQ" => $"{quotedCol} = {formattedVal}",
+                            "NEQ" => $"{quotedCol} <> {formattedVal}",
+                            "LT" => $"{quotedCol} < {formattedVal}",
+                            "GT" => $"{quotedCol} > {formattedVal}",
+                            "LTE" => $"{quotedCol} <= {formattedVal}",
+                            "GTE" => $"{quotedCol} >= {formattedVal}",
+                            "LIKE" => $"{quotedCol} LIKE {formattedVal}",
+                            _ => $"{quotedCol} = {formattedVal}"
+                        };
+                        conditions.Add(cond);
                     }
                 }
+            }
+            else
+            {
+                throw new InvalidOperationException("SubqueryFilterPredicateJson muss ein JSON-Objekt oder JSON-Array sein.");
             }
         }
         catch (JsonException)

@@ -51,6 +51,7 @@ public sealed class ConsentResolutionService : IConsentResolutionService
 
         // Check for Column Hard-DENYs in D
         var hardDeniedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var maskedOnlyColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in dConsents)
         {
             foreach (var colRule in c.ColumnRules)
@@ -58,6 +59,10 @@ public sealed class ConsentResolutionService : IConsentResolutionService
                 if (colRule.AccessLevel == ColumnAccessLevel.Deny)
                 {
                     hardDeniedColumns.Add(colRule.ColumnName);
+                }
+                else if (colRule.AccessLevel == ColumnAccessLevel.Mask)
+                {
+                    maskedOnlyColumns.Add(colRule.ColumnName);
                 }
             }
         }
@@ -161,6 +166,11 @@ public sealed class ConsentResolutionService : IConsentResolutionService
                         columnAccess[column] = grantingConsents.Min(g => g.Level);
                     }
                 }
+            }
+
+            if (maskedOnlyColumns.Contains(column) && columnAccess[column] == ColumnAccessLevel.Clear)
+            {
+                columnAccess[column] = ColumnAccessLevel.Mask;
             }
         }
 

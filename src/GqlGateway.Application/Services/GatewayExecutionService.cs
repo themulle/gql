@@ -391,7 +391,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         return (processedRows, decision);
     }
 
-    private static List<IReadOnlyDictionary<string, object?>> FilterRows(
+    public static List<IReadOnlyDictionary<string, object?>> FilterRows(
         List<IReadOnlyDictionary<string, object?>> rows,
         string rowFilterSql,
         TableMetadata metadata)
@@ -418,6 +418,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
                     var d when d.Contains("bigint") || d.Contains("long") => typeof(long),
                     var d when d.Contains("int") => typeof(int),
                     var d when d.Contains("decimal") || d.Contains("numeric") || d.Contains("money") => typeof(decimal),
+                    var d when d.Contains("float") || d.Contains("double") || d.Contains("real") => typeof(double),
                     var d when d.Contains("bool") => typeof(bool),
                     var d when d.Contains("date") || d.Contains("time") => typeof(DateTime),
                     _ => typeof(string)
@@ -469,15 +470,65 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         }
 
         var trimmed = rowFilterSql.Trim();
+        var trimmedUpper = trimmed.Trim('(', ')', ' ');
 
         // 1. Subqueries like EXISTS (...) cannot be evaluated against mock in-memory DataTables
-        if (trimmed.StartsWith("EXISTS", StringComparison.OrdinalIgnoreCase) ||
-            trimmed.StartsWith("NOT EXISTS", StringComparison.OrdinalIgnoreCase))
+        if (trimmedUpper.StartsWith("EXISTS", StringComparison.OrdinalIgnoreCase) ||
+            trimmedUpper.StartsWith("NOT EXISTS", StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
 
-        var normalized = trimmed;
+        // Protect string literals from regex mangling (e.g. 'john.doe@x.de' matching table.column regex)
+        var literals = new List<string>();
+        var sb = new System.Text.StringBuilder();
+        bool inStr = false;
+        var curLit = new System.Text.StringBuilder();
+
+        for (int i = 0; i < trimmed.Length; i++)
+        {
+            char c = trimmed[i];
+            if (c == '\'')
+            {
+                if (inStr)
+                {
+                    // Check for escaped quote ''
+                    if (i + 1 < trimmed.Length && trimmed[i + 1] == '\'')
+                    {
+                        curLit.Append("''");
+                        i++;
+                        continue;
+                    }
+                    inStr = false;
+                    curLit.Append('\'');
+                    var placeholder = $"__STR_LIT_{literals.Count}__";
+                    literals.Add(curLit.ToString());
+                    curLit.Clear();
+                    sb.Append(placeholder);
+                }
+                else
+                {
+                    inStr = true;
+                    curLit.Append('\'');
+                }
+            }
+            else if (inStr)
+            {
+                curLit.Append(c);
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+
+        if (inStr)
+        {
+            // Unterminated string literal -> fail closed
+            return null;
+        }
+
+        var normalized = sb.ToString();
 
         // 2. Strip table prefixes: [alias].[col] -> [col] or alias.col -> col
         normalized = TablePrefixRegex().Replace(normalized, "$1");
@@ -524,6 +575,12 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             }
 
             normalized = normalized.Remove(match.Index, match.Length).Insert(match.Index, replacement);
+        }
+
+        // Restore string literals
+        for (int i = 0; i < literals.Count; i++)
+        {
+            normalized = normalized.Replace($"__STR_LIT_{i}__", literals[i]);
         }
 
         return normalized;
@@ -634,6 +691,22 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             var ttl = metadata.Table.IsHighlySensitive
                 ? TimeSpan.FromSeconds(60)
                 : TimeSpan.FromMinutes(10);
+
+            var now = DateTimeOffset.UtcNow;
+            if (activeConsents.Count > 0)
+            {
+                var earliestExpiry = activeConsents
+                    .Where(c => c.ValidTo > now)
+                    .Select(c => c.ValidTo - now)
+                    .DefaultIfEmpty(ttl)
+                    .Min();
+
+                if (earliestExpiry < ttl)
+                {
+                    ttl = earliestExpiry > TimeSpan.FromSeconds(1) ? earliestExpiry : TimeSpan.FromSeconds(1);
+                }
+            }
+
             await _cacheService.SetCachedDecisionAsync(tenantId, userSid, table, decision, ttl, contextHash, ct);
         }
 

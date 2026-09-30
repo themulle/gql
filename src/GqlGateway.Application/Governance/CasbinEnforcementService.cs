@@ -386,6 +386,13 @@ PolicyDone:
                     continue;
                 }
 
+                // Check action match (e.g. "read" or "*")
+                if (!string.Equals(rule.Act, "*", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(rule.Act, "read", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
                 // Check sub_rule condition (Prevent cross-clearance/cross-role filter leak)
                 if (!EvaluateSubRule(rule.SubRule, context))
                 {
