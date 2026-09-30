@@ -652,4 +652,111 @@ public sealed class Wave3MarketFeaturesTests
         Assert.Equal(50, result.RowCount);
         Assert.True(result.IsTruncated);
     }
+
+    // =========================================================================
+    // 4. F-PERF-09: Special Types & Dialect Fallback Tests
+    // =========================================================================
+
+    [Fact]
+    public void AstCompiler_TranslatesGeospatialColumns_AcrossDialects()
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("gis", "public", "locations");
+
+        var node = new SqlAstNode(
+            Table: table,
+            Alias: "l",
+            ProjectedColumns: ["id", "geom"],
+            ColumnTypes: new Dictionary<string, string>
+            {
+                ["geom"] = "geometry"
+            }
+        );
+
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "1=1" };
+
+        // Postgres translates geometry to ST_AsGeoJSON
+        var pgSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.PostgreSql, rls);
+        Assert.Contains("ST_AsGeoJSON(\"l\".\"geom\") AS \"geom\"", pgSql);
+
+        // SQL Server translates geometry to .STAsText()
+        var msSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.SqlServer, rls);
+        Assert.Contains("[l].[geom].STAsText() AS [geom]", msSql);
+
+        // SQLite translates geometry to AsGeoJSON
+        var sqliteSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.Sqlite, rls);
+        Assert.Contains("AsGeoJSON(\"l\".\"geom\") AS \"geom\"", sqliteSql);
+    }
+
+    [Fact]
+    public void AstCompiler_TranslatesBinaryColumns_AcrossDialects()
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("vault", "public", "blobs");
+
+        var node = new SqlAstNode(
+            Table: table,
+            Alias: "b",
+            ProjectedColumns: ["id", "payload"],
+            ColumnTypes: new Dictionary<string, string>
+            {
+                ["payload"] = "bytea"
+            }
+        );
+
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "1=1" };
+
+        // Postgres translates bytea to base64 encoding
+        var pgSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.PostgreSql, rls);
+        Assert.Contains("encode(\"b\".\"payload\", 'base64') AS \"payload\"", pgSql);
+
+        // SQLite translates blob to hex string
+        var sqliteSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.Sqlite, rls);
+        Assert.Contains("hex(\"b\".\"payload\") AS \"payload\"", sqliteSql);
+    }
+
+    [Fact]
+    public void AstCompiler_TranslatesTimestampColumns_AcrossDialects()
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("logs", "public", "events");
+
+        var node = new SqlAstNode(
+            Table: table,
+            Alias: "e",
+            ProjectedColumns: ["id", "created_at"],
+            ColumnTypes: new Dictionary<string, string>
+            {
+                ["created_at"] = "timestamptz"
+            }
+        );
+
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "1=1" };
+
+        // Postgres translates timestamptz to ISO-8601 string
+        var pgSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.PostgreSql, rls);
+        Assert.Contains("to_char(\"e\".\"created_at\", 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS \"created_at\"", pgSql);
+
+        // SQL Server translates datetimeoffset/timestamptz to ISO-8601 format 126
+        var msSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.SqlServer, rls);
+        Assert.Contains("CONVERT(VARCHAR(33), [e].[created_at], 126) AS [created_at]", msSql);
+    }
+
+    [Fact]
+    public void AstCompiler_UnsupportedDialect_RejectsWithNotSupportedExceptionForFallback()
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("legacy", "public", "items");
+        var node = new SqlAstNode(table, "i", ["id"]);
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "1=1" };
+
+        // Oracle / Databricks without JSON pushdown configured
+        Assert.False(compiler.SupportsDialect(DatabaseDialect.Oracle));
+
+        var ex = Assert.Throws<NotSupportedException>(() =>
+            compiler.CompileHierarchicalQuery(node, DatabaseDialect.Oracle, rls));
+
+        Assert.Contains("does not support single-query hierarchical JSON pushdown", ex.Message);
+        Assert.Contains("DataLoader", ex.Message);
+    }
 }

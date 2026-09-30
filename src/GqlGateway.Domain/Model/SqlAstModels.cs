@@ -12,5 +12,6 @@ public sealed record SqlAstNode(
     string? ParentForeignKeyColumn = null,
     string? ChildForeignKeyColumn = null,
     string? WhereFilter = null,
-    int? Limit = null
+    int? Limit = null,
+    IReadOnlyDictionary<string, string>? ColumnTypes = null
 );

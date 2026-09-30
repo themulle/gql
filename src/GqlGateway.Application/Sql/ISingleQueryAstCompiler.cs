@@ -6,6 +6,8 @@ using GqlGateway.Domain.Model;
 
 public interface ISingleQueryAstCompiler
 {
+    bool SupportsDialect(DatabaseDialect dialect);
+
     string CompileHierarchicalQuery(
         SqlAstNode rootNode,
         DatabaseDialect dialect,

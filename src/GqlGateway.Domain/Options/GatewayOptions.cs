@@ -760,6 +760,13 @@ public sealed class SingleQueryPushdownOptions
 {
     public bool Enabled { get; init; } = true;
     public int MaxSubqueryDepth { get; init; } = 5;
+    public bool FallbackToBatchingOnUnsupportedDialect { get; init; } = true;
+    public List<DatabaseDialect> SupportedDialects { get; init; } =
+    [
+        DatabaseDialect.SqlServer,
+        DatabaseDialect.PostgreSql,
+        DatabaseDialect.Sqlite
+    ];
 }
 
 
