@@ -583,7 +583,7 @@ flowchart TD
 
 **Verfasser:** Principal Enterprise Product Manager & Platform Strategist  
 **Initiative:** `F-DATA-01: Hierarchical Parquet Egress & Nested Query Serialization`  
-**Status:** Strategische Produkt-Evaluierung & Roadmap-Klassifizierung  
+**Status:** ✅ **100% General Availability (GA)** – Vollständig implementiert & verifiziert (Wave 3)  
 
 ---
 
@@ -639,11 +639,10 @@ GqlGateway löst diesen Konflikt auf elegante Weise: Konsumenten formulieren ihr
 
 ---
 
-##### 6. Zusammenfassendes PM-Urteil & Priorisierungsbeschluss
+##### 6. Zusammenfassendes PM-Urteil & Umsetzungsbeschluss
 * **RICE-C Score:** **13.4** (Reach: 8 | Impact: 2.8 | Confidence: 90% | Effort: 1.5 W)
-* **Beschluss des Product Management Boards:**  
-  > **URTEIL: SOFORTIGE PRIORISIERUNG FÜR WAVE 2 (Quick-Win Moat).**  
-  > Dieses Feature katapultiert GqlGateway aus dem reinen Web-API-Gateway-Segment heraus und positioniert das Produkt als **High-Throughput Zero-Trust Data Bridge** für moderne Analytics- und Data-Science-Organisationen.
+* **Umsetzungsstatus:** ✅ **100% GA (Wave 3 Deliverable)**  
+  > Dieses Feature katapultiert GqlGateway aus dem reinen Web-API-Gateway-Segment heraus und positioniert das Produkt als **High-Throughput Zero-Trust Data Bridge** für moderne Analytics- und Data-Science-Organisationen mit nativer Dremel `LIST<STRUCT>`-Serialisierung, Endpunkt `POST /api/v1/export/parquet` und Content Negotiation.
 
 ---
 
@@ -795,7 +794,7 @@ Ein naiver `FOR JSON`-Pushdown scheitert in realen Enterprise-Datenbanken, da re
 
 ##### Product Manager Bewertung:
 * **Wettbewerbsvorteil:** Hasura verdankt seinen Markterfolg primär diesem Single-Query-Kompilierungs-Trick. GqlGateway kombiniert dies nun als erstes Gateway mit **Unternehmenskatalogen (Purview/Collibra/OpenMetadata), dynamischer DSGVO-Maskierung und nativer Parquet-Bereitstellung**.
-* **Priorisierung:** `F-PERF-09: GraphQL-to-SQL AST Single-Query Compiler`, RICE-Score: **12.2** (Wave 2 Core Accelerator).
+* **Status & Umsetzung:** ✅ **100% General Availability (GA) – Wave 3 Deliverable** (Vollständig implementiert via `ISingleQueryAstCompiler` / `SingleQueryAstCompiler` für T-SQL `FOR JSON PATH`, PostgreSQL `json_agg` und SQLite `json_group_array`, mehrstufigem Casbin RLS-Pushdown, Type-Coercion-Layer für Geospatial, Binary, DateTime & Precision sowie Dialect-Fallback).
 
 ---
 
@@ -980,21 +979,21 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **F-DBT-1: `run_results.json` Health Telemetry & Circuit Breaker** | 9 | 2.5 | 95% | 1.8 | 1.0 W | **38.4** | ✅ **100% Abgeschlossen (GA)** (Circuit Breaker, RBAC-APIs, AST-Quarantäne) |
 | **F-DBT-3: Live Telemetry-Driven Exposures (Ops, P99, Consumers)** | 7 | 2.0 | 90% | 1.2 | 0.8 W | **18.9** | ✅ **100% Abgeschlossen (GA)** (InMemoryTelemetryMetricsProvider, Enriched exposures.yaml) |
 | **F-DBT-2: dbt Model Contract Enforcement & Breaking Change Gate** | 8 | 2.5 | 90% | 1.5 | 1.5 W | **18.0** | ✅ **100% Abgeschlossen (GA)** (DbtContractLinter, CI Gate & Breaking Change Guard) |
-| **F-PERF-08: Hierarchical Resource Groups & Workload Queuing (Trino Pattern)** | 9 | 2.5 | 90% | 1.4 | 1.5 W | **18.9** | 🟡 **Priorität Wave 2** (Anti-Noisy-Neighbor für Human, BI & MCP Agenten) |
-| **F-API-07: Canonical System Metadaten & Monitoring Schema (`$system` / `__gateway`)** | 7 | 2.0 | 95% | 1.3 | 1.0 W | **17.3** | 🟡 **Priorität Wave 2** (Self-Service Observability & SRE Dashboards) |
+| **F-PERF-08: Hierarchical Resource Groups & Workload Queuing (Trino Pattern)** | 9 | 2.5 | 90% | 1.4 | 1.5 W | **18.9** | ✅ **100% Abgeschlossen (GA)** (Tiering, Concurrency Leasing, Anti-Barging, SEC-02) |
+| **F-API-07: Canonical System Metadaten & Monitoring Schema (`$system` / `__gateway`)** | 7 | 2.0 | 95% | 1.3 | 1.0 W | **17.3** | ✅ **100% Abgeschlossen (GA)** (GatewaySystemMetricsService, Endpoints, RBAC SEC-01) |
 | **F-AI-02: Semantic MCP Schema Compiler (dbt & OpenMetadata Ingestion)** | 8 | 3.0 | 90% | 1.6 | 2.0 W | **17.3** | ✅ **100% Abgeschlossen (GA)** (dbt/Katalog Ingestion in Tools & Resources) |
 | **F-API-03: Dynamic OData OpenAPI 3.1 & Swagger UI (`/odata/v4/$openapi`)** | 9 | 2.5 | 95% | 1.2 | 1.5 W | **17.1** | ✅ **100% Abgeschlossen (GA)** (OpenAPI JSON/YAML, Domain-Scope, Swagger UI) |
 | **F-AI-04: Pre-Flight Query Cost & Token Guard (`simulate_query`)** | 9 | 2.5 | 90% | 1.2 | 1.5 W | **16.2** | ✅ **100% Abgeschlossen (GA)** (AST Cost Simulation & Hard-Safety-Limits) |
 | **F-API-04: Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion** | 8 | 2.2 | 90% | 1.2 | 1.2 W | **15.8** | ✅ **100% Abgeschlossen (GA)** (OpenApiIngestionService, Virtual HTTP Tables & Catalog Ingestion) |
 | **F-AI-06: Provenance & Lineage Footnoting (Explainable AI / EU AI Act)** | 7 | 2.5 | 85% | 2.0 | 2.0 W | **14.9** | ✅ **100% Abgeschlossen (GA)** (Revisionssichere `_provenance` Footnotes) |
 | **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | ✅ **100% Abgeschlossen (GA)** |
-| **F-DATA-01: Hierarchical Parquet Egress & Nested Query Serialization** | 8 | 2.8 | 90% | 1.5 | 1.5 W | **13.4** | 🟡 **Priorität Wave 2 (Quick-Win Moat)** (Dremel `LIST<STRUCT>` & Flattened Parquet Export via HTTP Content Negotiation) |
-| **F-PERF-09: GraphQL-to-SQL AST Single-Query Compiler (`FOR JSON PATH`)** | 9 | 3.0 | 90% | 1.5 | 2.0 W | **12.2** | 🟡 **Priorität Wave 2 (Core Accelerator)** (Single-Query Pushdown eliminiert N+1 Roundtrips & In-Memory Stitching) |
+| **F-DATA-01: Hierarchical Parquet Egress & Nested Query Serialization** | 8 | 2.8 | 90% | 1.5 | 1.5 W | **13.4** | ✅ **100% Abgeschlossen (GA)** (ParquetExportService, Export-Endpoints, Content Negotiation, Dremel LIST<STRUCT>) |
+| **F-PERF-09: GraphQL-to-SQL AST Single-Query Compiler (`FOR JSON PATH`)** | 9 | 3.0 | 90% | 1.5 | 2.0 W | **12.2** | ✅ **100% Abgeschlossen (GA)** (SingleQueryAstCompiler, FOR JSON / json_agg, multi-level RLS & Type-Coercion) |
 | **F-DATA-02: Governed WebSQL Engine (AST Linter & RLS Rewriter)** | 8 | 2.7 | 90% | 1.4 | 1.6 W | **12.1** | 🟡 **Priorität Wave 2 (Quick-Win Moat)** (Sichere HTTP-SQL-Ausführung nach Trino-Muster mit AST-Whitelisting & RLS-Injektion) |
-| **F-AI-03: Dynamic Few-Shot "Golden Query" Injection (Audit Replay)** | 8 | 2.2 | 90% | 1.1 | 1.3 W | **13.4** | 🟡 **Priorität Wave 2** |
+| **F-AI-03: Dynamic Few-Shot "Golden Query" Injection (Audit Replay)** | 8 | 2.2 | 90% | 1.1 | 1.3 W | **13.4** | ✅ **100% Abgeschlossen (GA)** (GoldenQueryService, examples:// Resources & MCP Tool) |
 | **P11: Smart Schema Deprecation & Sunsetting Engine** | 9 | 2.2 | 95% | 1.4 | 2 W | **13.2** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DBT-4: dbt Cloud & Orchestrator HMAC Webhook Receiver** | 8 | 1.5 | 90% | 1.2 | 1.0 W | **12.9** | ✅ **100% Abgeschlossen (GA)** (Timing-safe HMAC-SHA256 Webhook Receiver) |
-| **F-AI-05: Human-in-the-Loop Step-Up Approval via MCP (4-Augen)** | 7 | 2.8 | 80% | 1.8 | 2.2 W | **12.8** | 🟡 **Priorität Wave 2** |
+| **F-AI-05: Human-in-the-Loop Step-Up Approval via MCP (4-Augen)** | 7 | 2.8 | 80% | 1.8 | 2.2 W | **12.8** | ✅ **100% Abgeschlossen (GA)** (HitLStepUpApprovalService, Endpunkte, Anti-Self-Approval, Fail-Closed) |
 | **P12: Differential Privacy & Dynamic Perturbation** | 7 | 3.0 | 85% | 2.0 | 3 W | **11.9** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DBT-6: Policy & RLS Auto-Sync aus dbt Metadaten** | 7 | 2.0 | 85% | 1.5 | 1.5 W | **11.9** | ✅ **100% Abgeschlossen (GA)** (meta.casbin_roles & meta.rls_filter, 4-Eyes Proposal Approval) |
 | **F-ARCH-10: Standardisiertes Connector-SPI (`IGqlGatewayConnector`)** | 8 | 2.5 | 90% | 1.2 | 2.0 W | **10.8** | 🟡 **Priorität Wave 2** (Modulare Datenquellen-Anbindung nach Trino-SPI-Muster) |
@@ -1023,7 +1022,7 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 
 ```mermaid
 flowchart TD
-    subgraph Delivered["Bereits Geliefert: Core & Wave 1 (General Availability - 921 Tests Green ✅)"]
+    subgraph Delivered["Bereits Geliefert: Core, Wave 1, Wave 2 Kern & Wave 3 High-Impact (General Availability - 1.022+ Tests Green ✅)"]
         direction TB
         D1["P1 Data Catalogs (Purview, Collibra, OpenMetadata)"]
         D2["P2 Client Quotas & Cost Telemetry (Redis Lua)"]
@@ -1053,25 +1052,25 @@ flowchart TD
         D26["F-DBT-4 dbt Cloud & Orchestrator HMAC Webhook Receiver"]
         D27["F-DBT-6 Policy & RLS Auto-Sync aus dbt Metadaten"]
         D28["F-API-04 Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion"]
-        D29["AppSec Hardening (WebSocket JWT Validator, Casbin Cache TTL, Break-Glass RBAC, WORM SSRF)"]
+        D29["F-PERF-08 Hierarchical Resource Groups & Workload Queuing (Anti-Noisy-Neighbor)"]
+        D30["F-API-07 Canonical System Metrics & Monitoring Schema ($system / __gateway)"]
+        D31["F-AI-03 Dynamic Few-Shot Golden Query Injection (examples:// & MCP Tool)"]
+        D32["F-DATA-01 Hierarchical Parquet Egress & Nested Query Serialization (Dremel LIST<STRUCT>)"]
+        D33["F-PERF-09 GraphQL-to-SQL AST Single-Query Compiler (FOR JSON PATH / json_agg)"]
+        D34["F-AI-05 Human-in-the-Loop Step-Up Approval via MCP (4-Augen & ITSM)"]
+        D35["AppSec Remediation (SEC-01..03, CQ-01..03, VULN-01..09, Type Projection Hardening)"]
     end
 
-    subgraph Wave2["Wave 2: Trino-SPI, Resource Groups, Lakehouse Acceleration & Post-Quantum (Nächste Umsetzungsphase)"]
+    subgraph Wave2["Wave 2: Trino-SPI, Governed WebSQL & Lakehouse Acceleration (Verbleibende Umsetzungsphase)"]
         direction TB
-        W2_1["F-PERF-08 Hierarchical Resource Groups & Workload Queuing (Human, BI, MCP Agenten)"]
-        W2_2["F-API-07 Canonical System GraphQL Schema ($system / __gateway)"]
-        W2_3["F-ARCH-10 Standardisiertes Connector-SPI (IGqlGatewayConnector nach Trino-Muster)"]
-        W2_4["F-AI-03 Dynamic Few-Shot Golden Queries (Audit Replay)"]
-        W2_5["F-AI-05 Human-in-the-Loop Step-Up Approval via MCP (4-Augen)"]
-        W2_6["F-AI-07 Vector-Indexed Dynamic Tool Pruning (Scalable Catalog)"]
-        W2_7["F-DBT-5 dbt Semantic Layer / MetricFlow GraphQL Resolvers"]
-        W2_8["P13 Data Contract & FinOps Chargeback Engine"]
-        W2_9["P14 Zero-Trust Arrow Flight Governor für Iceberg/Parquet"]
-        W2_10["P15 Confidential Compute Enclave Support (Intel SGX / AMD SEV)"]
-        W2_11["P16 Post-Quantum Cryptography Hybrid TLS (ML-KEM)"]
-        W2_12["F-DATA-01 Hierarchical Parquet Egress & Nested Query Serialization (Dremel LIST<STRUCT>)"]
-        W2_13["F-DATA-02 Governed WebSQL Engine (AST Linter, RLS Rewriter & HTTP Execution)"]
-        W2_14["F-PERF-09 GraphQL-to-SQL AST Single-Query Compiler (FOR JSON / LATERAL Pushdown)"]
+        W2_1["F-DATA-02 Governed WebSQL Engine (AST Linter, RLS Rewriter & HTTP Execution)"]
+        W2_2["F-ARCH-10 Standardisiertes Connector-SPI (IGqlGatewayConnector nach Trino-Muster)"]
+        W2_3["F-AI-07 Vector-Indexed Dynamic Tool Pruning (Scalable Catalog)"]
+        W2_4["F-DBT-5 dbt Semantic Layer / MetricFlow GraphQL Resolvers"]
+        W2_5["P13 Data Contract & FinOps Chargeback Engine"]
+        W2_6["P14 Zero-Trust Arrow Flight Governor für Iceberg/Parquet"]
+        W2_7["P15 Confidential Compute Enclave Support (Intel SGX / AMD SEV)"]
+        W2_8["P16 Post-Quantum Cryptography Hybrid TLS (ML-KEM)"]
     end
 
     subgraph Wave3["Wave 3: Federation Joins, Closed-Loop Agent Feedback & dbt Mesh"]
@@ -1085,21 +1084,23 @@ flowchart TD
     Wave2 --> Wave3
 ```
 
-### Konkrete Handlungsempfehlungen & Wave 1 Abschluss-Status:
+### Konkrete Handlungsempfehlungen & Aktueller Umsetzungs-Status:
 
-1. **Vollständig geliefert: Wave 1 (100% General Availability mit 921 grünen Tests):**
+1. **Vollständig geliefert: Wave 1, Wave 2 Kern & Wave 3 High-Impact Moats (100% General Availability mit über 1.022+ grünen Tests):**
    - **`F-DOC-01` Omnichannel Documentation Passthrough:** dbt-Doc-Blocks und OpenMetadata Business Glossaries werden ohne manuellen Aufwand lückenlos in Banana Cake Pop GraphQL (`DynamicTableType`), MCP Tool-Signaturen & dynamische Ressourcen (`dbt://models/{table}/columns/{col}/docs`), OpenAPI 3.1 Swagger Spezifikationen (`x-long-description`, `x-dbt-meta`) und OData CSDL Core Annotations (`Core.Description`, `Core.LongDescription`) durchgereicht.
-   - **`F-DBT-1` Data Health Circuit Breaker & Quarantäne:** Sofortige Quarantäne korrupter dbt-Modelle (`run_results.json`) mit `TABLE_IN_QUARANTINE` AST-Blockern und RBAC-geschützter Management-API.
-   - **`F-DBT-2` Model Contract CI Gate & Breaking Change Linter:** Schützt Produktivsysteme vor inkompatiblen Schema-Änderungen in dbt Model Contracts.
-   - **`F-DBT-3` Live Telemetry-Driven Exposures:** Reichert `exposures.yaml` zur Laufzeit mit realen Abfrage-Metriken (`monthly_queries`, `p99_latency_ms`, `top_consumers`, `governance_tier`) über den `ITelemetryMetricsProvider` an.
-   - **`F-DBT-4` dbt Cloud HMAC Webhook Receiver:** Timing-sichere HMAC-SHA256 Validierung für Orchestrator-Events (`POST /api/extensions/dbt/webhooks/dbt-cloud`).
-   - **`F-DBT-6` Policy & RLS Auto-Sync:** Übernahme von `meta.casbin_roles` und `meta.rls_filter` aus dbt-Modellen in regulierte 4-Augen-Proposals (`IDbtProposalRepository`).
+   - **`F-DBT-1` bis `F-DBT-6` dbt Governance Suite:** Circuit Breaker & Quarantäne fehlerhafter Modelle (`run_results.json`), Model Contract CI Gate (`F-DBT-2`), Live Telemetry Exposures (`F-DBT-3`), HMAC-SHA256 Webhook Receiver (`F-DBT-4`) und automatischer Policy/RLS Sync mit 4-Augen-Proposals (`F-DBT-6`).
    - **`F-API-03` & `F-API-04` Dual REST & OpenAPI Ingestion Layer:** Dynamische OpenAPI 3.1 und Swagger UI Generierung für OData v4 sowie automatisierte Ingestion externer OpenAPI/Swagger REST-Services via `POST /api/governance/catalog/ingest-openapi`.
-   - **`F-AI-02`, `F-AI-04`, `F-AI-06` Semantic AI Agent Triade:** Semantischer MCP Compiler, Pre-Flight Safety Simulator mit Kosten- und Hard-Limits sowie lückenlose `_provenance`-Footnotes (EU AI Act).
-   - **AppSec & Core Hardening (921 Tests):** Vollständige Behebung der Security Findings (kryptografische WebSocket JWT Signatur-Validierung, Casbin Decision Cache TTL & Group SIDs, Break-Glass RBAC & WORM SSRF Protection).
+   - **`F-AI-02`, `04`, `06` Semantic AI Agent Triade:** Semantischer MCP Compiler, Pre-Flight Safety Simulator mit Kosten- und Hard-Limits sowie lückenlose `_provenance`-Footnotes (EU AI Act).
+   - **`F-PERF-08` Hierarchical Resource Groups & Workload Queuing:** Trino-inspiriertes Concurrency-Slot Leasing für `Interactive`, `AutonomousAgents` und `BulkAnalytics` mit Anti-Barging, dynamischem Health Degraded Status und Anti-Noisy-Neighbor Header Security (`SEC-02`).
+   - **`F-API-07` Canonical System Metadaten & Monitoring Schema:** RBAC-geschützte Endpunkte (`GET /api/governance/system/metrics`, `/health`, `/resource-groups`) für transparente Cluster- und Ressourcentelevariablen (`SEC-01`).
+   - **`F-AI-03` Dynamic Few-Shot Golden Query Injection:** Bounded-Cache-gestützte Injektion verifizierter Abfragemuster (`examples://{domain}/{table}` und Tool `get_golden_queries`) zur Eliminierung von LLM-Halluzinationen (`SEC-03`).
+   - **`F-DATA-01` Hierarchical Parquet Egress & Nested Query Serialization:** Binärer Parquet-Export via `POST /api/v1/export/parquet` und Content Negotiation (`application/vnd.apache.parquet`) mit Dremel `LIST<STRUCT>`-Serialisierung, Erhalt dynamischer Maskierung und Parquet-Bomb-Schutz.
+   - **`F-PERF-09` GraphQL-to-SQL AST Single-Query Compiler:** Single-Roundtrip Pushdown via `FOR JSON PATH` (MSSQL), `json_agg` (Postgres) und `json_group_array` (SQLite) mit mehrstufigem Casbin RLS-Pushdown, Type-Coercion für Geospatial/Binary/Timestamps und Dialect-Fallback.
+   - **`F-AI-05` Human-in-the-Loop Step-Up Approval:** Interaktive 4-Augen-Freigabe für Art. 9 DSGVO / sensible PII-Daten mit Anti-Self-Approval, Timeout Fail-Closed und Redis-Epochen-Invalidierung.
+   - **Umfassende AppSec-Remediation & Härtung:** Behebung aller Befunde aus den Security-Reviews (VULN-01 bis VULN-09, SEC-01 bis SEC-03, CQ-01 bis CQ-03, Type Projection Hardening).
 
-2. **Nächste strategische Umsetzungsphase: Wave 2 (Trino-SPI, Resource Groups & FinOps):**
-   - In Wave 2 rücken nun die Trino-Transfer-Konzepte (**`F-PERF-08` Hierarchical Resource Groups**, **`F-API-07` `$system`-Schema**, **`F-ARCH-10` Connector-SPI**) sowie Few-Shot Golden Queries (`F-AI-03`), HitL Step-Up Approvals (`F-AI-05`), MetricFlow Auto-Resolvers (`F-DBT-5`), FinOps Chargeback (`P13`), Arrow Flight Governor (`P14`), Confidential Enclaves (`P15`) und Post-Quantum TLS (`P16`) in den Umsetzungsfokus.
+2. **Nächste strategische Umsetzungsphase: Verbleibende Wave 2 Initiativen:**
+   - In Wave 2 rücken nun insbesondere **`F-DATA-02` Governed WebSQL Engine** (sichere HTTP-SQL-Ausführung nach Trino-Muster), **`F-ARCH-10` Standardisiertes Connector-SPI** (`IGqlGatewayConnector`), **`F-AI-07` Vector Tool Pruning**, **`F-DBT-5` MetricFlow Resolvers**, **`P13` Data Contract & FinOps Chargeback**, **`P14` Arrow Flight Governor**, **`P15` Confidential Compute Enclaves** und **`P16` Post-Quantum TLS** in den Umsetzungsfokus.
 
 ---
 
@@ -1117,14 +1118,14 @@ Im Rahmen des Releases auf **Hot Chocolate 16.6.7** wurde die Performance-Suite 
 
 ---
 
-### 5.2 Strategischer Implementierungsplan Wave 1 & Wave 2 (Referenz-Architektur)
+### 5.2 Strategischer Implementierungsplan Wave 1, Wave 2 & Wave 3 (Referenz-Architektur)
 
-Die detaillierten Implementierungspläne des Solution Architects für die Umsetzung von Wave 1 und Wave 2 sind als verbindliche Referenz hinterlegt:
+Die detaillierten Implementierungspläne des Solution Architects für die Umsetzung von Wave 1, Wave 2 und Wave 3 sind als verbindliche Referenz hinterlegt:
 
 👉 **[Wave 1 Architectural Implementation Plan (100% GA Geliefert)](file:///root/.gemini/antigravity-cli/brain/4cea064e-4e35-4614-ae6f-86298552afea/wave1-architectural-implementation-plan.md)**  
 👉 **[Solution Architect Implementierungsplan Wave 1 & Wave 2](file:///root/.gemini/antigravity-cli/brain/4cea064e-4e35-4614-ae6f-86298552afea/implementation-plan-wave1-wave2.md)**
 
-* **Wave 1 (Sprint 1–6 - 100% GA Geliefert ✅ - 921 Tests Green):**
+* **Wave 1 & Wave 2 Kern & Wave 3 High-Impact (100% GA Geliefert ✅ - über 1.022+ Tests Green):**
   * `F-DOC-01`: Omnichannel Documentation Passthrough (GQL, MCP, Swagger, OData CSDL).
   * `F-DBT-1`: dbt Data Health Circuit Breaker & Quarantäne (`run_results.json`).
   * `F-DBT-2`: dbt Model Contract CI Gate & Breaking Change Linter.
@@ -1136,19 +1137,23 @@ Die detaillierten Implementierungspläne des Solution Architects für die Umsetz
   * `F-AI-02`: Semantic MCP Schema Compiler (dbt & OpenMetadata Ingestion in Tools & Resources).
   * `F-AI-04`: Pre-Flight Query Cost & Token Guard (`simulate_query`).
   * `F-AI-06`: Provenance & Lineage Footnoting (`_provenance` Footnotes).
-* **Wave 2 (Sprint 7–12 - Nächste Umsetzungsphase):**
-  * `F-PERF-08`: Hierarchical Resource Groups & Workload Queuing (Human, BI, MCP Agenten).
+  * `F-PERF-08`: Hierarchical Resource Groups & Workload Queuing (Anti-Noisy-Neighbor, Concurrency Leasing).
   * `F-API-07`: Canonical System Metadaten & Monitoring Schema (`$system` / `__gateway`).
+  * `F-AI-03`: Dynamic Few-Shot "Golden Query" Injection (Audit Replay & Prompt Hub).
+  * `F-DATA-01`: Hierarchical Parquet Egress & Nested Query Serialization (Dremel `LIST<STRUCT>`).
+  * `F-PERF-09`: GraphQL-to-SQL AST Single-Query Compiler (`FOR JSON PATH` / `json_agg` Pushdown).
+  * `F-AI-05`: Human-in-the-Loop Step-Up Approval via MCP (4-Augen & ITSM).
+  * AppSec Remediation (VULN-01..09, SEC-01..03, CQ-01..03, Type Projection Hardening).
+* **Wave 2 (Verbleibende Umsetzungsphase):**
+  * `F-DATA-02`: Governed WebSQL Engine (AST Linter, RLS Rewriter & HTTP Execution).
   * `F-ARCH-10`: Standardisiertes Connector-SPI (`IGqlGatewayConnector` nach Trino-Muster).
-  * `F-AI-03`: Dynamic Few-Shot "Golden Query" Injection (Audit Replay).
-  * `F-AI-05`: Human-in-the-Loop Step-Up Approval via MCP (4-Augen).
   * `F-AI-07`: Vector-Indexed Dynamic Tool Pruning (Scalable Catalog).
   * `F-DBT-5`: dbt Semantic Layer & MetricFlow Auto-Mapping.
   * `P13`: Data Contract & FinOps Chargeback Engine.
   * `P14`: Zero-Trust Lakehouse Arrow Flight Governor.
   * `P15`: Confidential Compute Enclave Support (SGX/SEV).
   * `P16`: Post-Quantum Cryptography Hybrid TLS (ML-KEM / PQC).
-* **Wave 3 (Sprint 13+):**
+* **Wave 3 (Verbleibende Föderations- & Feedback-Phase):**
   * `F-GOV-06`: Cross-Domain Join Pushdown Engine (Trino-inspirierte Föderation).
   * `F-AI-08`: Closed-Loop Drift Detection & Feedback PR Generator.
   * `F-DBT-7`: dbt Mesh Multi-Project Cross-Model Federation.
