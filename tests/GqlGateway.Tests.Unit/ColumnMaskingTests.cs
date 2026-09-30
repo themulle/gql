@@ -188,6 +188,57 @@ public class ColumnMaskingTests
         var result = _provider.MaskValue("iban", rawIban, rule)?.ToString();
         result.ShouldBe(expected);
     }
+
+    [Fact]
+    public void MaskValue_BinaryByteArray_HmacSha256Rule_ComputesHashOnRawBytes_NotTypeName()
+    {
+        var rule = new MaskingRule { RuleType = "HMAC" };
+        var bytesA = new byte[] { 0x01, 0x02, 0x03, 0x04 };
+        var bytesB = new byte[] { 0x05, 0x06, 0x07, 0x08 };
+
+        var hashA = _provider.MaskValue("binary_col", bytesA, rule)?.ToString();
+        var hashB = _provider.MaskValue("binary_col", bytesB, rule)?.ToString();
+        var hashSystemByte = _provider.MaskValue("text_col", "System.Byte[]", rule)?.ToString();
+
+        hashA.ShouldNotBeNull();
+        hashB.ShouldNotBeNull();
+        hashA.Length.ShouldBe(64);
+        hashB.Length.ShouldBe(64);
+
+        // SEC-SPEC-02: Different binary payloads must NOT collide on "System.Byte[]"
+        hashA.ShouldNotBe(hashB);
+        hashA.ShouldNotBe(hashSystemByte);
+        hashB.ShouldNotBe(hashSystemByte);
+    }
+
+    [Fact]
+    public void MaskValue_BinaryByteArray_RedactAndNullify_HandlesCleanly()
+    {
+        var redactRule = new MaskingRule { RuleType = "REDACT", Replacement = "[REDACTED_BLOB]" };
+        var nullifyRule = new MaskingRule { RuleType = "NULLIFY" };
+        var bytes = new byte[] { 0xAA, 0xBB, 0xCC };
+
+        _provider.MaskValue("bin", bytes, redactRule).ShouldBe("[REDACTED_BLOB]");
+        _provider.MaskValue("bin", bytes, nullifyRule).ShouldBeNull();
+    }
+
+    [Fact]
+    public void MaskValue_Timestamps_CultureInvariantUtc_ProducesConsistentHmac()
+    {
+        var rule = new MaskingRule { RuleType = "HMAC" };
+        var dtUtc = new DateTime(2026, 9, 30, 15, 30, 0, DateTimeKind.Utc);
+        var dtUnspec = new DateTime(2026, 9, 30, 15, 30, 0, DateTimeKind.Unspecified);
+        var dto = new DateTimeOffset(2026, 9, 30, 17, 30, 0, TimeSpan.FromHours(2)); // Same instant in UTC
+
+        var hashUtc = _provider.MaskValue("ts", dtUtc, rule)?.ToString();
+        var hashUnspec = _provider.MaskValue("ts", dtUnspec, rule)?.ToString();
+        var hashDto = _provider.MaskValue("ts", dto, rule)?.ToString();
+
+        hashUtc.ShouldNotBeNull();
+        hashUtc.Length.ShouldBe(64);
+        hashUtc.ShouldBe(hashUnspec);
+        hashUtc.ShouldBe(hashDto);
+    }
 }
 
 

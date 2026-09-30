@@ -79,7 +79,9 @@ public sealed class DynamicTableType : ObjectType
     private static bool IsStringType(string dataType)
     {
         var lower = dataType.ToLowerInvariant();
-        return lower.Contains("char") || lower.Contains("text") || lower.Contains("string") || lower.Contains("clob");
+        return lower.Contains("char") || lower.Contains("text") || lower.Contains("string") || lower.Contains("clob") ||
+               lower.Contains("geo") || lower.Contains("point") || lower.Contains("polygon") || lower.Contains("spatial") ||
+               lower.Contains("byte") || lower.Contains("bin") || lower.Contains("blob");
     }
 
     private static void ConfigureType(IObjectFieldDescriptor field, string dataType)

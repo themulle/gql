@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Security;
 using System.Text;
 using GqlGateway.Application.Interfaces;
@@ -19,6 +20,7 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
     private readonly Microsoft.Extensions.Hosting.IHostEnvironment? _environment;
 
     public DataSourceType SupportedType => DataSourceType.Sql;
+    public const int MaxAllowedBinaryBytes = 16 * 1024 * 1024; // 16 MB limit per binary column value (SEC-SPEC-05)
 
     public SqlDataSourceExecutor(
         ISqlConnectionFactory? connectionFactory = null,
@@ -100,12 +102,18 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         await using var command = connection.CreateCommand();
         command.CommandTimeout = Math.Max(1, connOptions.CommandTimeoutSeconds);
 
-        // 1. Column Projections (Zero-Trust: Only authorized requested fields)
+        // 1. Column Projections (Zero-Trust: Only authorized requested fields + dialect-specific special type mapping)
         var columnsToSelect = (context.RequestedFields != null && context.RequestedFields.Count > 0)
             ? context.RequestedFields
             : metadata.Columns.Select(c => c.ColumnName).ToList();
 
-        var selectClause = string.Join(", ", columnsToSelect.Select(c => dialect.QuoteIdentifier(c)));
+        var selectParts = new List<string>(columnsToSelect.Count);
+        foreach (var col in columnsToSelect)
+        {
+            var colDef = metadata.GetColumn(col);
+            selectParts.Add(BuildColumnProjection(col, colDef?.DataType, dialect));
+        }
+        var selectClause = string.Join(", ", selectParts);
         var fromTable = dialect.FormatTableIdentifier(metadata.Identifier);
 
         // 2. WHERE Clause: Push down RLS predicate + Tenant isolation + any applicable equality arguments
@@ -243,8 +251,8 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
                     var row = new Dictionary<string, object?>(fieldCount, StringComparer.OrdinalIgnoreCase);
                     for (int i = 0; i < fieldCount; i++)
                     {
-                        var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                        row[columnNames[i]] = value;
+                        var rawVal = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                        row[columnNames[i]] = NormalizeReadValue(rawVal, columnNames[i]);
                     }
                     results.Add(row);
                 }
@@ -274,6 +282,99 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         }
     }
 
+    public static string BuildColumnProjection(string columnName, string? dataType, DatabaseDialect dialect)
+    {
+        DatabaseDialectExtensions.ValidateIdentifier(columnName);
+        var quotedCol = dialect.QuoteIdentifier(columnName);
+
+        if (string.IsNullOrWhiteSpace(dataType))
+        {
+            return quotedCol;
+        }
+
+        var normalizedType = dataType.Trim().ToLowerInvariant();
+
+        // 1. Geospatial Types (geometry, geography, spatial, point, polygon, linestring, multipolygon, multipoint)
+        if (normalizedType is "geometry" or "geography" or "spatial" or "point" or "polygon" or "linestring" or "multipolygon" or "multipoint")
+        {
+            return dialect switch
+            {
+                DatabaseDialect.PostgreSql => $"ST_AsGeoJSON({quotedCol}) AS {quotedCol}",
+                DatabaseDialect.SqlServer => $"({quotedCol}.STAsText()) AS {quotedCol}",
+                DatabaseDialect.Sqlite => $"AsGeoJSON({quotedCol}) AS {quotedCol}",
+                _ => quotedCol
+            };
+        }
+
+        // 2. Binary Types (bytea, binary, varbinary, blob, image)
+        if (normalizedType is "bytea" or "binary" or "varbinary" or "blob" or "image")
+        {
+            return dialect switch
+            {
+                DatabaseDialect.PostgreSql => $"encode({quotedCol}, 'base64') AS {quotedCol}",
+                DatabaseDialect.Sqlite => $"hex({quotedCol}) AS {quotedCol}",
+                _ => quotedCol
+            };
+        }
+
+        // 3. High-precision / timezone timestamps (timestamp, timestamptz, datetime2, datetimeoffset)
+        if (normalizedType is "timestamptz" or "datetimeoffset" or "datetime2")
+        {
+            return dialect switch
+            {
+                DatabaseDialect.PostgreSql => $"to_char({quotedCol}, 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS {quotedCol}",
+                DatabaseDialect.SqlServer => $"CONVERT(VARCHAR(33), {quotedCol}, 126) AS {quotedCol}",
+                _ => quotedCol
+            };
+        }
+
+        return quotedCol;
+    }
+
+    public static object? NormalizeReadValue(object? rawValue, string? columnName = null)
+    {
+        if (rawValue == null || rawValue is DBNull)
+        {
+            return null;
+        }
+
+        // SEC-SPEC-05: LOH allocation defense & safe base64 representation for binary blobs
+        if (rawValue is byte[] bytes)
+        {
+            if (bytes.Length > MaxAllowedBinaryBytes)
+            {
+                throw new SecurityException($"Die Binärspalte '{columnName ?? "unbekannt"}' überschreitet die zulässige Maximalgröße von {MaxAllowedBinaryBytes / (1024 * 1024)} MB.");
+            }
+            return Convert.ToBase64String(bytes);
+        }
+
+        // SEC-SPEC-04: Deterministic culture-invariant UTC normalization
+        if (rawValue is DateTime dt)
+        {
+            if (dt.Kind == DateTimeKind.Unspecified)
+            {
+                dt = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+            }
+            return dt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        if (rawValue is DateTimeOffset dto)
+        {
+            return dto.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        // Defense in depth: Spatial CLR objects that were not projected via SQL
+        var typeName = rawValue.GetType().FullName;
+        if (typeName != null && (typeName.Contains("Spatial", StringComparison.OrdinalIgnoreCase) ||
+                                 typeName.Contains("Geometry", StringComparison.OrdinalIgnoreCase) ||
+                                 typeName.Contains("Geography", StringComparison.OrdinalIgnoreCase)))
+        {
+            return rawValue.ToString();
+        }
+
+        return rawValue;
+    }
+
     private static IReadOnlyList<IReadOnlyDictionary<string, object?>> GenerateSyntheticRows(DataSourceExecutionContext context)
     {
         context.Items["IsSyntheticMock"] = true;
@@ -296,7 +397,7 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
                     "amount" => 100.50m * rowNum,
                     "email" => $"user{rowNum}@corp.local",
                     "created_at" => DateTimeOffset.UtcNow.AddDays(-rowNum),
-                    _ => $"Value_{rowNum}"
+                    _ => GenerateSyntheticValueForType(col.DataType, rowNum)
                 };
 
                 dict[col.ColumnName] = rawVal;
@@ -306,5 +407,31 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         }
 
         return rows;
+    }
+
+    private static object? GenerateSyntheticValueForType(string? dataType, int rowNum)
+    {
+        if (string.IsNullOrWhiteSpace(dataType))
+        {
+            return $"Value_{rowNum}";
+        }
+
+        var normalizedType = dataType.Trim().ToLowerInvariant();
+        if (normalizedType is "geometry" or "geography" or "spatial" or "point" or "polygon" or "linestring")
+        {
+            return $$"""{"type":"Point","coordinates":[13.4{{rowNum}},52.5{{rowNum}}]}""";
+        }
+
+        if (normalizedType is "bytea" or "binary" or "varbinary" or "blob" or "image")
+        {
+            return Convert.ToBase64String(Encoding.UTF8.GetBytes($"binary_payload_{rowNum}"));
+        }
+
+        if (normalizedType is "timestamptz" or "datetimeoffset" or "datetime2" or "timestamp")
+        {
+            return DateTimeOffset.UtcNow.AddDays(-rowNum).ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        return $"Value_{rowNum}";
     }
 }

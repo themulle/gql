@@ -226,7 +226,7 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
         }
 
         // 3. High-precision / timezone timestamps (timestamp, timestamptz, datetime2, datetimeoffset)
-        if (normalizedType is "timestamptz" or "datetimeoffset")
+        if (normalizedType is "timestamptz" or "datetimeoffset" or "datetime2")
         {
             return dialect switch
             {

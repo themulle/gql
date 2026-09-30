@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -53,6 +54,37 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
 
         var ruleType = rule.RuleType?.ToUpperInvariant() ?? "REDACT";
 
+        // SEC-SPEC-02: Prevent Type Confusion & Hash Collisions on raw binary byte[]
+        if (rawValue is byte[] rawBytes)
+        {
+            switch (ruleType)
+            {
+                case "NULLIFY":
+                    return null;
+
+                case "REDACT":
+                    return rule.Replacement ?? "REDACTED";
+
+                case "HMAC":
+                case "HMAC_SHA256":
+                    return ComputeHmacSha256(rawBytes, rule.HmacKeyId ?? _options.HmacKeyId);
+
+                default:
+                    // String patterns (email, iban, regex) do not apply to raw byte[] - fail-closed
+                    return rule.Replacement ?? "REDACTED";
+            }
+        }
+
+        // SEC-SPEC-04: Deterministic culture-invariant UTC normalization for timestamps
+        string textValue = rawValue switch
+        {
+            DateTime dt => (dt.Kind == DateTimeKind.Unspecified
+                ? DateTime.SpecifyKind(dt, DateTimeKind.Utc)
+                : dt.ToUniversalTime()).ToString("O", CultureInfo.InvariantCulture),
+            DateTimeOffset dto => dto.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
+            _ => rawValue.ToString() ?? string.Empty
+        };
+
         switch (ruleType)
         {
             case "NULLIFY":
@@ -63,19 +95,19 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
 
             case "HMAC":
             case "HMAC_SHA256":
-                return ComputeHmacSha256(rawValue.ToString() ?? string.Empty, rule.HmacKeyId ?? _options.HmacKeyId);
+                return ComputeHmacSha256(textValue, rule.HmacKeyId ?? _options.HmacKeyId);
 
             case "MASK_EMAIL":
-                return MaskEmail(rawValue.ToString() ?? string.Empty);
+                return MaskEmail(textValue);
 
             case "MASK_IBAN":
-                return MaskIban(rawValue.ToString() ?? string.Empty);
+                return MaskIban(textValue);
 
             case "MASK_PHONE":
-                return MaskPhone(rawValue.ToString() ?? string.Empty);
+                return MaskPhone(textValue);
 
             case "REGEX":
-                return ApplyRegexOrFormatMask(columnName, rawValue.ToString() ?? string.Empty, rule);
+                return ApplyRegexOrFormatMask(columnName, textValue, rule);
 
             default:
                 return rule.Replacement ?? "REDACTED";
@@ -96,6 +128,14 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
             byte[] idBytes = Encoding.UTF8.GetBytes(id);
             return HMACSHA256.HashData(masterKey, idBytes);
         }, _hmacKey);
+    }
+
+    private string ComputeHmacSha256(byte[] inputBytes, string? hmacKeyId)
+    {
+        var keyToUse = GetOrDeriveKey(hmacKeyId);
+        Span<byte> hashBytes = stackalloc byte[32];
+        HMACSHA256.HashData(keyToUse, inputBytes, hashBytes);
+        return Convert.ToHexString(hashBytes);
     }
 
     private string ComputeHmacSha256(string input, string? hmacKeyId)
