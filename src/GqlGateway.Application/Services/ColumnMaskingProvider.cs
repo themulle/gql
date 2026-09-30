@@ -82,6 +82,10 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
                 ? DateTime.SpecifyKind(dt, DateTimeKind.Utc)
                 : dt.ToUniversalTime()).ToString("O", CultureInfo.InvariantCulture),
             DateTimeOffset dto => dto.UtcDateTime.ToString("O", CultureInfo.InvariantCulture),
+            DateOnly d => d.ToString("O", CultureInfo.InvariantCulture),
+            TimeOnly t => t.ToString("O", CultureInfo.InvariantCulture),
+            TimeSpan ts => ts.ToString("c", CultureInfo.InvariantCulture),
+            string s when s.Length >= 19 && s[10] == 'T' && !s.EndsWith('Z') && !s.Contains('+') && s.IndexOf('-', 11) == -1 => s + "Z",
             _ => rawValue.ToString() ?? string.Empty
         };
 

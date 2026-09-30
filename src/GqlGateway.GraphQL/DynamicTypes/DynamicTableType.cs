@@ -24,7 +24,7 @@ public sealed class DynamicTableType : ObjectType
         foreach (var col in _metadata.Columns)
         {
             var fieldDesc = descriptor.Field(col.ColumnName);
-            ConfigureType(fieldDesc, col.DataType);
+            ConfigureType(fieldDesc, col.DataType, _metadata.Dialect);
 
             var colDesc = FormatColumnMarkdownDescription(col);
             if (!string.IsNullOrWhiteSpace(colDesc))
@@ -84,9 +84,24 @@ public sealed class DynamicTableType : ObjectType
                lower.Contains("byte") || lower.Contains("bin") || lower.Contains("blob");
     }
 
-    private static void ConfigureType(IObjectFieldDescriptor field, string dataType)
+    private static void ConfigureType(IObjectFieldDescriptor field, string dataType, DatabaseDialect dialect = DatabaseDialect.PostgreSql)
     {
         var lower = dataType.ToLowerInvariant();
+
+        // MSSQL special case: timestamp / rowversion is an 8-byte binary counter, NOT a DateTime!
+        if (dialect == DatabaseDialect.SqlServer && (lower == "timestamp" || lower.Contains("rowversion")))
+        {
+            field.Type<StringType>();
+            return;
+        }
+
+        if (lower.Contains("byte") || lower.Contains("bin") || lower.Contains("blob") || lower.Contains("raw") ||
+            lower.Contains("geo") || lower.Contains("point") || lower.Contains("spatial"))
+        {
+            field.Type<StringType>();
+            return;
+        }
+
         if (lower.Contains("bigint") || lower.Contains("long"))
         {
             field.Type<LongType>();

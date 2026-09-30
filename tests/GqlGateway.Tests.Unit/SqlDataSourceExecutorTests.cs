@@ -252,4 +252,55 @@ public sealed class SqlDataSourceExecutorTests
         normDt.ShouldBe("2026-09-30T12:00:00.0000000Z");
         normDto.ShouldBe("2026-09-30T12:00:00.0000000Z");
     }
+
+    [Fact]
+    public void BuildColumnProjection_MssqlRowversionAndTimestamp_TreatedAsBinaryNotDatetime()
+    {
+        // SEC-CRIT: In MSSQL, timestamp is a synonym for rowversion (8-byte binary token). It must NOT be converted using datetime styles!
+        var projTs = SqlDataSourceExecutor.BuildColumnProjection("row_version", "timestamp", DatabaseDialect.SqlServer);
+        var projRv = SqlDataSourceExecutor.BuildColumnProjection("version", "rowversion", DatabaseDialect.SqlServer);
+
+        projTs.ShouldBe("[row_version]");
+        projRv.ShouldBe("[version]");
+    }
+
+    [Theory]
+    [InlineData("shape", "sdo_geometry", DatabaseDialect.Oracle, "SDO_UTIL.TO_GEOJSON(\"shape\") AS \"shape\"")]
+    [InlineData("raw_bytes", "raw", DatabaseDialect.Oracle, "RAWTOHEX(\"raw_bytes\") AS \"raw_bytes\"")]
+    [InlineData("created_at", "timestamp", DatabaseDialect.Oracle, "TO_CHAR(\"created_at\", 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6\"Z\"') AS \"created_at\"")]
+    [InlineData("hire_date", "date", DatabaseDialect.Oracle, "TO_CHAR(\"hire_date\", 'YYYY-MM-DD') AS \"hire_date\"")]
+    public void BuildColumnProjection_OracleTypes_TranslatesCorrectly(string col, string type, DatabaseDialect dialect, string expected)
+    {
+        var projection = SqlDataSourceExecutor.BuildColumnProjection(col, type, dialect);
+        projection.ShouldBe(expected);
+    }
+
+    [Theory]
+    [InlineData("bin_data", "binary", DatabaseDialect.Databricks, "base64(`bin_data`) AS `bin_data`")]
+    [InlineData("event_time", "timestamp", DatabaseDialect.Databricks, "date_format(`event_time`, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z''') AS `event_time`")]
+    [InlineData("log_date", "date", DatabaseDialect.Databricks, "date_format(`log_date`, 'yyyy-MM-dd') AS `log_date`")]
+    public void BuildColumnProjection_DatabricksTypes_TranslatesCorrectly(string col, string type, DatabaseDialect dialect, string expected)
+    {
+        var projection = SqlDataSourceExecutor.BuildColumnProjection(col, type, dialect);
+        projection.ShouldBe(expected);
+    }
+
+    [Fact]
+    public void NormalizeReadValue_DateOnlyTimeOnlyAndIsoStrings_NormalizesCleanly()
+    {
+        var date = new DateOnly(2026, 9, 30);
+        var time = new TimeOnly(14, 30, 15);
+        var span = new TimeSpan(1, 2, 3);
+        var rawIsoNoZ = "2026-09-30T14:30:15.1234567";
+
+        var normDate = SqlDataSourceExecutor.NormalizeReadValue(date, "d");
+        var normTime = SqlDataSourceExecutor.NormalizeReadValue(time, "t");
+        var normSpan = SqlDataSourceExecutor.NormalizeReadValue(span, "ts");
+        var normIso = SqlDataSourceExecutor.NormalizeReadValue(rawIsoNoZ, "iso");
+
+        normDate.ShouldBe("2026-09-30");
+        normTime.ShouldBe("14:30:15.0000000");
+        normSpan.ShouldBe("01:02:03");
+        normIso.ShouldBe("2026-09-30T14:30:15.1234567Z");
+    }
 }

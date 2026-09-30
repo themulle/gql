@@ -294,36 +294,74 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
 
         var normalizedType = dataType.Trim().ToLowerInvariant();
 
-        // 1. Geospatial Types (geometry, geography, spatial, point, polygon, linestring, multipolygon, multipoint)
-        if (normalizedType is "geometry" or "geography" or "spatial" or "point" or "polygon" or "linestring" or "multipolygon" or "multipoint")
+        // Special case MSSQL: "timestamp" is a deprecated synonym for "rowversion" (8-byte binary token, NOT datetime!)
+        if (dialect == DatabaseDialect.SqlServer && normalizedType is "timestamp" or "rowversion")
+        {
+            return quotedCol; // Handled as binary in reader -> Base64
+        }
+
+        // 1. Geospatial Types (geometry, geography, spatial, point, polygon, linestring, multipolygon, multipoint, sdo_geometry)
+        if (normalizedType is "geometry" or "geography" or "spatial" or "point" or "polygon" or "linestring" or "multipolygon" or "multipoint" or "sdo_geometry")
         {
             return dialect switch
             {
                 DatabaseDialect.PostgreSql => $"ST_AsGeoJSON({quotedCol}) AS {quotedCol}",
                 DatabaseDialect.SqlServer => $"({quotedCol}.STAsText()) AS {quotedCol}",
                 DatabaseDialect.Sqlite => $"AsGeoJSON({quotedCol}) AS {quotedCol}",
+                DatabaseDialect.Oracle => $"SDO_UTIL.TO_GEOJSON({quotedCol}) AS {quotedCol}",
                 _ => quotedCol
             };
         }
 
-        // 2. Binary Types (bytea, binary, varbinary, blob, image)
-        if (normalizedType is "bytea" or "binary" or "varbinary" or "blob" or "image")
+        // 2. Binary Types (bytea, binary, varbinary, blob, image, raw, long raw)
+        if (normalizedType is "bytea" or "binary" or "varbinary" or "blob" or "image" or "raw" or "long raw")
         {
             return dialect switch
             {
                 DatabaseDialect.PostgreSql => $"encode({quotedCol}, 'base64') AS {quotedCol}",
                 DatabaseDialect.Sqlite => $"hex({quotedCol}) AS {quotedCol}",
+                DatabaseDialect.Databricks => $"base64({quotedCol}) AS {quotedCol}",
+                DatabaseDialect.Oracle => $"RAWTOHEX({quotedCol}) AS {quotedCol}",
                 _ => quotedCol
             };
         }
 
-        // 3. High-precision / timezone timestamps (timestamp, timestamptz, datetime2, datetimeoffset)
-        if (normalizedType is "timestamptz" or "datetimeoffset" or "datetime2")
+        // 3. High-precision / timezone timestamps (timestamp, timestamptz, datetime2, datetimeoffset, etc.)
+        if (normalizedType is "timestamptz" or "datetimeoffset" or "datetime2" or "datetime" or "smalldatetime" or "timestamp" or "timestamp_ntz" or "timestamp with time zone" or "timestamp with local time zone")
         {
             return dialect switch
             {
                 DatabaseDialect.PostgreSql => $"to_char({quotedCol}, 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS {quotedCol}",
                 DatabaseDialect.SqlServer => $"CONVERT(VARCHAR(33), {quotedCol}, 126) AS {quotedCol}",
+                DatabaseDialect.Sqlite => $"strftime('%Y-%m-%dT%H:%M:%fZ', {quotedCol}) AS {quotedCol}",
+                DatabaseDialect.Databricks => $"date_format({quotedCol}, 'yyyy-MM-dd''T''HH:mm:ss.SSS''Z''') AS {quotedCol}",
+                DatabaseDialect.Oracle => $"TO_CHAR({quotedCol}, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6\"Z\"') AS {quotedCol}",
+                _ => quotedCol
+            };
+        }
+
+        // 4. Date-only (date)
+        if (normalizedType is "date")
+        {
+            return dialect switch
+            {
+                DatabaseDialect.PostgreSql => $"to_char({quotedCol}, 'YYYY-MM-DD') AS {quotedCol}",
+                DatabaseDialect.SqlServer => $"CONVERT(VARCHAR(10), {quotedCol}, 23) AS {quotedCol}",
+                DatabaseDialect.Oracle => $"TO_CHAR({quotedCol}, 'YYYY-MM-DD') AS {quotedCol}",
+                DatabaseDialect.Sqlite => $"strftime('%Y-%m-%d', {quotedCol}) AS {quotedCol}",
+                DatabaseDialect.Databricks => $"date_format({quotedCol}, 'yyyy-MM-dd') AS {quotedCol}",
+                _ => quotedCol
+            };
+        }
+
+        // 5. Time-only (time, timetz, time without time zone)
+        if (normalizedType is "time" or "timetz" or "time without time zone")
+        {
+            return dialect switch
+            {
+                DatabaseDialect.PostgreSql => $"to_char({quotedCol}, 'HH24:MI:SS.US') AS {quotedCol}",
+                DatabaseDialect.SqlServer => $"CONVERT(VARCHAR(16), {quotedCol}, 114) AS {quotedCol}",
+                DatabaseDialect.Sqlite => $"strftime('%H:%M:%f', {quotedCol}) AS {quotedCol}",
                 _ => quotedCol
             };
         }
@@ -361,6 +399,27 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         if (rawValue is DateTimeOffset dto)
         {
             return dto.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        if (rawValue is DateOnly d)
+        {
+            return d.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        if (rawValue is TimeOnly t)
+        {
+            return t.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        if (rawValue is TimeSpan ts)
+        {
+            return ts.ToString("c", CultureInfo.InvariantCulture);
+        }
+
+        // Defense in depth: normalize ISO strings from DB without explicit UTC indicator to canonical UTC 'Z'
+        if (rawValue is string s && s.Length >= 19 && s[10] == 'T' && !s.EndsWith('Z') && !s.Contains('+') && s.IndexOf('-', 11) == -1)
+        {
+            return s + "Z";
         }
 
         // Defense in depth: Spatial CLR objects that were not projected via SQL
