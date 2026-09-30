@@ -303,4 +303,110 @@ public sealed class SqlDataSourceExecutorTests
         normSpan.ShouldBe("01:02:03");
         normIso.ShouldBe("2026-09-30T14:30:15.1234567Z");
     }
+
+    [Fact]
+    public async Task ExecuteAsync_ThrowsSecurityException_WhenTableAccessDecisionIsDenied()
+    {
+        var metadata = CreateMetadata();
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.PrimarySid, "S-1-5-21-TEST")], "Test"));
+        var deniedDecision = TableAccessDecision.Denied(metadata.Identifier, "Casbin ABAC Policy Deny");
+
+        var context = new DataSourceExecutionContext(
+            SourceName: metadata.Table.SourceName,
+            Metadata: metadata,
+            Principal: principal,
+            AccessDecision: deniedDecision,
+            Arguments: new Dictionary<string, object?>(),
+            RequestedFields: ["id", "name"]
+        );
+
+        var executor = new SqlDataSourceExecutor(logger: NullLogger<SqlDataSourceExecutor>.Instance);
+
+        var ex = await Should.ThrowAsync<SecurityException>(() => executor.ExecuteAsync(context));
+        ex.Message.ShouldContain("Zero-Trust-Verletzung");
+        ex.Message.ShouldContain("Casbin ABAC Policy Deny");
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ExcludesDeniedColumns_FromSyntheticMockGeneration()
+    {
+        var metadata = CreateMetadata();
+        var columnAccess = new Dictionary<string, ColumnAccessLevel>
+        {
+            ["id"] = ColumnAccessLevel.Clear,
+            ["name"] = ColumnAccessLevel.Clear,
+            ["salary"] = ColumnAccessLevel.Deny,
+            ["ssn"] = ColumnAccessLevel.Deny
+        };
+
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.PrimarySid, "S-1-5-21-TEST")], "Test"));
+        var decision = TableAccessDecision.Allowed(metadata.Identifier, columnAccess);
+
+        var context = new DataSourceExecutionContext(
+            SourceName: metadata.Table.SourceName,
+            Metadata: metadata,
+            Principal: principal,
+            AccessDecision: decision,
+            Arguments: new Dictionary<string, object?>(),
+            RequestedFields: ["id", "name", "salary", "ssn"] // Request all columns including denied ones
+        );
+
+        var executor = new SqlDataSourceExecutor(logger: NullLogger<SqlDataSourceExecutor>.Instance);
+        var rows = await executor.ExecuteAsync(context);
+
+        rows.ShouldNotBeEmpty();
+        foreach (var row in rows)
+        {
+            row.ContainsKey("id").ShouldBeTrue();
+            row.ContainsKey("name").ShouldBeTrue();
+            row.ContainsKey("salary").ShouldBeFalse();
+            row.ContainsKey("ssn").ShouldBeFalse();
+        }
+    }
+
+    [Theory]
+    [InlineData("tenant_id = 'T1' --")]
+    [InlineData("tenant_id = 'T1'; DROP TABLE users;")]
+    [InlineData("tenant_id = 'T1' /* comment */")]
+    public async Task ExecuteAsync_ThrowsArgumentException_WhenCombinedRowFilterSqlHasCommentInjection(string maliciousRls)
+    {
+        var metadata = CreateMetadata();
+        var columnAccess = new Dictionary<string, ColumnAccessLevel>
+        {
+            ["id"] = ColumnAccessLevel.Clear,
+            ["name"] = ColumnAccessLevel.Clear
+        };
+
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.PrimarySid, "S-1-5-21-TEST")], "Test"));
+        var decision = TableAccessDecision.Allowed(metadata.Identifier, columnAccess, rowFilterSql: maliciousRls);
+
+        var context = new DataSourceExecutionContext(
+            SourceName: "hr_db",
+            Metadata: metadata,
+            Principal: principal,
+            AccessDecision: decision,
+            Arguments: new Dictionary<string, object?>(),
+            RequestedFields: ["id"]
+        );
+
+        var connFactory = Substitute.For<ISqlConnectionFactory>();
+        var options = Options.Create(new GatewayOptions
+        {
+            DataSources = new SqlDataSourceOptions
+            {
+                Connections = new Dictionary<string, DataSourceConnectionOptions>
+                {
+                    ["hr_db"] = new DataSourceConnectionOptions
+                    {
+                        ConnectionString = "Host=localhost;Database=hr",
+                        Provider = "PostgreSQL"
+                    }
+                }
+            }
+        });
+
+        var executor = new SqlDataSourceExecutor(connFactory, options, NullLogger<SqlDataSourceExecutor>.Instance);
+
+        await Should.ThrowAsync<ArgumentException>(() => executor.ExecuteAsync(context));
+    }
 }

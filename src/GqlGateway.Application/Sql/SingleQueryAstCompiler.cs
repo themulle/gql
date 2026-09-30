@@ -16,6 +16,7 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
     [GeneratedRegex("^[a-zA-Z_][a-zA-Z0-9_]*$")]
     private static partial Regex SafeIdentifierRegex();
 
+    private readonly bool _enabled;
     private readonly int _maxDepth;
     private readonly List<DatabaseDialect>? _supportedDialects;
     private readonly ILogger<SingleQueryAstCompiler>? _logger;
@@ -25,6 +26,7 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
         ILogger<SingleQueryAstCompiler>? logger = null)
     {
         var pushdownOpts = options?.Value.SingleQueryPushdown ?? new SingleQueryPushdownOptions();
+        _enabled = pushdownOpts.Enabled;
         _maxDepth = pushdownOpts.MaxSubqueryDepth > 0 ? pushdownOpts.MaxSubqueryDepth : 5;
         _supportedDialects = pushdownOpts.SupportedDialects;
         _logger = logger;
@@ -51,6 +53,11 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
     {
         ArgumentNullException.ThrowIfNull(rootNode);
 
+        if (!_enabled)
+        {
+            throw new InvalidOperationException("Single-query hierarchical AST pushdown is disabled by configuration.");
+        }
+
         if (!SupportsDialect(dialect))
         {
             _logger?.LogWarning("Dialect '{Dialect}' does not support hierarchical JSON pushdown. Fallback to application-level batch stitching required.", dialect);
@@ -75,13 +82,28 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
             throw new InvalidOperationException($"Query depth limit ({_maxDepth}) exceeded at node '{node.Table.TableName}'. Potential circular query detected.");
         }
 
+        if (node.Limit.HasValue && node.Limit.Value <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(node), $"Limit for table '{node.Table.TableName}' must be a positive integer.");
+        }
+
         ValidateIdentifier(node.Table.Schema);
         ValidateIdentifier(node.Table.TableName);
         ValidateIdentifier(node.Alias);
 
+        if (node.ProjectedColumns.Count == 0 && (node.Children == null || node.Children.Count == 0))
+        {
+            throw new ArgumentException($"Node '{node.Table.TableName}' must specify at least one projected column or child subquery.");
+        }
+
         var indent = new string(' ', depth * 2);
 
-        sb.Append(indent).AppendLine("SELECT");
+        var topClause = string.Empty;
+        if (dialect == DatabaseDialect.SqlServer && node.Limit.HasValue)
+        {
+            topClause = $" TOP ({node.Limit.Value})";
+        }
+        sb.Append(indent).Append("SELECT").AppendLine(topClause);
 
         // 1. Projected scalar columns with special type translation (geospatial, binary, timestamp)
         var selectItems = new List<string>(node.ProjectedColumns.Count + (node.Children?.Count ?? 0));
@@ -128,8 +150,13 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
         // 4. WHERE Clause: Join Predicates + User Filter + Mandatory RLS
         var whereClauses = new List<string>();
 
-        if (parentNode != null && !string.IsNullOrWhiteSpace(node.ChildForeignKeyColumn) && !string.IsNullOrWhiteSpace(node.ParentForeignKeyColumn))
+        if (parentNode != null)
         {
+            if (string.IsNullOrWhiteSpace(node.ChildForeignKeyColumn) || string.IsNullOrWhiteSpace(node.ParentForeignKeyColumn))
+            {
+                throw new InvalidOperationException($"Child subquery node '{node.Table.TableName}' must specify both ParentForeignKeyColumn and ChildForeignKeyColumn for join correlation.");
+            }
+
             ValidateIdentifier(node.ChildForeignKeyColumn);
             ValidateIdentifier(node.ParentForeignKeyColumn);
             whereClauses.Add($"{QuoteIdentifier(node.Alias, dialect)}.{QuoteIdentifier(node.ChildForeignKeyColumn, dialect)} = {QuoteIdentifier(parentNode.Alias, dialect)}.{QuoteIdentifier(node.ParentForeignKeyColumn, dialect)}");
@@ -137,6 +164,7 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
 
         if (!string.IsNullOrWhiteSpace(node.WhereFilter))
         {
+            SqlSecurityValidator.ValidatePredicateSql(node.WhereFilter, $"WhereFilter for node '{node.Table.TableName}'");
             whereClauses.Add($"({node.WhereFilter})");
         }
 
@@ -145,6 +173,8 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
         {
             throw new InvalidOperationException($"Mandatory RLS predicate missing for table '{node.Table.TableName}' in single-query AST pushdown.");
         }
+
+        SqlSecurityValidator.ValidatePredicateSql(rlsFilter, $"RLS predicate for table '{node.Table.TableName}'");
         whereClauses.Add($"({rlsFilter})");
 
         if (whereClauses.Count > 0)
@@ -156,6 +186,10 @@ public sealed partial class SingleQueryAstCompiler : ISingleQueryAstCompiler
         if (parentNode != null)
         {
             AppendChildJsonFormatting(node, dialect, indent, sb);
+        }
+        else if (node.Limit.HasValue && dialect is DatabaseDialect.PostgreSql or DatabaseDialect.Sqlite)
+        {
+            sb.Append(indent).Append("LIMIT ").AppendLine(node.Limit.Value.ToString());
         }
     }
 

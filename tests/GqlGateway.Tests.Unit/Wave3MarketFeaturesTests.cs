@@ -759,4 +759,140 @@ public sealed class Wave3MarketFeaturesTests
         Assert.Contains("does not support single-query hierarchical JSON pushdown", ex.Message);
         Assert.Contains("DataLoader", ex.Message);
     }
+
+    [Theory]
+    [InlineData("c.status = 'ACTIVE' --")]
+    [InlineData("c.status = 'ACTIVE' /* comment */")]
+    [InlineData("1=1; DROP TABLE users;")]
+    [InlineData("1=1) UNION SELECT 1, 2--")]
+    [InlineData("c.name = 'unclosed quote")]
+    [InlineData("c.id = 1)")]
+    public void AstCompiler_WhereFilter_RejectsInjectionAndPreventsRlsBypass(string maliciousFilter)
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("sales", "public", "customers");
+        var node = new SqlAstNode(
+            Table: table,
+            Alias: "c",
+            ProjectedColumns: ["id", "status"],
+            WhereFilter: maliciousFilter
+        );
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "c.tenant_id = 'T1'" };
+
+        Assert.Throws<ArgumentException>(() =>
+            compiler.CompileHierarchicalQuery(node, DatabaseDialect.PostgreSql, rls));
+    }
+
+    [Theory]
+    [InlineData("c.tenant_id = 'T1' --")]
+    [InlineData("c.tenant_id = 'T1'; DROP TABLE users;")]
+    [InlineData("c.tenant_id = 'T1' UNION SELECT 1")]
+    public void AstCompiler_RlsFilter_RejectsCommentInjectionAndQueryStacking(string maliciousRls)
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("sales", "public", "customers");
+        var node = new SqlAstNode(
+            Table: table,
+            Alias: "c",
+            ProjectedColumns: ["id"]
+        );
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = maliciousRls };
+
+        Assert.Throws<ArgumentException>(() =>
+            compiler.CompileHierarchicalQuery(node, DatabaseDialect.SqlServer, rls));
+    }
+
+    [Fact]
+    public void AstCompiler_ChildSubquery_ThrowsIfMissingForeignKeys_PreventingUncorrelatedCartesianProduct()
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var parentTable = new TableIdentifier("sales", "public", "customers");
+        var childTable = new TableIdentifier("sales", "public", "orders");
+
+        var node = new SqlAstNode(
+            Table: parentTable,
+            Alias: "c",
+            ProjectedColumns: ["id"],
+            Children:
+            [
+                new SqlAstNode(
+                    Table: childTable,
+                    Alias: "o",
+                    ProjectedColumns: ["id"],
+                    ParentForeignKeyColumn: null, // Missing!
+                    ChildForeignKeyColumn: null  // Missing!
+                )
+            ]
+        );
+        var rls = new Dictionary<TableIdentifier, string?>
+        {
+            [parentTable] = "c.tenant_id = 'T1'",
+            [childTable] = "o.tenant_id = 'T1'"
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            compiler.CompileHierarchicalQuery(node, DatabaseDialect.PostgreSql, rls));
+
+        Assert.Contains("must specify both ParentForeignKeyColumn and ChildForeignKeyColumn", ex.Message);
+    }
+
+    [Fact]
+    public void AstCompiler_DisabledByOptions_ThrowsInvalidOperationException()
+    {
+        var options = Options.Create(new GatewayOptions
+        {
+            SingleQueryPushdown = new SingleQueryPushdownOptions { Enabled = false }
+        });
+        var compiler = new SingleQueryAstCompiler(options);
+        var table = new TableIdentifier("sales", "public", "customers");
+        var node = new SqlAstNode(table, "c", ["id"]);
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "1=1" };
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            compiler.CompileHierarchicalQuery(node, DatabaseDialect.SqlServer, rls));
+
+        Assert.Contains("disabled by configuration", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(-100)]
+    public void AstCompiler_Limit_NegativeOrZero_ThrowsArgumentOutOfRangeException(int invalidLimit)
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("sales", "public", "customers");
+        var node = new SqlAstNode(table, "c", ["id"], Limit: invalidLimit);
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "1=1" };
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            compiler.CompileHierarchicalQuery(node, DatabaseDialect.SqlServer, rls));
+    }
+
+    [Fact]
+    public void AstCompiler_SqlServer_PushesDownTopLimit()
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("sales", "public", "customers");
+        var node = new SqlAstNode(table, "c", ["id"], Limit: 25);
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "1=1" };
+
+        var sql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.SqlServer, rls);
+        Assert.Contains("SELECT TOP (25)", sql);
+    }
+
+    [Fact]
+    public void AstCompiler_PostgreSqlAndSqlite_PushesDownLimit()
+    {
+        var compiler = new SingleQueryAstCompiler();
+        var table = new TableIdentifier("sales", "public", "customers");
+        var node = new SqlAstNode(table, "c", ["id"], Limit: 50);
+        var rls = new Dictionary<TableIdentifier, string?> { [table] = "1=1" };
+
+        var pgSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.PostgreSql, rls);
+        Assert.Contains("LIMIT 50", pgSql);
+
+        var sqliteSql = compiler.CompileHierarchicalQuery(node, DatabaseDialect.Sqlite, rls);
+        Assert.Contains("LIMIT 50", sqliteSql);
+    }
 }

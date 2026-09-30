@@ -40,6 +40,23 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
     {
         ArgumentNullException.ThrowIfNull(context);
 
+        // SEC-AC-01: Zero-Trust / Fail-Closed: Refuse execution if table access is denied by policy
+        if (!context.AccessDecision.IsAllowed)
+        {
+            var reasons = context.AccessDecision.DeniedReasons.Count > 0
+                ? string.Join("; ", context.AccessDecision.DeniedReasons)
+                : "Tabelle ist durch Zugriffsrichtlinie gesperrt.";
+            throw new SecurityException($"Zero-Trust-Verletzung: Zugriff auf Tabelle '{context.Metadata.Identifier}' verweigert: {reasons}");
+        }
+
+        // SEC-AC-02: Zero-Trust: Validate RLS filter early before any connection or query execution
+        if (!string.IsNullOrWhiteSpace(context.AccessDecision.CombinedRowFilterSql))
+        {
+            GqlGateway.Application.Sql.SqlSecurityValidator.ValidatePredicateSql(
+                context.AccessDecision.CombinedRowFilterSql,
+                "CombinedRowFilterSql");
+        }
+
         // SEC-01: Side-channel inference protection: verify column filters target only Clear columns
         foreach (var (argKey, argVal) in context.Arguments)
         {
@@ -107,12 +124,23 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
             ? context.RequestedFields
             : metadata.Columns.Select(c => c.ColumnName).ToList();
 
-        var selectParts = new List<string>(columnsToSelect.Count);
-        foreach (var col in columnsToSelect)
+        // SEC-AC-02: Zero-Trust: Exclude any columns marked with ColumnAccessLevel.Deny
+        var authorizedColumns = columnsToSelect
+            .Where(col => context.AccessDecision.GetColumnAccess(col) != ColumnAccessLevel.Deny)
+            .ToList();
+
+        var selectParts = new List<string>(authorizedColumns.Count);
+        foreach (var col in authorizedColumns)
         {
             var colDef = metadata.GetColumn(col);
             selectParts.Add(BuildColumnProjection(col, colDef?.DataType, dialect));
         }
+
+        if (selectParts.Count == 0)
+        {
+            selectParts.Add("1 AS __unauthorized_placeholder");
+        }
+
         var selectClause = string.Join(", ", selectParts);
         var fromTable = dialect.FormatTableIdentifier(metadata.Identifier);
 
@@ -135,6 +163,9 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
 
         if (!string.IsNullOrWhiteSpace(context.AccessDecision.CombinedRowFilterSql))
         {
+            GqlGateway.Application.Sql.SqlSecurityValidator.ValidatePredicateSql(
+                context.AccessDecision.CombinedRowFilterSql,
+                "CombinedRowFilterSql");
             whereParts.Add($"({context.AccessDecision.CombinedRowFilterSql})");
         }
 
@@ -449,6 +480,12 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
 
             foreach (var col in metadata.Columns)
             {
+                // SEC-AC-02: Zero-Trust: Do not emit synthetic data for Denied columns
+                if (context.AccessDecision.GetColumnAccess(col.ColumnName) == ColumnAccessLevel.Deny)
+                {
+                    continue;
+                }
+
                 object? rawVal = col.ColumnName.ToLowerInvariant() switch
                 {
                     "id" => rowNum,
