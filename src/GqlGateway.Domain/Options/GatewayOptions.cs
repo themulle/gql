@@ -716,6 +716,7 @@ public sealed class SystemMetricsOptions
 {
     public bool Enabled { get; init; } = true;
     public bool ExposeRestEndpoints { get; init; } = true;
+    public List<string> AllowedRoles { get; init; } = ["GovernanceAdmin", "ClusterAdmin", "SecurityAdmin"];
 }
 
 public sealed class GoldenQueryOptions

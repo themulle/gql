@@ -29,10 +29,26 @@ public sealed class GoldenQueryService : IGoldenQueryService
         InitializeQueries(goldenOpts.InitialQueries);
     }
 
+    private const int MaxQueryStoreCapacity = 5000;
+    private const int MaxQueryTextLength = 65536;
+
     public void RegisterGoldenQuery(GoldenQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentException.ThrowIfNullOrWhiteSpace(query.Id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(query.Domain);
+        ArgumentException.ThrowIfNullOrWhiteSpace(query.TableName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(query.QueryText);
+
+        if (query.QueryText.Length > MaxQueryTextLength)
+        {
+            throw new ArgumentException($"Query text exceeds maximum allowed size of {MaxQueryTextLength} characters.", nameof(query));
+        }
+
+        if (_queries.Count >= MaxQueryStoreCapacity && !_queries.ContainsKey(query.Id))
+        {
+            throw new InvalidOperationException($"Golden query registry capacity limit ({MaxQueryStoreCapacity}) reached.");
+        }
 
         _queries[query.Id] = query;
         _logger.LogDebug("Registered golden query '{Id}' for domain '{Domain}', table '{TableName}'",
@@ -46,7 +62,7 @@ public sealed class GoldenQueryService : IGoldenQueryService
     {
         if (!_enabled)
         {
-            return ValueTask.FromResult<IReadOnlyList<GoldenQuery>>(Array.Empty<GoldenQuery>());
+            return ValueTask.FromResult<IReadOnlyList<GoldenQuery>>([]);
         }
 
         IEnumerable<GoldenQuery> query = _queries.Values;

@@ -94,11 +94,12 @@ public sealed class GatewaySystemMetricsService : IGatewaySystemMetricsService
             components.Add(new ComponentHealth("CoreGateway", "Healthy", "Operating normally", timestamp));
         }
 
-        // Add ResourceGroup component health
+        // Add ResourceGroup component health (dynamically reports Degraded if any tier's queue is saturated)
+        var isRgDegraded = rgMetrics.Tiers.Any(t => t.QueuedRequests >= t.MaxQueueDepth && t.MaxQueueDepth > 0);
         components.Add(new ComponentHealth(
             ComponentName: "ResourceGroups",
-            Status: "Healthy",
-            Details: $"Tiers: {rgMetrics.Tiers.Count} configured",
+            Status: isRgDegraded ? "Degraded" : "Healthy",
+            Details: $"Tiers: {rgMetrics.Tiers.Count} configured, Saturated: {isRgDegraded}",
             CheckedAt: timestamp
         ));
 

@@ -1,13 +1,17 @@
 namespace GqlGateway.Api.Endpoints;
 
+using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Observability;
 using GqlGateway.Application.ResourceGroups;
+using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
 
 public static class SystemEndpoints
 {
@@ -17,12 +21,16 @@ public static class SystemEndpoints
         app.MapGet("/api/governance/system/metrics", async (
             HttpContext context,
             IGatewaySystemMetricsService metricsService,
+            IOptions<GatewayOptions> options,
             CancellationToken ct) =>
         {
-            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
-                               context.User.IsInRole("ClusterAdmin") ||
-                               context.User.IsInRole("CatalogReader");
-            if (!isPrivileged)
+            var sysOpts = options.Value.SystemMetrics;
+            if (!sysOpts.Enabled || !sysOpts.ExposeRestEndpoints)
+            {
+                return Results.NotFound(new { error = "System metrics endpoints are disabled." });
+            }
+
+            if (!IsAuthorized(context.User, sysOpts.AllowedRoles))
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -34,12 +42,16 @@ public static class SystemEndpoints
         app.MapGet("/api/governance/system/health", async (
             HttpContext context,
             IGatewaySystemMetricsService metricsService,
+            IOptions<GatewayOptions> options,
             CancellationToken ct) =>
         {
-            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
-                               context.User.IsInRole("ClusterAdmin") ||
-                               context.User.IsInRole("CatalogReader");
-            if (!isPrivileged)
+            var sysOpts = options.Value.SystemMetrics;
+            if (!sysOpts.Enabled || !sysOpts.ExposeRestEndpoints)
+            {
+                return Results.NotFound(new { error = "System metrics endpoints are disabled." });
+            }
+
+            if (!IsAuthorized(context.User, sysOpts.AllowedRoles))
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -58,12 +70,16 @@ public static class SystemEndpoints
 
         app.MapGet("/api/governance/system/resource-groups", (
             HttpContext context,
-            IResourceGroupManager resourceGroupManager) =>
+            IResourceGroupManager resourceGroupManager,
+            IOptions<GatewayOptions> options) =>
         {
-            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
-                               context.User.IsInRole("ClusterAdmin") ||
-                               context.User.IsInRole("CatalogReader");
-            if (!isPrivileged)
+            var sysOpts = options.Value.SystemMetrics;
+            if (!sysOpts.Enabled || !sysOpts.ExposeRestEndpoints)
+            {
+                return Results.NotFound(new { error = "System metrics endpoints are disabled." });
+            }
+
+            if (!IsAuthorized(context.User, sysOpts.AllowedRoles))
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -73,5 +89,15 @@ public static class SystemEndpoints
         }).RequireAuthorization();
 
         return app;
+    }
+
+    private static bool IsAuthorized(ClaimsPrincipal user, IReadOnlyList<string>? allowedRoles)
+    {
+        if (allowedRoles == null || allowedRoles.Count == 0)
+        {
+            return user.IsInRole("GovernanceAdmin") || user.IsInRole("ClusterAdmin") || user.IsInRole("SecurityAdmin");
+        }
+
+        return allowedRoles.Any(user.IsInRole);
     }
 }

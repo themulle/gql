@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -324,5 +325,183 @@ public sealed class Wave2MarketFeaturesTests
         Assert.True(result.IsSuccess);
         Assert.Contains("golden_customers_active", result.ContentJson);
         Assert.Contains("GetActiveCustomers", result.ContentJson);
+    }
+
+    // =========================================================================
+    // 4. Security Findings & Quality Remediation Verification Tests
+    // =========================================================================
+
+    [Fact]
+    public async Task ResourceGroupMiddleware_AntiNoisyNeighbor_PreventsMcpFromPromotingToInteractive_WhenUnprivileged()
+    {
+        var options = Options.Create(new GatewayOptions
+        {
+            ResourceGroups = new ResourceGroupsOptions { Enabled = true }
+        });
+        using var manager = new ResourceGroupManager(options, NullLogger<ResourceGroupManager>.Instance);
+
+        var middleware = new ResourceGroupMiddleware(
+            ctx => Task.CompletedTask,
+            manager,
+            options,
+            NullLogger<ResourceGroupMiddleware>.Instance);
+
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Path = "/mcp/tools";
+        httpContext.Request.Headers["X-Workload-Tier"] = "Interactive";
+        httpContext.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.Role, "StandardUser")], "TestAuth"));
+
+        await middleware.InvokeAsync(httpContext);
+
+        // Security check: Must NOT be promoted to Interactive!
+        Assert.Equal("AutonomousAgents", httpContext.Response.Headers["X-Resource-Group-Tier"].ToString());
+    }
+
+    [Fact]
+    public async Task ResourceGroupMiddleware_AntiNoisyNeighbor_AllowsClusterAdminToPromote()
+    {
+        var options = Options.Create(new GatewayOptions
+        {
+            ResourceGroups = new ResourceGroupsOptions { Enabled = true }
+        });
+        using var manager = new ResourceGroupManager(options, NullLogger<ResourceGroupManager>.Instance);
+
+        var middleware = new ResourceGroupMiddleware(
+            ctx => Task.CompletedTask,
+            manager,
+            options,
+            NullLogger<ResourceGroupMiddleware>.Instance);
+
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Path = "/mcp/tools";
+        httpContext.Request.Headers["X-Workload-Tier"] = "Interactive";
+        httpContext.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.Role, "ClusterAdmin")], "TestAuth"));
+
+        await middleware.InvokeAsync(httpContext);
+
+        Assert.Equal("Interactive", httpContext.Response.Headers["X-Resource-Group-Tier"].ToString());
+    }
+
+    [Fact]
+    public async Task ResourceGroupMiddleware_AntiNoisyNeighbor_PreventsODataFromPromotingToInteractive()
+    {
+        var options = Options.Create(new GatewayOptions
+        {
+            ResourceGroups = new ResourceGroupsOptions { Enabled = true }
+        });
+        using var manager = new ResourceGroupManager(options, NullLogger<ResourceGroupManager>.Instance);
+
+        var middleware = new ResourceGroupMiddleware(
+            ctx => Task.CompletedTask,
+            manager,
+            options,
+            NullLogger<ResourceGroupMiddleware>.Instance);
+
+        var httpContext = new DefaultHttpContext();
+        httpContext.Request.Path = "/odata/v4/Invoices";
+        httpContext.Request.Headers["X-Workload-Tier"] = "Interactive";
+        httpContext.User = new ClaimsPrincipal(new ClaimsIdentity());
+
+        await middleware.InvokeAsync(httpContext);
+
+        Assert.Equal("BulkAnalytics", httpContext.Response.Headers["X-Resource-Group-Tier"].ToString());
+    }
+
+    [Theory]
+    [InlineData("", "domain", "table", "query")]
+    [InlineData("id", "", "table", "query")]
+    [InlineData("id", "domain", "", "query")]
+    [InlineData("id", "domain", "table", "")]
+    public void GoldenQueryService_RegisterGoldenQuery_ThrowsOnMissingFields(string id, string domain, string table, string queryText)
+    {
+        var service = new GoldenQueryService(Options.Create(new GatewayOptions()), NullLogger<GoldenQueryService>.Instance);
+        Assert.ThrowsAny<ArgumentException>(() =>
+            service.RegisterGoldenQuery(new GoldenQuery(id, domain, table, "Title", "Desc", queryText)));
+    }
+
+    [Fact]
+    public void GoldenQueryService_RegisterGoldenQuery_ThrowsWhenQueryExceedsMaxSize()
+    {
+        var service = new GoldenQueryService(Options.Create(new GatewayOptions()), NullLogger<GoldenQueryService>.Instance);
+        var hugeQuery = new string('A', 70000);
+        Assert.Throws<ArgumentException>(() =>
+            service.RegisterGoldenQuery(new GoldenQuery("q-huge", "domain", "table", "Title", "Desc", hugeQuery)));
+    }
+
+    [Theory]
+    [InlineData(0, 10, 5)]
+    [InlineData(-1, 10, 5)]
+    [InlineData(5, -1, 5)]
+    [InlineData(5, 10, 0)]
+    public void ResourceGroupTierConfig_ThrowsOnInvalidParameters(int maxConcurrency, int maxQueueDepth, int timeoutSeconds)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ResourceGroupTierConfig(ResourceGroupTier.Interactive, maxConcurrency, maxQueueDepth, TimeSpan.FromSeconds(timeoutSeconds)));
+    }
+
+    [Fact]
+    public async Task ResourceGroupManager_AntiBarging_QueuesBehindExistingWaitingRequests()
+    {
+        var options = Options.Create(new GatewayOptions
+        {
+            ResourceGroups = new ResourceGroupsOptions
+            {
+                Enabled = true,
+                Interactive = new ResourceGroupTierConfigOptions(MaxConcurrency: 1, MaxQueueDepth: 10, TimeoutSeconds: 2)
+            }
+        });
+        using var manager = new ResourceGroupManager(options, NullLogger<ResourceGroupManager>.Instance);
+
+        // 1. Acquire the only slot
+        var lease1 = await manager.TryAcquireLeaseAsync(ResourceGroupTier.Interactive, "t1");
+        Assert.True(lease1.Success);
+
+        // 2. Put request 2 into queue
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var queued2Task = Task.Run(async () => await manager.TryAcquireLeaseAsync(ResourceGroupTier.Interactive, "t2", cts.Token));
+        await Task.Delay(50); // Ensure queued
+
+        var metrics = manager.GetMetrics();
+        var tierMetrics = Assert.Single(metrics.Tiers, t => t.Tier == ResourceGroupTier.Interactive);
+        Assert.Equal(1, tierMetrics.QueuedRequests);
+
+        // 3. Release lease 1: Request 2 must acquire it seamlessly without any new request barging ahead
+        await lease1.Lease!.DisposeAsync();
+
+        var lease2 = await queued2Task;
+        Assert.True(lease2.Success);
+
+        await lease2.Lease!.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task GatewaySystemMetricsService_ResourceGroupsHealth_ReportsDegradedWhenSaturated()
+    {
+        var options = Options.Create(new GatewayOptions
+        {
+            ResourceGroups = new ResourceGroupsOptions
+            {
+                Enabled = true,
+                Interactive = new ResourceGroupTierConfigOptions(MaxConcurrency: 1, MaxQueueDepth: 1, TimeoutSeconds: 1)
+            }
+        });
+        using var manager = new ResourceGroupManager(options, NullLogger<ResourceGroupManager>.Instance);
+
+        // Fill slot and queue
+        var lease1 = await manager.TryAcquireLeaseAsync(ResourceGroupTier.Interactive, "t1");
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        var queuedTask = Task.Run(async () => await manager.TryAcquireLeaseAsync(ResourceGroupTier.Interactive, "t2", cts.Token));
+        await Task.Delay(50);
+
+        var service = new GatewaySystemMetricsService(
+            manager,
+            NullLogger<GatewaySystemMetricsService>.Instance);
+
+        var metrics = await service.CollectSystemMetricsAsync();
+        var rgHealth = Assert.Single(metrics.Components, c => c.ComponentName == "ResourceGroups");
+        Assert.Equal("Degraded", rgHealth.Status);
+
+        await lease1.Lease!.DisposeAsync();
+        try { await queuedTask; } catch { }
     }
 }

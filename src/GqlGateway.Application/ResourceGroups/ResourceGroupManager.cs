@@ -114,8 +114,8 @@ public sealed class ResourceGroupManager : IResourceGroupManager, IDisposable
             string tenantId,
             CancellationToken ct)
         {
-            // Fast path: Immediate acquisition without waiting
-            if (_semaphore.Wait(0, CancellationToken.None))
+            // Fast path: Immediate acquisition without waiting (only if no requests are already queued to avoid barging)
+            if (Volatile.Read(ref _queuedRequests) == 0 && _semaphore.Wait(0, CancellationToken.None))
             {
                 Interlocked.Increment(ref _totalAcquired);
                 return ResourceGroupLeaseResult.Acquired(Tier, new LeaseScope(_semaphore));
@@ -161,8 +161,7 @@ public sealed class ResourceGroupManager : IResourceGroupManager, IDisposable
 
         public ResourceGroupTierMetrics GetMetrics()
         {
-            int active = MaxConcurrency - _semaphore.CurrentCount;
-            if (active < 0) active = 0;
+            int active = Math.Clamp(MaxConcurrency - _semaphore.CurrentCount, 0, MaxConcurrency);
             return new ResourceGroupTierMetrics(
                 Tier,
                 ActiveConcurrency: active,

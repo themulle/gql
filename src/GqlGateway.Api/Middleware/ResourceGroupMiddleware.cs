@@ -50,10 +50,12 @@ public sealed class ResourceGroupMiddleware
         // Classify workload tier
         var tier = ClassifyWorkloadTier(context);
 
-        // Resolve Tenant
-        var tenantId = context.Items.TryGetValue("TenantId", out var tObj) && tObj is string tStr && !string.IsNullOrWhiteSpace(tStr)
+        // Resolve Tenant and sanitize against CRLF log injection
+        var rawTenantId = context.Items.TryGetValue("TenantId", out var tObj) && tObj is string tStr && !string.IsNullOrWhiteSpace(tStr)
             ? tStr
             : context.User.FindFirst("tenant_id")?.Value ?? "default";
+        var tenantId = rawTenantId.Replace("\r", string.Empty).Replace("\n", string.Empty).Trim();
+        if (tenantId.Length > 64) tenantId = tenantId[..64];
 
         var leaseResult = await _resourceGroupManager.TryAcquireLeaseAsync(tier, tenantId, context.RequestAborted).ConfigureAwait(false);
 
@@ -120,6 +122,10 @@ public sealed class ResourceGroupMiddleware
 
     private static ResourceGroupTier ClassifyWorkloadTier(HttpContext context)
     {
+        var path = context.Request.Path;
+        var isMcp = path.StartsWithSegments("/mcp");
+        var isOData = path.StartsWithSegments("/odata");
+
         // 1. Explicit Client Header
         if (context.Request.Headers.TryGetValue("X-Workload-Tier", out var headerVal))
         {
@@ -140,18 +146,30 @@ public sealed class ResourceGroupMiddleware
 
             if (headerStr.Equals("Interactive", StringComparison.OrdinalIgnoreCase))
             {
-                return ResourceGroupTier.Interactive;
+                // Anti-Noisy-Neighbor Security Guard (SEC-02):
+                // Do not allow automated /mcp or /odata paths to promote themselves to Interactive
+                // unless caller has elevated ClusterAdmin or GovernanceAdmin role!
+                if (!isMcp && !isOData)
+                {
+                    return ResourceGroupTier.Interactive;
+                }
+
+                if (context.User.IsInRole("ClusterAdmin") || context.User.IsInRole("GovernanceAdmin"))
+                {
+                    return ResourceGroupTier.Interactive;
+                }
+
+                // Fall through to path-determined tier below
             }
         }
 
         // 2. Path-based classification
-        var path = context.Request.Path;
-        if (path.StartsWithSegments("/mcp"))
+        if (isMcp)
         {
             return ResourceGroupTier.AutonomousAgents;
         }
 
-        if (path.StartsWithSegments("/odata"))
+        if (isOData)
         {
             return ResourceGroupTier.BulkAnalytics;
         }
