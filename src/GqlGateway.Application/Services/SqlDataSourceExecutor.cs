@@ -227,7 +227,7 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
 
                 await using var setCmd = connection.CreateCommand();
                 setCmd.Transaction = tx;
-                setCmd.CommandText = "SELECT set_config('app.tenant_id', @p_tenant, true);";
+                setCmd.CommandText = "SELECT set_config('app.tenant_id', @p_tenant, true), set_config('TimeZone', 'UTC', true);";
                 var pTenant = setCmd.CreateParameter();
                 pTenant.ParameterName = "@p_tenant";
                 pTenant.Value = tenantVal;
