@@ -55,9 +55,11 @@ using GqlGateway.Infrastructure.Streaming;
 using GqlGateway.GraphQL.Subscriptions;
 using GqlGateway.Infrastructure.Cdn;
 using GqlGateway.Infrastructure.OpenJev;
+using GqlGateway.Application.SchemaRegistry;
 using GqlGateway.Application.Extensibility;
 using GqlGateway.Application.Extensibility.Interceptors;
-using GqlGateway.Application.SchemaRegistry;
+using GqlGateway.Application.Sql;
+using GqlGateway.Application.Serialization;
 using GqlGateway.Application.SchemaRegistry.Validation;
 using System.Net.Http;
 using Microsoft.Extensions.Logging;
@@ -443,6 +445,15 @@ public static class GatewayServiceCollectionExtensions
 
         // Canonical System Metadata & Monitoring (F-API-07)
         services.AddSingleton<IGatewaySystemMetricsService, GatewaySystemMetricsService>();
+
+        // Single-Query AST Compiler (F-PERF-09)
+        services.AddSingleton<ISingleQueryAstCompiler, SingleQueryAstCompiler>();
+
+        // Human-in-the-Loop Step-Up Approval (F-AI-05)
+        services.AddSingleton<IHitLStepUpApprovalService, HitLStepUpApprovalService>();
+
+        // Hierarchical Parquet Egress (F-DATA-01)
+        services.AddSingleton<IParquetExportService, ParquetExportService>();
 
 
         // HA & Traffic Drain

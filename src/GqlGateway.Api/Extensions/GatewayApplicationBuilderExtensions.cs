@@ -225,6 +225,8 @@ public static class GatewayApplicationBuilderExtensions
         app.MapMcpEndpoints(gatewayOptions);
         app.MapSchemaRegistryEndpoints();
         app.MapBackstageEndpoints(gatewayOptions);
+        app.MapExportEndpoints();
+        app.MapHitLEndpoints();
 
         return app;
     }

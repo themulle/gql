@@ -33,6 +33,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
     private readonly IMcpSessionStore? _sessionStore;
     private readonly ISemanticPromptGuardrail _promptGuardrail;
     private readonly IGoldenQueryService? _goldenQueryService;
+    private readonly IHitLStepUpApprovalService? _stepUpApprovalService;
 
     private static readonly TimeSpan DefaultRegexTimeout = TimeSpan.FromMilliseconds(250);
 
@@ -62,7 +63,8 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         ITableMetadataRepository? tableMetadataRepository = null,
         IMcpSessionStore? sessionStore = null,
         ISemanticPromptGuardrail? promptGuardrail = null,
-        IGoldenQueryService? goldenQueryService = null)
+        IGoldenQueryService? goldenQueryService = null,
+        IHitLStepUpApprovalService? stepUpApprovalService = null)
     {
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -74,6 +76,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         _sessionStore = sessionStore;
         _promptGuardrail = promptGuardrail ?? new SemanticPromptGuardrail();
         _goldenQueryService = goldenQueryService;
+        _stepUpApprovalService = stepUpApprovalService;
     }
 
 
@@ -258,27 +261,72 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             var meta = await _tableMetadataRepository.GetTableMetadataAsync(resolvedTable.Value, cancellationToken).ConfigureAwait(false);
             if (meta?.Table.RequiresFourEyes == true)
             {
-                activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
-                McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, false, false);
+                if (_stepUpApprovalService != null && _options.Value.HitLStepUp.Enabled)
+                {
+                    var requesterSid = sessionContext.UserSid ?? sessionContext.ServicePrincipalId;
+                    _logger.LogInformation("Tool '{ToolName}' targets table '{Table}' which requires Four-Eyes approval. Requesting step-up approval for requester '{Requester}'.",
+                        tool.Name, resolvedTable, requesterSid);
 
-                _logger.LogWarning("Tool '{ToolName}' targets table '{Table}' which requires Four-Eyes approval. Denying automated AI agent execution.",
-                    tool.Name, resolvedTable);
+                    var approvalResult = await _stepUpApprovalService.RequestStepUpApprovalAsync(
+                        tool.Name,
+                        sessionContext.TenantId,
+                        requesterSid,
+                        resolvedTable.Value,
+                        request.ArgumentsJson,
+                        cancellationToken).ConfigureAwait(false);
 
-                await RecordAuditEventAsync(
-                    tool.Name,
-                    sessionContext,
-                    decision: "DENY",
-                    details: $"Tool execution denied: table {resolvedTable} requires interactive Four-Eyes justification approval.",
-                    isMasked: false,
-                    truncated: false,
-                    estimatedTokens: 0,
-                    cancellationToken).ConfigureAwait(false);
+                    if (!approvalResult.IsApproved)
+                    {
+                        activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+                        McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, false, false);
 
-                return new McpToolCallResult(
-                    IsSuccess: false,
-                    ContentJson: "{}",
-                    ErrorMessage: $"Tool '{tool.Name}' requires interactive Four-Eyes justification approval. Consent ticket must be generated."
-                );
+                        _logger.LogWarning("Four-Eyes approval denied or timed out for tool '{ToolName}' on table '{Table}'. Status: {Status}",
+                            tool.Name, resolvedTable, approvalResult.Ticket.Status);
+
+                        await RecordAuditEventAsync(
+                            tool.Name,
+                            sessionContext,
+                            decision: "DENY",
+                            details: $"Tool execution denied: Four-Eyes approval failed or timed out. Status: {approvalResult.Ticket.Status}. {approvalResult.Message}",
+                            isMasked: false,
+                            truncated: false,
+                            estimatedTokens: 0,
+                            cancellationToken).ConfigureAwait(false);
+
+                        return new McpToolCallResult(
+                            IsSuccess: false,
+                            ContentJson: "{}",
+                            ErrorMessage: $"Tool '{tool.Name}' requires Four-Eyes approval: {approvalResult.Message ?? "Approval denied or timed out."}"
+                        );
+                    }
+
+                    _logger.LogInformation("Four-Eyes approval granted for tool '{ToolName}' on table '{Table}' by approver '{Approver}'.",
+                        tool.Name, resolvedTable, approvalResult.Ticket.ApproverSid);
+                }
+                else
+                {
+                    activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+                    McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, false, false);
+
+                    _logger.LogWarning("Tool '{ToolName}' targets table '{Table}' which requires Four-Eyes approval. Denying automated AI agent execution.",
+                        tool.Name, resolvedTable);
+
+                    await RecordAuditEventAsync(
+                        tool.Name,
+                        sessionContext,
+                        decision: "DENY",
+                        details: $"Tool execution denied: table {resolvedTable} requires interactive Four-Eyes justification approval.",
+                        isMasked: false,
+                        truncated: false,
+                        estimatedTokens: 0,
+                        cancellationToken).ConfigureAwait(false);
+
+                    return new McpToolCallResult(
+                        IsSuccess: false,
+                        ContentJson: "{}",
+                        ErrorMessage: $"Tool '{tool.Name}' requires interactive Four-Eyes justification approval. Consent ticket must be generated."
+                    );
+                }
             }
         }
 

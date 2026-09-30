@@ -1,0 +1,275 @@
+namespace GqlGateway.Application.Mcp.Services;
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using GqlGateway.Application.Mcp.Interfaces;
+using GqlGateway.Application.Workflows;
+using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Model;
+using GqlGateway.Domain.Options;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
+{
+    private readonly ConcurrentDictionary<string, TicketEntry> _tickets = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IOptions<GatewayOptions> _options;
+    private readonly IServiceScopeFactory? _scopeFactory;
+    private readonly ILogger<HitLStepUpApprovalService> _logger;
+
+    private sealed class TicketEntry
+    {
+        public readonly object Lock = new();
+        public HitLApprovalTicket Ticket { get; set; }
+        public TaskCompletionSource<HitLApprovalResult> Tcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TicketEntry(HitLApprovalTicket ticket) => Ticket = ticket;
+    }
+
+    public HitLStepUpApprovalService(
+        IOptions<GatewayOptions> options,
+        ILogger<HitLStepUpApprovalService> logger,
+        IServiceScopeFactory? scopeFactory = null)
+    {
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _scopeFactory = scopeFactory;
+    }
+
+    public async Task<HitLApprovalResult> RequestStepUpApprovalAsync(
+        string toolName,
+        string tenantId,
+        string requesterSid,
+        TableIdentifier targetTable,
+        string? justification = null,
+        CancellationToken ct = default)
+    {
+        var approvalId = $"hitl-{Guid.NewGuid():N}";
+        var timeoutSeconds = Math.Max(1, _options.Value.HitLStepUp.ApprovalTimeoutSeconds);
+        var createdAt = DateTimeOffset.UtcNow;
+        var expiresAt = createdAt.AddSeconds(timeoutSeconds);
+
+        string? itsmTicketId = null;
+        string? itsmTicketUrl = null;
+
+        // Auto-create ITSM ticket if enabled
+        if (_options.Value.HitLStepUp.AutoCreateItsmTicket && _scopeFactory != null)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var itsmDispatcher = scope.ServiceProvider.GetService<ItsmWorkflowDispatcher>();
+                if (itsmDispatcher != null)
+                {
+                    var ticketRequest = new ItsmTicketRequest(
+                        Tenant: new TenantId(tenantId),
+                        RequesterSid: new Sid(requesterSid),
+                        TargetTable: targetTable,
+                        Justification: justification ?? $"Human-in-the-Loop Step-Up approval required for MCP tool '{toolName}' on table '{targetTable}'",
+                        DurationDays: 1,
+                        TriageCategory: JustificationCategory.LegitimateAudit,
+                        TriageConfidence: 1.0
+                    );
+
+                    var dispatchResult = await itsmDispatcher.DispatchTicketRequestAsync(
+                        ticketRequest,
+                        _options.Value.HitLStepUp.PreferredItsmSystem,
+                        ct).ConfigureAwait(false);
+
+                    if (dispatchResult.Success && dispatchResult.TicketReference != null)
+                    {
+                        itsmTicketId = dispatchResult.TicketReference.TicketId;
+                        itsmTicketUrl = dispatchResult.TicketReference.TicketUrl;
+                        _logger.LogInformation("Dispatched HitL ITSM ticket '{TicketId}' for approval '{ApprovalId}'.", itsmTicketId, approvalId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to auto-create ITSM ticket for HitL approval '{ApprovalId}'. Proceeding with in-memory approval gate.", approvalId);
+            }
+        }
+
+        var ticket = new HitLApprovalTicket(
+            ApprovalId: approvalId,
+            ToolName: toolName,
+            TenantId: tenantId,
+            RequesterSid: requesterSid,
+            TargetTable: targetTable,
+            Justification: justification,
+            CreatedAt: createdAt,
+            ExpiresAt: expiresAt,
+            Status: HitLApprovalStatus.Pending,
+            ItsmTicketId: itsmTicketId,
+            ItsmTicketUrl: itsmTicketUrl
+        );
+
+        var entry = new TicketEntry(ticket);
+        _tickets[approvalId] = entry;
+
+        _logger.LogInformation("HitL Step-Up approval requested. ID: {ApprovalId}, Table: {Table}, Requester: {RequesterSid}, Timeout: {Timeout}s",
+            approvalId, targetTable, requesterSid, timeoutSeconds);
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var delayTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds), timeoutCts.Token);
+            var completedTask = await Task.WhenAny(entry.Tcs.Task, delayTask).ConfigureAwait(false);
+
+            if (completedTask == entry.Tcs.Task)
+            {
+                timeoutCts.Cancel();
+                return await entry.Tcs.Task.ConfigureAwait(false);
+            }
+            else
+            {
+                // VULN-06: Fail-Closed on timeout
+                lock (entry.Lock)
+                {
+                    if (entry.Ticket.Status == HitLApprovalStatus.Pending)
+                    {
+                        entry.Ticket = entry.Ticket with { Status = HitLApprovalStatus.Expired };
+                    }
+                }
+
+                _logger.LogWarning("HitL Step-Up approval '{ApprovalId}' timed out after {Timeout}s. Failing closed.", approvalId, timeoutSeconds);
+                var expiredResult = new HitLApprovalResult(false, entry.Ticket, $"Approval timed out after {timeoutSeconds}s.");
+                entry.Tcs.TrySetResult(expiredResult);
+                return expiredResult;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            lock (entry.Lock)
+            {
+                if (entry.Ticket.Status == HitLApprovalStatus.Pending)
+                {
+                    entry.Ticket = entry.Ticket with { Status = HitLApprovalStatus.Expired };
+                }
+            }
+
+            var cancelledResult = new HitLApprovalResult(false, entry.Ticket, "Approval request was canceled.");
+            entry.Tcs.TrySetResult(cancelledResult);
+            return cancelledResult;
+        }
+    }
+
+    public HitLApprovalResult ApproveStepUpRequest(string approvalId, string approverSid)
+    {
+        if (string.IsNullOrWhiteSpace(approvalId))
+            throw new ArgumentException("Approval ID cannot be null or whitespace.", nameof(approvalId));
+
+        if (string.IsNullOrWhiteSpace(approverSid))
+            throw new ArgumentException("Approver SID cannot be null or whitespace.", nameof(approverSid));
+
+        if (!_tickets.TryGetValue(approvalId, out var entry))
+        {
+            return new HitLApprovalResult(
+                false,
+                new HitLApprovalTicket(approvalId, "Unknown", "Unknown", "Unknown", TableIdentifier.Parse("public.unknown"), null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, HitLApprovalStatus.Rejected),
+                "Approval ticket not found."
+            );
+        }
+
+        lock (entry.Lock)
+        {
+            // VULN-05: Replay & Race condition prevention
+            if (entry.Ticket.Status != HitLApprovalStatus.Pending)
+            {
+                return new HitLApprovalResult(
+                    false,
+                    entry.Ticket,
+                    $"Ticket is already in status '{entry.Ticket.Status}'. Cannot approve."
+                );
+            }
+
+            // VULN-04: Self-Approval Bypass prevention (Four-Eyes invariant)
+            if (_options.Value.HitLStepUp.RequireDifferentApprover &&
+                string.Equals(approverSid, entry.Ticket.RequesterSid, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("Four-Eyes security violation: Requester '{RequesterSid}' attempted self-approval on ticket '{ApprovalId}'.",
+                    approverSid, approvalId);
+
+                return new HitLApprovalResult(
+                    false,
+                    entry.Ticket,
+                    "Four-Eyes security violation: Self-approval is strictly prohibited. Approver cannot be the requester."
+                );
+            }
+
+            entry.Ticket = entry.Ticket with
+            {
+                Status = HitLApprovalStatus.Approved,
+                ApproverSid = approverSid
+            };
+
+            var approvedResult = new HitLApprovalResult(true, entry.Ticket, "Approval granted.");
+            entry.Tcs.TrySetResult(approvedResult);
+
+            _logger.LogInformation("HitL ticket '{ApprovalId}' approved by '{ApproverSid}'.", approvalId, approverSid);
+            return approvedResult;
+        }
+    }
+
+    public HitLApprovalResult RejectStepUpRequest(string approvalId, string approverSid, string? reason = null)
+    {
+        if (string.IsNullOrWhiteSpace(approvalId))
+            throw new ArgumentException("Approval ID cannot be null or whitespace.", nameof(approvalId));
+
+        if (!_tickets.TryGetValue(approvalId, out var entry))
+        {
+            return new HitLApprovalResult(
+                false,
+                new HitLApprovalTicket(approvalId, "Unknown", "Unknown", "Unknown", TableIdentifier.Parse("public.unknown"), null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, HitLApprovalStatus.Rejected),
+                "Approval ticket not found."
+            );
+        }
+
+        lock (entry.Lock)
+        {
+            if (entry.Ticket.Status != HitLApprovalStatus.Pending)
+            {
+                return new HitLApprovalResult(
+                    false,
+                    entry.Ticket,
+                    $"Ticket is already in status '{entry.Ticket.Status}'. Cannot reject."
+                );
+            }
+
+            entry.Ticket = entry.Ticket with
+            {
+                Status = HitLApprovalStatus.Rejected,
+                ApproverSid = approverSid,
+                RejectionReason = reason ?? "Rejected by data steward."
+            };
+
+            var rejectedResult = new HitLApprovalResult(false, entry.Ticket, entry.Ticket.RejectionReason);
+            entry.Tcs.TrySetResult(rejectedResult);
+
+            _logger.LogInformation("HitL ticket '{ApprovalId}' rejected by '{ApproverSid}'. Reason: {Reason}",
+                approvalId, approverSid, entry.Ticket.RejectionReason);
+            return rejectedResult;
+        }
+    }
+
+    public HitLApprovalTicket? GetTicket(string approvalId)
+    {
+        return _tickets.TryGetValue(approvalId, out var entry) ? entry.Ticket : null;
+    }
+
+    public IReadOnlyList<HitLApprovalTicket> GetPendingTickets(string? tenantId = null)
+    {
+        var query = _tickets.Values.Select(e => e.Ticket).Where(t => t.Status == HitLApprovalStatus.Pending);
+        if (!string.IsNullOrWhiteSpace(tenantId))
+        {
+            query = query.Where(t => string.Equals(t.TenantId, tenantId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return query.ToList();
+    }
+}

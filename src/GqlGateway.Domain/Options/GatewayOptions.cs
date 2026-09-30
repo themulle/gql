@@ -32,6 +32,9 @@ public sealed class GatewayOptions
     [Required] public ResourceGroupsOptions ResourceGroups { get; init; } = new();
     [Required] public SystemMetricsOptions SystemMetrics { get; init; } = new();
     [Required] public GoldenQueryOptions GoldenQueries { get; init; } = new();
+    [Required] public ParquetEgressOptions ParquetEgress { get; init; } = new();
+    [Required] public HitLStepUpOptions HitLStepUp { get; init; } = new();
+    [Required] public SingleQueryPushdownOptions SingleQueryPushdown { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -736,6 +739,28 @@ public sealed record GoldenQueryDefinition(
     string? VariablesJson = null,
     List<string>? Tags = null
 );
+
+public sealed class ParquetEgressOptions
+{
+    public bool Enabled { get; init; } = true;
+    public int MaxRowsPerFile { get; init; } = 100000;
+    public bool FlattenNestedStructures { get; init; } = true;
+}
+
+public sealed class HitLStepUpOptions
+{
+    public bool Enabled { get; init; } = true;
+    public int ApprovalTimeoutSeconds { get; init; } = 15;
+    public bool RequireDifferentApprover { get; init; } = true;
+    public bool AutoCreateItsmTicket { get; init; } = true;
+    public ItsmSystemType PreferredItsmSystem { get; init; } = ItsmSystemType.ServiceNow;
+}
+
+public sealed class SingleQueryPushdownOptions
+{
+    public bool Enabled { get; init; } = true;
+    public int MaxSubqueryDepth { get; init; } = 5;
+}
 
 
 
