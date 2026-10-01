@@ -226,4 +226,58 @@ public class McpIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var deleteResp = await client.DeleteAsync($"/mcp/session/{sessionId}");
         deleteResp.StatusCode.ShouldBe(HttpStatusCode.NoContent);
     }
+
+    [Fact]
+    public async Task McpEndpoints_WhenOpenSchemaEnabled_AllowsAnonymousAgentAccess()
+    {
+        using var openFactory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Gateway:Insecure:danger_bypass_mcp_auth", "false");
+            builder.UseSetting("Gateway:Insecure:danger_allow_anonymous_access", "false");
+            builder.UseSetting("Gateway:OpenSchema", "true");
+        });
+
+        var client = openFactory.CreateClient();
+
+        // 1. Establish SSE Connection without credentials
+        using var sseRequest = new HttpRequestMessage(HttpMethod.Get, "/mcp/sse");
+        sseRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+        using var sseResponse = await client.SendAsync(sseRequest, HttpCompletionOption.ResponseHeadersRead);
+        sseResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        using var stream = await sseResponse.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(stream);
+
+        var line1 = await reader.ReadLineAsync(); // "event: endpoint"
+        var line2 = await reader.ReadLineAsync(); // "data: /mcp/message?sessionId=..."
+        await reader.ReadLineAsync(); // empty line
+
+        var messageUri = line2!.Replace("data: ", "").Trim();
+        var sessionId = messageUri.Substring(messageUri.IndexOf("sessionId=", StringComparison.Ordinal) + 10);
+
+        // 2. Initialize
+        var initPayload = """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}""";
+        var initResp = await client.PostAsync(messageUri, new StringContent(initPayload, Encoding.UTF8, "application/json"));
+        initResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 3. tools/list
+        var toolsPayload = """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""";
+        var toolsResp = await client.PostAsync(messageUri, new StringContent(toolsPayload, Encoding.UTF8, "application/json"));
+        toolsResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var toolsJson = await toolsResp.Content.ReadAsStringAsync();
+        using var toolsDoc = JsonDocument.Parse(toolsJson);
+        var tools = toolsDoc.RootElement.GetProperty("result").GetProperty("tools");
+        tools.GetArrayLength().ShouldBeGreaterThan(0);
+
+        // 4. resources/list
+        var resPayload = """{"jsonrpc":"2.0","id":3,"method":"resources/list","params":{}}""";
+        var resResp = await client.PostAsync(messageUri, new StringContent(resPayload, Encoding.UTF8, "application/json"));
+        resResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // Teardown
+        var deleteResp = await client.DeleteAsync($"/mcp/session/{sessionId}");
+        deleteResp.StatusCode.ShouldBe(HttpStatusCode.NoContent);
+    }
 }

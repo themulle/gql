@@ -28,6 +28,8 @@ public static class McpEndpoints
             ? "/mcp"
             : gatewayOptions.Mcp.EndpointPath.TrimEnd('/');
 
+        var allowOpenMcp = gatewayOptions.IsMcpAuthBypassed || gatewayOptions.IsOpenSchemaAllowed;
+
         // 1. SSE Connection Handshake
         var sseEndpoint = app.MapGet($"{mcpBasePath}/sse", async (
             IMcpProtocolHandler mcpHandler,
@@ -37,14 +39,14 @@ public static class McpEndpoints
             var principal = context.User;
             var isAuthenticated = principal.Identity?.IsAuthenticated == true;
 
-            if (!isAuthenticated && !gatewayOptions.IsMcpAuthBypassed)
+            if (!isAuthenticated && !allowOpenMcp)
             {
                 return Results.Unauthorized();
             }
 
             var principalId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
                 ?? principal.Identity?.Name
-                ?? (gatewayOptions.IsMcpAuthBypassed ? "anonymous-ai-agent" : "unknown-agent");
+                ?? (allowOpenMcp ? "anonymous-ai-agent" : "unknown-agent");
 
             string tenantId;
             if (context.Items.TryGetValue(TenantResolutionMiddleware.TenantIdItemKey, out var itemTenant) && itemTenant is TenantId tId)
@@ -107,7 +109,7 @@ public static class McpEndpoints
             return Results.Empty;
         });
 
-        if (!gatewayOptions.IsMcpAuthBypassed)
+        if (!allowOpenMcp)
         {
             sseEndpoint.RequireAuthorization();
         }
@@ -131,7 +133,7 @@ public static class McpEndpoints
                 return Results.NotFound(new { error = $"Invalid or expired MCP session '{sessionId}'." });
             }
 
-            if (!gatewayOptions.IsMcpAuthBypassed)
+            if (!allowOpenMcp)
             {
                 var callerId = context.User.FindFirst("client_id")?.Value
                     ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -159,7 +161,7 @@ public static class McpEndpoints
             return Results.Content(responseJson, "application/json; charset=utf-8");
         });
 
-        if (!gatewayOptions.IsMcpAuthBypassed)
+        if (!allowOpenMcp)
         {
             messageEndpoint.RequireAuthorization();
         }
@@ -177,7 +179,7 @@ public static class McpEndpoints
             if (!string.IsNullOrWhiteSpace(sessionId))
             {
                 session = mcpHandler.GetSession(sessionId);
-                if (session != null && !gatewayOptions.IsMcpAuthBypassed)
+                if (session != null && !allowOpenMcp)
                 {
                     var callerId = context.User.FindFirst("client_id")?.Value
                         ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -201,7 +203,7 @@ public static class McpEndpoints
                     ?? principal.FindFirst("sub")?.Value
                     ?? principal.FindFirst("appid")?.Value
                     ?? principal.Identity?.Name
-                    ?? (gatewayOptions.IsMcpAuthBypassed ? "anonymous-ai-agent" : "cli-developer");
+                    ?? (allowOpenMcp ? "anonymous-ai-agent" : "cli-developer");
 
                 string tenantId;
                 if (context.Items.TryGetValue(TenantResolutionMiddleware.TenantIdItemKey, out var itemTenant) && itemTenant is TenantId tId)
@@ -235,7 +237,7 @@ public static class McpEndpoints
             return Results.Content(responseJson, "application/json; charset=utf-8");
         });
 
-        if (!gatewayOptions.IsMcpAuthBypassed)
+        if (!allowOpenMcp)
         {
             streamableHttpEndpoint.RequireAuthorization();
         }
@@ -252,7 +254,7 @@ public static class McpEndpoints
                 return Results.NotFound(new { error = $"Session '{id}' not found." });
             }
 
-            if (!gatewayOptions.IsMcpAuthBypassed)
+            if (!allowOpenMcp)
             {
                 var callerId = context.User.FindFirst("client_id")?.Value
                     ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
@@ -271,7 +273,7 @@ public static class McpEndpoints
             return removed ? Results.NoContent() : Results.NotFound();
         });
 
-        if (!gatewayOptions.IsMcpAuthBypassed)
+        if (!allowOpenMcp)
         {
             sessionEndpoint.RequireAuthorization();
         }

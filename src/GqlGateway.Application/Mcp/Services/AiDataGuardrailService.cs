@@ -200,9 +200,15 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         }
 
         // 2. Pre-Execution Policy Check: Casbin ABAC Enforcement
-        if (_policyEnforcementService != null && !_options.Value.IsMcpAuthBypassed)
+        var effectiveTable = resolvedTable ?? new TableIdentifier("mcp", "tool", tool.Name.ToLowerInvariant());
+        bool isSchemaTool = _options.Value.IsOpenSchemaAllowed &&
+            (string.Equals(tool.Name, "query_data_catalog", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(tool.Name, "get_golden_queries", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(effectiveTable.Domain, "governance", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(effectiveTable.Domain, "catalog", StringComparison.OrdinalIgnoreCase));
+
+        if (_policyEnforcementService != null && !_options.Value.IsMcpAuthBypassed && !isSchemaTool)
         {
-            var effectiveTable = resolvedTable ?? new TableIdentifier("mcp", "tool", tool.Name.ToLowerInvariant());
 
             var userSidStr = !string.IsNullOrWhiteSpace(sessionContext.UserSid)
                 ? sessionContext.UserSid
@@ -471,7 +477,7 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to record audit event for MCP tool execution '{ToolName}'.", toolName);
-            if (!_options.Value.IsMcpAuthBypassed)
+            if (!_options.Value.IsMcpAuthBypassed && !_options.Value.IsOpenSchemaAllowed)
             {
                 throw new System.Security.SecurityException($"Zero-Trust: Audit-Protokollierung für MCP-Tool '{toolName}' fehlgeschlagen. Ausführung abgebrochen (Fail-Closed).", ex);
             }

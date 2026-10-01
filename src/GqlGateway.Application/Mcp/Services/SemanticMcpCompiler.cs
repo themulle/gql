@@ -10,7 +10,9 @@ using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
+using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 /// <summary>
 /// Semantic MCP compiler fusing dbt documentation and catalog metadata into AI tool definitions and resources (F-AI-02).
@@ -19,12 +21,14 @@ public sealed class SemanticMcpCompiler(
     ITableMetadataRepository metadataRepo,
     ILogger<SemanticMcpCompiler> logger,
     IGoldenQueryService? goldenQueryService = null,
-    IConsentRepository? consentRepo = null) : ISemanticMcpCompiler
+    IConsentRepository? consentRepo = null,
+    IOptions<GatewayOptions>? options = null) : ISemanticMcpCompiler
 {
     private readonly ITableMetadataRepository _metadataRepo = metadataRepo ?? throw new ArgumentNullException(nameof(metadataRepo));
     private readonly ILogger<SemanticMcpCompiler> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     private readonly IGoldenQueryService? _goldenQueryService = goldenQueryService;
     private readonly IConsentRepository? _consentRepo = consentRepo;
+    private readonly IOptions<GatewayOptions>? _options = options;
     private static readonly JsonSerializerOptions CachedIndentedOptions = new() { WriteIndented = true };
 
     public async Task<McpToolDefinition> CompileToolAsync(
@@ -102,8 +106,8 @@ public sealed class SemanticMcpCompiler(
         CancellationToken ct = default)
     {
         var allTables = await _metadataRepo.GetAllTablesAsync(ct).ConfigureAwait(false);
-
-        if (principal != null && _consentRepo != null)
+        var isOpenSchema = _options?.Value.IsOpenSchemaAllowed == true || _options?.Value.IsMcpAuthBypassed == true;
+        if (principal != null && _consentRepo != null && !isOpenSchema)
         {
             var userSid = principal.GetUserSid();
             var roles = principal.GetUserRoles();
