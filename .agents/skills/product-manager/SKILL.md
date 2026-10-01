@@ -248,8 +248,12 @@ Als Product Manager treibst du folgende Kerninitiativen voran:
 
 1. **Modern Lakehouse Connectors (Apache Iceberg & Delta Lake)**:
    - Direkte Abfrage von Parquet/Iceberg-Dateien via DuckDB / Apache Arrow Flight unter Beibehaltung der Casbin-ABAC.
-2. **Realtime Event & CDC Streaming (Debezium / Kafka GraphQL Subscriptions)**:
+2. **Realtime Event & CDC Streaming (Debezium / Kafka GraphQL Subscriptions & Native MSSQL Change Tracking `F-CDC-02`)**:
    - GraphQL Subscriptions mit dynamischer Row-Level Security Filterung im Event-Stream.
+   - **`F-CDC-02: Native MSSQL Change Tracking Ingestion Provider`**:
+     - *Das Problem:* Debezium + Kafka erfordert enorme DevOps-Infrastruktur ("The Kafka Barrier"). Viele Enterprise-Kunden (Finanzen, Healthcare, Industrie) betreiben SQL Server (On-Prem / Azure SQL) und wollen Realtime-Subscriptions ohne Kafka-Cluster.
+     - *Die Lösung:* Nativer Ingestion-Worker über MSSQL `CHANGETABLE(CHANGES ...)` und `CHANGE_TRACKING_CURRENT_VERSION()`.
+     - *Der Moat:* Zero-Infra Realtime Subscriptions mit automatischer Casbin ABAC / RLS-Filterung pro WebSocket-Client. Eliminiert Kafka-Betriebskosten und schlägt Apollo (kein DB-CDC) und Hasura (teure, ressourcenhungrige Trigger).
 3. **Self-Service Governance UI & Policy Simulator**:
    - Web-Interface für Data Stewards zur visuellen Definition von Richtlinien und Live-Testen ("Was sieht Analyst X bei Query Y?").
 4. **Enterprise AI / MCP Agent Governance & Semantic Suite (`F-AI-02` bis `F-AI-08`)**:

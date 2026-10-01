@@ -39,6 +39,9 @@ Der Markt für Enterprise GraphQL und API Gateways wird 2025/2026 durch fundamen
 7. **dbt Data-Mesh & Data-Contract Governance (Zero-Fault Data Quality):**
    * dbt hat sich de facto als Standard für Datenmodellierung und Transformationen in modernen Data Warehouses und Lakehouses etabliert. Konkurrierende Gateways (Apollo, Hasura, Cosmo) agieren blind gegenüber dem Upstream-Zustand: Sie wissen weder, ob `dbt test` erfolgreich war, noch ob dbt Model Contracts eingehalten werden.
    * **Unsere Marktposition:** GqlGateway schlägt die Brücke zwischen Data Engineering und API-Konsumenten: Mit **`F-DBT-1`** werden fehlerhafte dbt-Modelle (`run_results.json`) sofort via Circuit Breaker unter Quarantäne gestellt (`TABLE_IN_QUARANTINE` Blocker im GraphQL-AST), flankiert durch RBAC-geschützte Health-APIs.
+8. **Realtime Event Streaming & CDC: Die "Kafka-Barriere" durchbrechen via nativem MSSQL Change Tracking (`F-CDC-02`):**
+   * Klassische CDC-Architekturen verlangen typischerweise Debezium, Apache Kafka, Kafka Connect, Zookeeper/KRaft und Confluent Schema Registries. In vielen Enterprise-Abteilungen (Banken, Behörden, Industrie, Healthcare) scheitert Realtime-Streaming an diesem immensen Betriebsaufwand (**"The Kafka Barrier"**) sowie Sicherheitsbedenken der DBAs gegen transaktionslog-lesende Agent-Jobs.
+   * **Unsere Marktposition:** Neben dem bewährten Debezium/Kafka-Konnektor (**P5**) etabliert GqlGateway mit **`F-CDC-02`** eine **Zero-Infrastructure Realtime Engine** direkt über das native Microsoft SQL Server **Change Tracking (`CHANGETABLE`)**. Das Gateway pollt Änderungen versionsbasiert (`CHANGE_TRACKING_CURRENT_VERSION()`), hydriert geänderte Zeilen und streamt Events mit Sub-Second-Latenz über WebSocket/SSE an GraphQL-Subscribers – gefiltert durch dynamische Casbin ABAC & RLS-Regeln direkt im Hot Path. Zero Kafka, Zero Extra-Storage, 100% Zero-Trust.
 
 ---
 
@@ -70,6 +73,7 @@ Bestandsaufnahme aller Gateway-Module zur Dokumentation der Marktreife (General 
 | **Lineage & DSGVO Art. 15 Auskunft** | Lineage Graph Store ([`LineageImpactAnalyzerService`](file:///root/gql/src/GqlGateway.Application/Lineage/LineageImpactAnalyzerService.cs)), GDPR Art. 15 Subject Access Report Generator, zyklensichere DFS/Kahn-Validierung, PDF-Export ([`GdprAuditReportPdfExporter`](file:///root/gql/src/GqlGateway.Application/Lineage/GdprAuditReportPdfExporter.cs)), OpenLineage Integration ([`OpenLineageClient`](file:///root/gql/src/GqlGateway.Infrastructure/Lineage/OpenLineageClient.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Revisionssicherer DSGVO Art. 15 PDF-Export via QuestPDF für Datenschutzbeauftragte und standardisierter Lineage Event Push (OpenLineage RunEvents) an Enterprise Data Catalogs (Marquez, Collibra, Purview). |
 | **Modern Lakehouse Connector (P4)** | Vollständig implementiert ([`IcebergMetadataReader`](file:///root/gql_extensions/src/GqlGateway.Extensions/Lakehouse/Services/IcebergMetadataReader.cs), [`IcebergPartitionPruner`](file:///root/gql_extensions/src/GqlGateway.Extensions/Lakehouse/Services/IcebergPartitionPruner.cs), [`LakehouseDataSourceExecutor`](file:///root/gql_extensions/src/GqlGateway.Extensions/Lakehouse/Services/LakehouseDataSourceExecutor.cs), Storage-Provider für Local, S3 SigV4 & Azure Blob, Integrationstests). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** Nativer Apache Iceberg v2 Lakehouse-Connector mit L1-Metadaten-/Manifest-Cache (`MetadataCacheTtlMinutes`), vektorisiertem Partition- & Min/Max-Stats-Pruning, Fail-Closed Zero-Trust Governance und automatischer PII/GDPR-Spaltenmaskierung. |
 | **Subscriptions & Realtime Events (P5)** | Vollständig implementiert ([`Subscription.cs`](file:///root/gql/src/GqlGateway.GraphQL/Subscriptions/Subscription.cs), [`WebSocketAuthInterceptor.cs`](file:///root/gql/src/GqlGateway.GraphQL/Subscriptions/WebSocketAuthInterceptor.cs), [`StreamRlsPolicyEnforcer.cs`](file:///root/gql/src/GqlGateway.Application/Streaming/Services/StreamRlsPolicyEnforcer.cs), [`InMemoryCdcEventChannel.cs`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/InMemoryCdcEventChannel.cs), [`DebeziumCdcParser.cs`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/DebeziumCdcParser.cs)). | **100% (GA)** | ✅ **Vollständig abgeschlossen.** WebSocket (`graphql-transport-ws`) und SSE Subscriptions mit dynamischer In-Stream Row Level Security (Casbin ABAC), In-Stream Column Masking, strikter Mandanten-Isolation und Debezium/Kafka CDC Ingestion. |
+| **Native MSSQL Change Tracking Ingestion Provider (`F-CDC-02`)** | Architektur- und Schnittstellen-Design im PM-Skill und Marktanalyse spezifiziert; integriert sich nativ in vorhandenen [`StreamRlsPolicyEnforcer`](file:///root/gql/src/GqlGateway.Application/Streaming/Services/StreamRlsPolicyEnforcer.cs) und [`InMemoryCdcEventChannel`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/InMemoryCdcEventChannel.cs). | **Spezifiziert (Wave 2 Top-Prio)** | 🟡 **Hohe Priorität (RICE-C: 20.2).** Zero-Kafka Realtime Ingestion Worker über SQL Server `CHANGETABLE(CHANGES ...)` mit Versions-Checkpointing und automatischer In-Stream Casbin ABAC / PII-Filterung. |
 | **Management Studio & UI (P6)** | Reines Headless-Gateway. | **0%** | 🔴 Visuelles Web-Dashboard für Data Stewards (Policy Simulator, Audit-Viewer, Schema Explorer). |
 | **OData v4 & Dynamic OpenAPI 3.1 REST Layer (`F-API-03`, `F-API-04`)** | Vollständig implementiert ([`ODataHandler`](file:///root/gql/src/GqlGateway.Application/OData/ODataHandler.cs), CSDL XML Generator, Entity Set Query Executor, [`IDynamicOpenApiGenerator`](file:///root/gql/src/GqlGateway.Application/OData/Interfaces/IDynamicOpenApiGenerator.cs), [`DynamicOpenApiGenerator`](file:///root/gql/src/GqlGateway.Application/OData/Services/DynamicOpenApiGenerator.cs), [`IOpenApiCacheManager`](file:///root/gql/src/GqlGateway.Application/OData/Interfaces/IOpenApiCacheManager.cs), [`OpenApiCacheManager`](file:///root/gql/src/GqlGateway.Application/OData/Services/OpenApiCacheManager.cs), [`IOpenApiIngestionService`](file:///root/gql/src/GqlGateway.Application/DataCatalog/Interfaces/IOpenApiIngestionService.cs), [`OpenApiIngestionService`](file:///root/gql/src/GqlGateway.Application/DataCatalog/Services/OpenApiIngestionService.cs)). | **100% (GA)** | ✅ **OData Core, Dynamic OpenAPI 3.1 & Declarative Web API Ingestion GA.** Nativer OData-Service (`/odata/v4`, `/$metadata`), dynamische OpenAPI 3.1 Spezifikation (`/odata/v4/$openapi` in JSON & YAML), Domain-Scoped Specs (`/odata/v4/{domain}/openapi.json|yaml`), Memory-Cache mit Key-Sanitisierung, gehärtetes Swagger UI (`/docs`, `/odata/v4/$swagger`) und automatisierte Registrierung externer REST-Services via `POST /api/governance/catalog/ingest-openapi` (`F-API-04`). |
 | **Omnichannel Documentation Passthrough (`F-DOC-01`)** | Vollständig implementiert ([`DynamicTableType.cs`](file:///root/gql/src/GqlGateway.GraphQL/DynamicTypes/DynamicTableType.cs), [`SemanticMcpCompiler.cs`](file:///root/gql/src/GqlGateway.Application/Mcp/Services/SemanticMcpCompiler.cs), [`DynamicOpenApiGenerator.cs`](file:///root/gql/src/GqlGateway.Application/OData/Services/DynamicOpenApiGenerator.cs), [`ODataCsdlGenerator.cs`](file:///root/gql_extensions/src/GqlGateway.Extensions/OData/ODataCsdlGenerator.cs), Unit-Tests). | **100% (GA)** | ✅ **Vollständig geliefert (Wave 1 GA).** Lückenloses Durchschleifen von dbt-Doc-Blocks und OpenMetadata-Beschreibungen in GraphQL Banana Cake Pop (`DynamicTableType`), MCP Tool-Signaturen & On-Demand Resources (`dbt://models/...`), OpenAPI 3.1 JSON/YAML (`x-long-description`, `x-dbt-meta`) und OData CSDL Core Annotations (`Core.Description`, `Core.LongDescription`). |
@@ -978,6 +982,188 @@ Weder ein reiner Hasura-Klon noch ein reiner Trino-Klon löst alle Enterprise-An
 
 ---
 
+### 3.3 Deep Dive & Strategische Bewertung: MSSQL Change Tracking vs. Full CDC vs. Debezium / Kafka (`F-CDC-02`)
+
+In modernen Enterprise-Architekturen wächst der Druck, operative Geschäftsdaten in Echtzeit bereitzustellen – sei es für reaktive Web-Frontends, interaktive Dashboards (Power BI / Retool), Incident-Alerts oder Streaming-Tools für autonome KI-Agenten. 
+
+Gleichzeitig scheitern Realtime-GraphQL-Initiativen in der Praxis häufig nicht am Frontend, sondern an der **"Infrastruktur-Barriere"** der Datenquellen.
+
+---
+
+#### 1. Das Enterprise-Dilemma: "The Kafka Barrier"
+
+Während Start-ups Greenfield-Architekturen auf Cloud-nativen Event-Bussen aufbauen, ist in Fortune-500-, DAX- und Mittelstands-Unternehmen (besonders in Finanzen, Healthcare, Public Sector und Fertigungsindustrie) **Microsoft SQL Server (MSSQL)** das dominierende operative Kern-RDBMS.
+
+Bisherige CDC- und Subscription-Lösungen (wie unser Modul **P5** via Debezium) verlangen eine umfangreiche Pipeline:
+$$\text{MSSQL Transaction Log} \longrightarrow \text{Debezium Connect} \longrightarrow \text{Apache Kafka} \longrightarrow \text{Schema Registry} \longrightarrow \text{GqlGateway} \longrightarrow \text{WebSocket Client}$$
+
+```mermaid
+flowchart LR
+    subgraph TraditionalCDC ["Klassischer Debezium/Kafka Weg (Hohe TCO & Hürden)"]
+        direction TB
+        DB1["MSSQL DB<br/>(Full CDC Log Mining)"]
+        AGT["SQL Server Agent<br/>(Capture Job)"]
+        DEB["Debezium Connector<br/>(Worker Container)"]
+        KFK["Apache Kafka Cluster<br/>(KRaft / Zookeeper)"]
+        REG["Schema Registry<br/>(Avro / JSON Schema)"]
+        DB1 --> AGT --> DEB --> KFK --> REG
+    end
+
+    subgraph NativeCT ["GqlGateway F-CDC-02 Moat (Zero-Kafka Realtime)"]
+        direction TB
+        DB2["MSSQL Database<br/>(Standard / Enterprise / Azure SQL)<br/>ALTER DATABASE ... SET CHANGE_TRACKING = ON"]
+        GW["GqlGateway Core<br/>• MssqlChangeTrackingIngestionService<br/>• Single-Query Join Hydration<br/>• StreamRlsPolicyEnforcer (Casbin ABAC)<br/>• Dynamic PII Column Masking"]
+        WS["GraphQL Subscriptions & SSE<br/>(graphql-transport-ws)"]
+        DB2 ===|CHANGETABLE Polling & Hydrate| GW
+        GW ===|Filtered In-Stream Events| WS
+    end
+```
+
+##### Warum dieser Stack in Enterprise-Umgebungen auf massive Widerstände stößt:
+1. **Der DBA-Widerstand (Database Administrator Veto):**
+   * Full CDC erfordert SQL Server Agent Jobs, die das Transaktionsprotokoll kontinuierlich parsen (`sys.fn_dblog`). Bei hohem Schreibvolumen droht das Transaktionslog vollzulaufen (`LOG_BACKUP` Blocker), was geschäftskritische OLTP-Systeme lahmlegen kann.
+2. **Die "Kafka-Barriere" (DevOps TCO):**
+   * Ein produktionsreifes Kafka-Setup erfordert Multi-Broker-Cluster, Kafka Connect-Knoten, Schema Registries, Zertifikats-Rotation, Topic-Partitionierung und permanentes 24/7-Monitoring. Viele Fachabteilungen erhalten von zentralen IT-Infrastruktur-Teams schlichtweg kein Budget oder keine Freigabe für einen dedizierten Kafka-Cluster.
+3. **Latenz- und Netzwerk-Kaskaden:**
+   * Bis ein Event über DB-Agent, Debezium-Worker, Kafka-Broker und Gateway geflossen ist, vergehen im ungünstigen Fall mehrere Sekunden – begleitet von vierfachen Serialisierungs- und Netzwerk-Hops.
+
+---
+
+#### 2. Technologischer 3-Wege-Vergleich: CT vs. Full CDC vs. Debezium
+
+Microsoft SQL Server bietet zwei grundlegend unterschiedliche native Änderungs-Erfassungs-Mechanismen: **Change Tracking (CT)** und **Change Data Capture (CDC)**. Die folgende Gegenüberstellung verdeutlicht die strategische Nische von `F-CDC-02`:
+
+| Kriterium | MSSQL Change Tracking (CT) *(Basis für F-CDC-02)* | MSSQL Full CDC (`sys.sp_cdc_enable_db`) | Debezium + Apache Kafka (`P5`) |
+| :--- | :--- | :--- | :--- |
+| **Architektur** | **Synchron im DB-Kernel integriert:** Zeichnet primäre Schlüssel und Änderungstyp synchron im Commit-Pfad auf. | **Asynchrones Log-Mining:** SQL Server Agent liest das Transaktionsprotokoll in Hintergrund-Jobs. | **External Log Reader:** Java-basierter Debezium Worker liest DB-Transaktionslog und publiziert in Kafka Topics. |
+| **Editions-Verfügbarkeit** | ✅ **Alle Editionen:** Express, Standard, Web, Enterprise, Azure SQL DB, Azure SQL Managed Instance. | ⚠️ Enterprise & Standard (früher nur Enterprise; erfordert SQL Server Agent). | ⚠️ Erfordert Agent-Zugriff & CDC-Rechte in der DB. |
+| **Speicher-Overhead** | 🟢 **Minimal:** Speichert nur Primärschlüssel, Version und Operations-Typ (`I`, `U`, `D`). Keine Duplizierung historischer Spaltenwerte. | 🔴 **Sehr hoch:** Schreibt vor- und nachherige Werte aller Spalten in physische Schattentabellen (`cdc.dbo_<table>_CT`). | 🟡 **Hoch:** Kafka Topic Retention + Log Compaction + DB Schattentabellen. |
+| **Transaktionslog-Impact** | 🟢 **Keiner:** Hält das Transaktionsprotokoll nicht fest. Verhindert Log-Trunkierung nicht. | 🔴 **Riskant:** Transaktionslog kann erst nach CDC-Verarbeitung freigegeben werden; Gefahr von Log-Überläufen. | 🔴 **Identisch zu Full CDC:** Blockiert Log-Truncation bei Replikations-Lag. |
+| **Infrastruktur-Aufwand (TCO)** | 🟢 **Zero-Infrastructure:** Rein SQL-basiert. Keine externen Container, Broker oder VMs nötig. | 🟡 **Gering bis Mittel:** Nur DB-intern, erfordert aber funktionierenden SQL Server Agent. | 🔴 **Extrem hoch:** Kafka-Cluster, Connect-Worker, Schema Registry, Zookeeper/KRaft. |
+| **Latenz** | 🟢 **Sub-Sekunde (100–500 ms):** Gateway pollt versionsbasiert via `CHANGETABLE` im einstellbaren Takt. | 🟡 **1–3 Sekunden:** Abhängig vom Polling-Intervall des SQL Server Agent Capture Jobs. | 🟢 **100–1000 ms:** Near-Realtime, aber anfällig für Kafka-Consumer Lag. |
+| **Historische Spaltendaten (Before-Values)** | ❌ **Nur Primärschlüssel:** Vorherige Werte nicht verfügbar (nur optional Spalten-Änderungsmaske `CHANGE_TRACKING_IS_COLUMN_CHANGED`). | ✅ **Vollständig:** Vorher/Nachher-Werte für jeden Spaltenzustand historisiert. | ✅ **Vollständig:** Debezium emittiert komplettes `before` und `after` Payload-JSON. |
+| **Zero-Trust & RLS Integration** | 🟢 **Nativ im Gateway:** GqlGateway hydriert geänderte Zeilen und wendet `StreamRlsPolicyEnforcer` dynamisch pro Client an. | 🟡 Manuell: Erfordert nachgelagertes RLS-Filtering. | 🟢 **Vorhanden (P5):** In-Stream RLS filtert Kafka-Events im Gateway. |
+
+---
+
+#### 3. Architektur-Spezifikation: `F-CDC-02 Native MSSQL Change Tracking Ingestion Provider`
+
+Um die "Kafka-Barriere" für Enterprise-Kunden vollständig aufzuheben, erweitert `F-CDC-02` die Realtime-Streaming-Schicht um einen leichtgewichtigen, hochperformanten Ingestion-Worker:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant DB as MSSQL Database (Change Tracking ON)
+    participant Worker as MssqlChangeTrackingIngestionService
+    participant Store as StateStore (Redis / SQLite Checkpoint)
+    participant Channel as InMemoryCdcEventChannel (P5)
+    participant RLS as StreamRlsPolicyEnforcer (Casbin ABAC)
+    participant Client as GraphQL Subscriber (WebSocket / SSE)
+
+    Client->>RLS: 1. Subscribe: subscription { orderUpdated { id status total amount } }
+    Note over Client,RLS: WebSocket Connection init mit Bearer Token (Tenant: T1, Role: Analyst)
+
+    loop Polling-Loop (z.B. alle 250ms)
+        Worker->>Store: 2. Hole @last_sync_version für Tabelle dbo.Orders
+        Worker->>DB: 3. SELECT CHANGE_TRACKING_CURRENT_VERSION()
+        Worker->>DB: 4. Query CHANGETABLE(CHANGES dbo.Orders, @last_sync_version) JOIN dbo.Orders
+        DB-->>Worker: 5. Hydrierte Zeilen (PK, Columns, Operation: INSERT/UPDATE/DELETE, Version: 1042)
+        Worker->>Store: 6. Aktualisiere @last_sync_version = 1042 (Atomarer Commit)
+        Worker->>Channel: 7. Emittiere CdcEvent { Table: "Orders", Op: Update, Payload: {...} }
+    end
+
+    Channel->>RLS: 8. Broadcast Event an aktive Subscription-Streams
+    RLS->>RLS: 9. Prüfe Casbin ABAC & Mandant (T1 == Event.TenantId)
+    RLS->>RLS: 10. Maskiere PII-Spalten (z. B. IBAN/Kreditkarte -> Redacted)
+    RLS-->>Client: 11. Push Event Payload über graphql-transport-ws
+```
+
+##### Kernkomponenten der Implementierung:
+
+1. **Monotonisches Versions-Tracking:**
+   * SQL Server vergibt für jede Transaktion datenbankweit eine streng monoton steigende `BIGINT`-Version.
+   * Der Worker liest die Startversion via `CHANGE_TRACKING_CURRENT_VERSION()` und speichert den letzten verarbeiteten Stand im `StateStore` (Redis oder SQLite Governance-Store).
+2. **Single-Query Join Hydration:**
+   * Da Change Tracking primär die Schlüssel geänderter Zeilen speichert, generiert der Ingestion-Worker eine effiziente SQL-Abfrage, die die geänderten Zeilen im selben Roundtrip mit den Echtdaten verknüpft:
+   ```sql
+   SELECT 
+       t.Id, t.TenantId, t.OrderNumber, t.Status, t.Amount, t.CustomerId,
+       ct.SYS_CHANGE_OPERATION AS Operation,
+       ct.SYS_CHANGE_VERSION AS Version,
+       CHANGE_TRACKING_IS_COLUMN_CHANGED(COLUMNPROPERTY(OBJECT_ID('dbo.Orders'), 'Status', 'ColumnId'), ct.SYS_CHANGE_COLUMNS) AS StatusChanged
+   FROM dbo.Orders t
+   RIGHT OUTER JOIN CHANGETABLE(CHANGES dbo.Orders, @last_sync_version) ct
+       ON t.Id = ct.Id
+   ORDER BY ct.SYS_CHANGE_VERSION ASC;
+   ```
+   * *Besonderheit bei `DELETE`:* Wurde eine Zeile gelöscht, liefert der `RIGHT OUTER JOIN` die Spalten von `t` als `NULL` zurück – der Ingestion-Worker erkennt die Operation `'D'` und erzeugt ein valides `CdcEvent` mit dem gelöschten Primärschlüssel, sodass Subscriptions Clients über Löschungen informieren können.
+3. **Resilienz gegen Retentions-Gaps (`CHANGE_TRACKING_MIN_VALID_VERSION`):**
+   * Change Tracking räumt historische Änderungen nach Ablauf des konfigurierten Bereinigungsfensters (`AUTO_CLEANUP = ON`, z. B. 2 Tage) automatisch ab.
+   * War das Gateway länger offline als das Cleanup-Intervall, prüft der Worker vor der Abfrage:
+     $$\text{@last\_sync\_version} < \text{CHANGE\_TRACKING\_MIN\_VALID\_VERSION(OBJECT\_ID('dbo.Orders'))}$$
+   * Liegt ein Überlauf vor, schaltet das Gateway in den **Fail-Safe Snapshot Mode**: Es signalisiert den Subscriptions einen `RESYNC_REQUIRED` Status und stößt einen kontrollierten Snapshot-Sync an, statt inkonsistente Lücken zu streamen.
+4. **Zero-Trust In-Stream Governance:**
+   * Die hydrierten Events werden direkt in das bewährte [`InMemoryCdcEventChannel`](file:///root/gql/src/GqlGateway.Infrastructure/Streaming/InMemoryCdcEventChannel.cs) eingespeist.
+   * Der vorhandene [`StreamRlsPolicyEnforcer`](file:///root/gql/src/GqlGateway.Application/Streaming/Services/StreamRlsPolicyEnforcer.cs) prüft für jeden einzelnen verbundenen WebSocket-Client:
+     * Darf Tenant $X$ diese Zeile sehen (Mandanten-Isolation & Casbin ABAC)?
+     * Welche Spalten müssen gemäß Katalogsynchronisation (Purview/Collibra) für diesen User maskiert oder genullt werden?
+   * Kein unberechtigter Datenpunkt verlässt das Gateway.
+
+---
+
+#### 4. SWOT-Analyse für `F-CDC-02`
+
+```mermaid
+quadrantChart
+    title SWOT-Analyse: Native MSSQL Change Tracking Ingestion (F-CDC-02)
+    x-axis "Interner Fokus" --> "Externer Markt"
+    y-axis "Herausforderung / Risiko" --> "Erfolgsfaktor / Chance"
+    quadrant-1 "OPPORTUNITIES (Chancen)"
+    quadrant-2 "STRENGTHS (Stärken)"
+    quadrant-3 "WEAKNESSES (Schwächen)"
+    quadrant-4 "THREATS (Risiken)"
+    "Zero-Infra Setup (Kein Kafka nötig)": [0.22, 0.90]
+    "Kompatibel mit allen MSSQL-Editionen": [0.18, 0.85]
+    "Wiederverwendung von In-Stream RLS (P5)": [0.28, 0.78]
+    "Minimale Latenz & OLTP-Last (< 2%)": [0.35, 0.72]
+    "Polling-basiert (Intervall 100-500ms)": [0.25, 0.35]
+    "Keine historischen Before-Werte": [0.32, 0.28]
+    "Enormer Markt in Finanzen & DAX-Konzernen": [0.78, 0.92]
+    "Verdrängung teurer Hasura Enterprise Lizenzen": [0.85, 0.82]
+    "Realtime Dashboards ohne DevOps-Hürde": [0.72, 0.88]
+    "Aggressives Polling könnte DB belasten": [0.65, 0.30]
+    "Hyperscaler bieten proprietäre Trigger": [0.80, 0.22]
+```
+
+* **Stärken (Strengths):**
+  * **Zero-Infra Realtime:** Funktioniert out-of-the-box mit einem gewöhnlichen MSSQL-Connection-String. Keine Kafka-Broker, keine Zookeeper-Nodes, keine Debezium-Connect-Container.
+  * **Breite Kompatibilität:** Läuft auf SQL Server Express, Standard, Enterprise sowie Azure SQL Database und Azure SQL Managed Instance.
+  * **Zero-Trust First:** Volle Wiederverwendung des bestehenden Casbin ABAC & Masking-Streams (`StreamRlsPolicyEnforcer`).
+* **Schwächen (Weaknesses):**
+  * **Polling-Charakter:** Technisch bedingt fragt das Gateway die Tabelle in Intervallen (z. B. 250 ms) ab. Reine Log-Mining-Lösungen (Debezium) reagieren im Mikrosekundenbereich direkt auf das Schreiben des Log-Buffers. Für 99% aller operativen Enterprise-Web-Anwendungen sind 250 ms jedoch mehr als ausreichend.
+  * **Keine 'Before'-Werte:** Da CT nur Primärschlüssel speichert, kann das Gateway nicht ermitteln, welcher alte Wert vor einem Update in einer Spalte stand (es sei denn, das Gateway puffert den Zustand im Cache).
+* **Chancen (Opportunities):**
+  * **"De-Kafka-fying the Enterprise":** Erschließt hunderttausende Bestandssysteme in regulierten Branchen, bei denen Kafka aus Compliance-, Kosten- oder Wissensgründen verboten ist.
+  * **Massiver TCO-Vorteil gegenüber Hasura:** Hasura Enterprise verlangt für MSSQL-Event-Trigger astronomische Lizenzgebühren und zwingt Kunden in die Hasura Cloud. GqlGateway bietet dies als Open-Governance-Standard on-premise.
+* **Risiken (Threats):**
+  * **Polling-Spikes auf extrem stark frequentierten Tabellen:** Bei Tabellen mit > 10.000 Inserts/Sekunde kann wiederholtes Join-Polling zu Lock-Contention führen. Dies wird durch Batch-Size-Caps (`TOP (@batch_size)`) und adaptives Polling (Backoff bei Inaktivität) gelöst.
+
+---
+
+#### 5. Strategisches Urteil & Positionierung
+
+`F-CDC-02` ist kein Ersatz für Debezium/Kafka (`P5`), sondern die **perfekte strategische Ergänzung**:
+
+| Einsatzszenario | Empfohlene Technologie | Begründung |
+| :--- | :--- | :--- |
+| **Enterprise MSSQL Applikationen (On-Prem / Azure SQL)** | **`F-CDC-02` (Native MSSQL Change Tracking)** | **Beste Wahl:** Zero-DevOps, sofort einsatzbereit, keine Kafka-Kosten, Sub-Second-Latenz mit voller Casbin-RLS-Filterung. |
+| **Globales Enterprise Event Streaming (Multi-System Backbone)** | **`P5` (Debezium / Kafka CDC)** | **Beste Wahl:** Wenn bereits ein unternehmensweiter Confluent/Kafka-Cluster existiert und Events an Dutzende heterogene Konsumenten verteilt werden. |
+| **PostgreSQL Umgebungen** | **`P5` (Debezium) oder `LISTEN / NOTIFY`** | PostgreSQL besitzt kein direktes Äquivalent zu MSSQL Change Tracking; hier ist log-basiertes CDC oder WAL-Replication führend. |
+
+Mit der Bereitstellung von `F-CDC-02` bricht GqlGateway die "Kafka-Barriere" und sichert sich eine uneinholbare Wettbewerbsposition im traditionellen Microsoft Enterprise-Segment.
+
+---
+
 ## 4. Priorisierungs-Framework: Aktualisierte RICE-C Matrix
 
 Mit dem erfolgreichen Abschluss aller Kernkomponenten (P1, P2, P3, P4, P5, P7, P8, P9 sowie Casbin Hot-Reload, MCP Stdio/HTTP, ITSM Clients und GDPR PDF/OpenLineage) priorisiert das RICE-C Modell die neuen Enterprise-Differenzierungsinitiativen:
@@ -999,6 +1185,7 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **F-AI-06: Provenance & Lineage Footnoting (Explainable AI / EU AI Act)** | 7 | 2.5 | 85% | 2.0 | 2.0 W | **14.9** | ✅ **100% Abgeschlossen (GA)** (Revisionssichere `_provenance` Footnotes) |
 | **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | ✅ **100% Abgeschlossen (GA)** |
 | **F-SQL-01: Declarative SQL-to-API Engine & Auto-OpenAPI 3.0** | 9 | 2.9 | 95% | 1.5 | 1.5 W | **24.8** | ✅ **100% Abgeschlossen (GA)** (SQL Endpoints, Parameter Parsing, Auto-OpenAPI Swagger 3.0, dbt Sync & RLS Pushdown) |
+| **F-CDC-02: Native MSSQL Change Tracking Ingestion Provider** | 8 | 2.8 | 90% | 1.5 | 1.5 W | **20.2** | 🟡 **Top-Priorität Wave 2** (Zero-Kafka Realtime Engine über `CHANGETABLE`, Versions-Checkpointing & In-Stream Casbin ABAC / RLS) |
 | **F-DATA-01: Hierarchical Parquet Egress & Nested Query Serialization** | 8 | 2.8 | 90% | 1.5 | 1.5 W | **13.4** | ✅ **100% Abgeschlossen (GA)** (ParquetExportService, Export-Endpoints, Content Negotiation, Dremel LIST<STRUCT>) |
 | **F-PERF-09: GraphQL-to-SQL AST Single-Query Compiler (`FOR JSON PATH`)** | 9 | 3.0 | 90% | 1.5 | 2.0 W | **12.2** | ✅ **100% Abgeschlossen (GA)** (SingleQueryAstCompiler, FOR JSON / json_agg, multi-level RLS & Type-Coercion) |
 | **F-DATA-02: Governed WebSQL Engine (Trino AST Linter & RLS Rewriter)** | 8 | 2.7 | 90% | 1.4 | 1.6 W | **12.1** | ✅ **100% Abgeschlossen (GA)** (Sichere HTTP-SQL-Ausführung nach Trino-Muster mit AST-Whitelisting, RLS-Injektion & 790 Tests) |
@@ -1078,6 +1265,7 @@ flowchart TD
 
     subgraph Wave2["Wave 2: Trino-SPI, Lakehouse Acceleration & Enterprise Guardrails (Verbleibende Umsetzungsphase)"]
         direction TB
+        W2_0["F-CDC-02 Native MSSQL Change Tracking Ingestion (Zero-Kafka Realtime)"]
         W2_2["F-ARCH-10 Standardisiertes Connector-SPI (IGqlGatewayConnector nach Trino-Muster)"]
         W2_3["F-AI-07 Vector-Indexed Dynamic Tool Pruning (Scalable Catalog)"]
         W2_4["F-DBT-5 dbt Semantic Layer / MetricFlow GraphQL Resolvers"]
@@ -1117,7 +1305,8 @@ flowchart TD
    - **Umfassende AppSec-Remediation & Härtung:** Behebung aller Befunde aus den Security-Reviews (VULN-01 bis VULN-09, SEC-01 bis SEC-03, CQ-01 bis CQ-03, Type Projection Hardening).
 
 2. **Nächste strategische Umsetzungsphase: Verbleibende Wave 2 Initiativen:**
-   - In Wave 2 rücken nun insbesondere **`F-ARCH-10` Standardisiertes Connector-SPI** (`IGqlGatewayConnector` nach Trino-Muster), **`F-AI-07` Vector Tool Pruning**, **`F-DBT-5` MetricFlow Resolvers**, **`P13` Data Contract & FinOps Chargeback**, **`P14` Arrow Flight Governor**, **`P15` Confidential Compute Enclaves** und **`P16` Post-Quantum TLS** in den Umsetzungsfokus.
+   - **Top-Priorität: `F-CDC-02` Native MSSQL Change Tracking Ingestion Provider (RICE-C Score: 20.2):** Aufhebung der "Kafka-Barriere" für Enterprise-Kunden durch schlüsselfertige Realtime-Subscriptions direkt über SQL Server `CHANGETABLE`. Bietet sofortigen Marktvorteil gegenüber Apollo (kein DB-CDC) und Hasura (teure, ressourcenhungrige Trigger).
+   - In Wave 2 rücken parallel **`F-ARCH-10` Standardisiertes Connector-SPI** (`IGqlGatewayConnector` nach Trino-Muster), **`F-AI-07` Vector Tool Pruning**, **`F-DBT-5` MetricFlow Resolvers**, **`P13` Data Contract & FinOps Chargeback**, **`P14` Arrow Flight Governor**, **`P15` Confidential Compute Enclaves** und **`P16` Post-Quantum TLS** in den Umsetzungsfokus.
 
 ---
 
@@ -1166,6 +1355,7 @@ Die detaillierten Implementierungspläne des Solution Architects für die Umsetz
   * `F-AI-05`: Human-in-the-Loop Step-Up Approval via MCP (4-Augen & ITSM).
   * AppSec Remediation (VULN-01..09, SEC-01..03, CQ-01..03, Type Projection Hardening).
 * **Wave 2 (Verbleibende Umsetzungsphase):**
+  * `F-CDC-02`: Native MSSQL Change Tracking Ingestion Provider (Zero-Kafka Realtime Engine über `CHANGETABLE`).
   * `F-ARCH-10`: Standardisiertes Connector-SPI (`IGqlGatewayConnector` nach Trino-Muster).
   * `F-AI-07`: Vector-Indexed Dynamic Tool Pruning (Scalable Catalog).
   * `F-DBT-5`: dbt Semantic Layer & MetricFlow Auto-Mapping.
