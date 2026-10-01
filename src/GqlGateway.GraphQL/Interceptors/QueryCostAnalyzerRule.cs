@@ -168,9 +168,19 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                         }
                     }
 
-                    int effectiveRows = requestedLimit > 0
-                        ? Math.Min(requestedLimit, _maxResponseRows)
-                        : _maxResponseRows;
+                    int effectiveRows;
+                    if (string.Equals(field.Name.Value, "catalog", StringComparison.OrdinalIgnoreCase))
+                    {
+                        effectiveRows = requestedLimit > 0
+                            ? Math.Min(requestedLimit, _maxResponseRows)
+                            : 10;
+                    }
+                    else
+                    {
+                        effectiveRows = requestedLimit > 0
+                            ? Math.Min(requestedLimit, _maxResponseRows)
+                            : _maxResponseRows;
+                    }
 
                     cost = SafeAdd(cost, SafeAdd(0, (int)Math.Min((long)int.MaxValue, (long)_defaultListMultiplier * effectiveRows)));
 

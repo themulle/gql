@@ -554,7 +554,8 @@ public class WalkingSkeletonIntegrationTests : IClassFixture<WebApplicationFacto
         };
 
         var response = await client.PostAsJsonAsync("/graphql", query);
-        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.ShouldBe(HttpStatusCode.OK, customMessage: body);
     }
 
     [Fact]

@@ -480,6 +480,14 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ICdcEventIngestionService, CdcEventIngestionService>();
         services.AddScoped<IStreamRlsPolicyEnforcer, StreamRlsPolicyEnforcer>();
 
+        // Native MSSQL Change Tracking Ingestion Provider (F-CDC-02)
+        services.AddSingleton<GqlGateway.Application.Streaming.Interfaces.IMssqlWatermarkStore, GqlGateway.Infrastructure.Streaming.InMemoryMssqlWatermarkStore>();
+        services.AddSingleton<GqlGateway.Application.Streaming.Interfaces.IMssqlChangeTrackingPoller, GqlGateway.Infrastructure.Streaming.MssqlChangeTrackingPoller>();
+        if (gatewayOptions.MssqlChangeTracking.Enabled)
+        {
+            services.AddHostedService<GqlGateway.Infrastructure.Streaming.MssqlChangeTrackingHostedService>();
+        }
+
         // Modern Lakehouse Apache Iceberg Connector (P4 / ADR-015)
         services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.LocalStorageProvider>();
         services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider))
@@ -827,6 +835,11 @@ public static class GatewayServiceCollectionExtensions
                 $"The following security bypasses are currently ACTIVE:\n  - {bypasses}\n" +
                 $"NEVER USE THESE INSECURE SETTINGS IN PRODUCTION ENVIRONMENTS!\n" +
                 $"================================================================================\n");
+        }
+
+        if (!environment.IsDevelopment() && options.IsQuickstartProfile)
+        {
+            throw new ValidationException("Sicherheitsverletzung: GettingStarted-Profile 'Quickstart' darf AUSSCHLIESSLICH in der Development-Umgebung aktiv sein!");
         }
 
         if (options.HighAvailability.ShutdownTimeoutSeconds < options.HighAvailability.QueryTimeoutSeconds + 10)

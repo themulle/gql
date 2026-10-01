@@ -66,9 +66,10 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
         {
             if (error.Exception != null)
             {
-                return error.WithMessage($"{error.Exception.GetType().Name}: {error.Exception.Message}");
+                error = error.WithMessage($"{error.Exception.GetType().Name}: {error.Exception.Message}");
             }
-            return error;
+
+            return EnrichWithDevelopmentFixHints(error);
         }
 
         // In non-development (Staging, QA, Production):
@@ -93,5 +94,31 @@ public sealed class ErrorSanitizingFilter : IErrorFilter
             .WithMessage("Ein interner Serverfehler ist aufgetreten.")
             .WithCode("INTERNAL_SERVER_ERROR")
             .WithException(null);
+    }
+
+    private static IError EnrichWithDevelopmentFixHints(IError error)
+    {
+        var code = error.Code?.ToUpperInvariant();
+        if (code == "UNAUTHORIZED" || code == "AUTH_REQUIRED")
+        {
+            return error.SetExtension("dev_fix_hints", new[]
+            {
+                "Header 'X-Test-User-Sid: S-1-5-21-ALICE-FINANCE' & 'X-Test-Roles: FinanceManager' setzen",
+                "Oder 'GettingStarted:Profile: Quickstart' in appsettings.Development.json aktivieren",
+                "Besuche das Developer Dashboard auf http://localhost:5000/ zum Kopieren vorgefertigter Test-Personas"
+            });
+        }
+
+        if (code == "FORBIDDEN" || code == "CONSENT_DENIED" || code == "ACCESS_DENIED")
+        {
+            return error.SetExtension("dev_fix_hints", new[]
+            {
+                "Consent anfragen via GraphQL Mutation 'requestConsent(domain: ..., tableName: ...)'",
+                "Oder 'Insecure:warn_auto_approve_access_requests: true' in appsettings.Development.json aktivieren",
+                "Oder 'Insecure:danger_bypass_consent_checks: true' für unbeschränkten Dev-Zugriff aktivieren"
+            });
+        }
+
+        return error;
     }
 }

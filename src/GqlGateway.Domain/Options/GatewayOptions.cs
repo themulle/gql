@@ -38,6 +38,15 @@ public sealed class GatewayOptions
     [Required] public WebSqlOptions WebSql { get; init; } = new();
     [Required] public SqlEndpointsOptions SqlEndpoints { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
+    [Required] public MssqlChangeTrackingOptions MssqlChangeTracking { get; init; } = new();
+
+    /// <summary>
+    /// Getting Started Preset Profile: "Strict" (Default) or "Quickstart".
+    /// When set to "Quickstart", relaxes catalog discovery, enables introspection and permissive defaults for local development.
+    /// </summary>
+    public string Profile { get; init; } = "Strict";
+
+    public bool IsQuickstartProfile => string.Equals(Profile, "Quickstart", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Open Schema Mode: Allows anyone to view the entire data catalog, OpenAPI specs, and schema documentation.
@@ -46,16 +55,16 @@ public sealed class GatewayOptions
     public bool OpenSchema { get; init; } = false;
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
-    public bool IsOpenSchemaAllowed => OpenSchema || Catalog.OpenSchema;
+    public bool IsOpenSchemaAllowed => OpenSchema || Catalog.OpenSchema || IsQuickstartProfile;
     public bool IsAnonymousAccessAllowed => Insecure.danger_allow_anonymous_access || Authentication.danger_allow_anonymous_access;
     public bool IsConsentBypassed => Insecure.danger_bypass_consent_checks || GovernanceDb.danger_bypass_consent_checks;
     public bool IsColumnMaskingDisabled => Insecure.danger_disable_column_masking || DataMasking.danger_disable_column_masking;
     public bool IsInsecureTransportAllowed => Insecure.danger_allow_insecure_transport;
-    public bool IsAllCorsAllowed => Insecure.warn_allow_all_cors_origins || GraphQL.warn_allow_all_cors_origins;
+    public bool IsAllCorsAllowed => Insecure.warn_allow_all_cors_origins || GraphQL.warn_allow_all_cors_origins || IsQuickstartProfile;
     public bool IsRateLimitingDisabled => Insecure.warn_disable_rate_limiting || RateLimiting.warn_disable_rate_limiting;
     public bool AreQueryLimitsRelaxed => Insecure.warn_relaxed_query_limits || GraphQL.warn_relaxed_query_limits;
-    public bool IsIntrospectionForced => Insecure.warn_enable_introspection || GraphQL.warn_enable_introspection;
-    public bool IsAutoApproveEnabled => Insecure.warn_auto_approve_access_requests || GovernanceDb.warn_auto_approve_access_requests;
+    public bool IsIntrospectionForced => Insecure.warn_enable_introspection || GraphQL.warn_enable_introspection || IsQuickstartProfile;
+    public bool IsAutoApproveEnabled => Insecure.warn_auto_approve_access_requests || GovernanceDb.warn_auto_approve_access_requests || IsQuickstartProfile;
     public bool IsWebhookSignatureBypassed => Insecure.danger_bypass_webhook_signature_validation || Insecure.danger_allow_anonymous_webhooks || Itsm.danger_bypass_webhook_signature_validation || OpenMetadata.danger_bypass_webhook_signature_validation;
     public bool AreUntrustedCertificatesAllowed => Insecure.danger_allow_untrusted_certificates || Insecure.danger_allow_insecure_transport || Itsm.danger_allow_untrusted_certificates || OpenMetadata.danger_allow_untrusted_certificates;
     public bool IsWebhookTimestampToleranceIgnored => Insecure.warn_ignore_webhook_timestamp_tolerance || Itsm.warn_ignore_webhook_timestamp_tolerance || OpenMetadata.warn_ignore_webhook_timestamp_tolerance;
@@ -820,3 +829,13 @@ public sealed class SqlEndpointsOptions
     public bool AutoSyncFromDbt { get; init; } = true;
     public int MaxQueryTimeoutSeconds { get; init; } = 60;
 }
+
+public sealed class MssqlChangeTrackingOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string ConnectionString { get; init; } = string.Empty;
+    public int PollingIntervalMilliseconds { get; init; } = 1000;
+    public int BatchSize { get; init; } = 500;
+    public List<string> TrackedTables { get; init; } = [];
+}
+
