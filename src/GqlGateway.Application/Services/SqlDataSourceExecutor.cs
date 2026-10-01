@@ -130,10 +130,37 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
             .ToList();
 
         var selectParts = new List<string>(authorizedColumns.Count);
+        string hmacSalt = _options?.Value?.DataMasking?.HmacSecretKeyVaultRef ?? _options?.Value?.DataMasking?.HmacKeyId ?? "gateway_salt";
+        bool hasMaskedCols = false;
+
         foreach (var col in authorizedColumns)
         {
             var colDef = metadata.GetColumn(col);
-            selectParts.Add(BuildColumnProjection(col, colDef?.DataType, dialect));
+            var access = context.AccessDecision.GetColumnAccess(col);
+
+            // Zero-Trust Hardening: Catalog sensitive columns default to Mask if not explicitly Clear
+            if (access != ColumnAccessLevel.Mask && (colDef?.IsSensitive == true || metadata.ColumnMaskingRules.ContainsKey(col)))
+            {
+                if (!context.AccessDecision.HasExplicitClear(col))
+                {
+                    access = ColumnAccessLevel.Mask;
+                }
+            }
+
+            if (access == ColumnAccessLevel.Mask && _options?.Value?.IsColumnMaskingDisabled != true)
+            {
+                hasMaskedCols = true;
+                selectParts.Add(BuildMaskedColumnProjection(col, colDef?.DataType, dialect, metadata, hmacSalt));
+            }
+            else
+            {
+                selectParts.Add(BuildColumnProjection(col, colDef?.DataType, dialect));
+            }
+        }
+
+        if (hasMaskedCols)
+        {
+            context.Items["InDbColumnMaskingExecuted"] = true;
         }
 
         if (selectParts.Count == 0)
@@ -322,6 +349,56 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
                 await tx.DisposeAsync().ConfigureAwait(false);
             }
         }
+    }
+
+    public static string BuildMaskedColumnProjection(string columnName, string? dataType, DatabaseDialect dialect, TableMetadata tableMeta, string hmacSalt)
+    {
+        DatabaseDialectExtensions.ValidateIdentifier(columnName);
+        var quotedCol = dialect.QuoteIdentifier(columnName);
+        string maskExpr;
+
+        if (tableMeta.ColumnMaskingRules.TryGetValue(columnName, out var rule))
+        {
+            var ruleType = rule.RuleType?.ToUpperInvariant() ?? "REDACT";
+            if (ruleType == "NULLIFY")
+            {
+                maskExpr = "NULL";
+            }
+            else if (ruleType is "HMAC" or "HMAC_SHA256" or "HASH")
+            {
+                maskExpr = BuildDeterministicHashExpression(columnName, dialect, hmacSalt);
+            }
+            else if (!string.IsNullOrWhiteSpace(rule.Replacement))
+            {
+                maskExpr = $"'{rule.Replacement.Replace("'", "''")}'";
+            }
+            else
+            {
+                maskExpr = "'***'";
+            }
+        }
+        else
+        {
+            maskExpr = "'***'";
+        }
+
+        return $"{maskExpr} AS {quotedCol}";
+    }
+
+    private static string BuildDeterministicHashExpression(string columnName, DatabaseDialect dialect, string salt)
+    {
+        string safeSalt = salt.Replace("'", "''");
+        return dialect switch
+        {
+            DatabaseDialect.PostgreSql =>
+                $"ENCODE(DIGEST(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT) || '{safeSalt}', 'sha256'), 'hex')",
+            DatabaseDialect.SqlServer =>
+                $"CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST([{columnName.Replace("]", "]]")}] AS VARCHAR(MAX)) + '{safeSalt}'), 2)",
+            DatabaseDialect.Sqlite =>
+                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), '{safeSalt}')",
+            _ =>
+                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), '{safeSalt}')"
+        };
     }
 
     public static string BuildColumnProjection(string columnName, string? dataType, DatabaseDialect dialect)

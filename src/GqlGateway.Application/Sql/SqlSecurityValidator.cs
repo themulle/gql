@@ -1,25 +1,25 @@
 namespace GqlGateway.Application.Sql;
 
 using System;
-using System.Security;
+using System.Text.RegularExpressions;
+using Antlr4.Runtime.Misc;
+using TrinoSqlEngine;
 
 /// <summary>
 /// Centralized security validation for SQL fragments, filters, predicates, and RLS expressions.
-/// Enforces Zero-Trust principles to prevent SQL injection, query stacking, comment breakouts,
+/// Enforces Zero-Trust principles using AST parsing to prevent SQL injection, query stacking, comment breakouts,
 /// and RLS bypasses in compiled AST and runtime data source queries.
 /// </summary>
-public static class SqlSecurityValidator
+public static partial class SqlSecurityValidator
 {
-    private static readonly string[] DangerousSqlTokens =
-    [
-        "--", "/*", "*/", ";", "@@",
-        "DROP ", "ALTER ", "TRUNCATE ", "DELETE ", "INSERT ", "UPDATE ", "EXEC ", "EXECUTE ",
-        "UNION ", "INTO ", "XP_", "SP_", "MERGE "
-    ];
+    private static readonly FastSqlEngine Engine = new() { MaxQueryLength = 4096 };
+
+    [GeneratedRegex(@"@([a-zA-Z0-9_]+)")]
+    private static partial Regex ParameterTokenRegex();
 
     /// <summary>
-    /// Validates a SQL predicate or filter expression to ensure it is free from SQL injection tokens,
-    /// statement terminators, comment breakouts, and unbalanced syntax.
+    /// Validates a SQL predicate or filter expression to ensure it is free from SQL injection,
+    /// statement terminators, comment breakouts, and unbalanced syntax using grammar-level AST parsing.
     /// </summary>
     public static void ValidatePredicateSql(string? predicate, string fieldName)
     {
@@ -38,51 +38,39 @@ public static class SqlSecurityValidator
             throw new ArgumentException($"SQL predicate in '{fieldName}' contains prohibited null byte.", fieldName);
         }
 
-        foreach (var token in DangerousSqlTokens)
+        if (predicate.Contains(';'))
         {
-            if (predicate.Contains(token, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new ArgumentException($"SQL predicate in '{fieldName}' contains prohibited SQL token or comment sequence '{token.Trim()}'.", fieldName);
-            }
+            throw new ArgumentException($"SQL predicate in '{fieldName}' contains prohibited statement terminator ';'.", fieldName);
         }
 
-        // Verify balanced parentheses and single quotes (ignoring escaped quotes '')
-        var inQuote = false;
-        var parenDepth = 0;
-        for (int i = 0; i < predicate.Length; i++)
+        if (predicate.Contains("--") || predicate.Contains("/*") || predicate.Contains("*/"))
         {
-            var ch = predicate[i];
-            if (ch == '\'')
-            {
-                if (inQuote && i + 1 < predicate.Length && predicate[i + 1] == '\'')
-                {
-                    i++; // skip escaped quote ''
-                    continue;
-                }
-                inQuote = !inQuote;
-            }
-            else if (!inQuote)
-            {
-                if (ch == '(') parenDepth++;
-                else if (ch == ')')
-                {
-                    parenDepth--;
-                    if (parenDepth < 0)
-                    {
-                        throw new ArgumentException($"SQL predicate in '{fieldName}' contains unbalanced closing parenthesis.", fieldName);
-                    }
-                }
-            }
+            throw new ArgumentException($"SQL predicate in '{fieldName}' contains prohibited comment sequence.", fieldName);
         }
 
-        if (inQuote)
+        if (predicate.Contains("@@"))
         {
-            throw new ArgumentException($"SQL predicate in '{fieldName}' contains unclosed string literal.", fieldName);
+            throw new ArgumentException($"SQL predicate in '{fieldName}' contains prohibited SQL token '@@'.", fieldName);
         }
 
-        if (parenDepth != 0)
+        // Fast normalization of query parameters (@p0, @tenant_id) to valid identifiers for AST verification
+        string normalized = ParameterTokenRegex().Replace(predicate, "__param_$1");
+
+        try
         {
-            throw new ArgumentException($"SQL predicate in '{fieldName}' contains unbalanced parentheses.", fieldName);
+            var (tree, tokens) = Engine.ParseExpression(normalized.AsMemory());
+            if (tree == null || tree.expression() == null)
+            {
+                throw new ArgumentException($"SQL predicate in '{fieldName}' has invalid expression syntax.", fieldName);
+            }
+        }
+        catch (ParseCanceledException ex)
+        {
+            throw new ArgumentException($"SQL predicate in '{fieldName}' contains invalid or unsafe SQL syntax: {ex.Message}", fieldName, ex);
+        }
+        catch (Exception ex) when (ex is not ArgumentException)
+        {
+            throw new ArgumentException($"SQL predicate in '{fieldName}' could not be parsed: {ex.Message}", fieldName, ex);
         }
     }
 }

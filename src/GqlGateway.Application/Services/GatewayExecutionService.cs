@@ -316,6 +316,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
 
         // Explicit execution signaling: Pushdown is considered complete only if the executor explicitly marked it.
         bool rlsPushdownAlreadyOccurred = execContext.Items.TryGetValue("RlsPushdownExecuted", out var pushed) && pushed is true;
+        bool inDbMaskingAlreadyOccurred = execContext.Items.TryGetValue("InDbColumnMaskingExecuted", out var maskedInDb) && maskedInDb is true;
 
         if (!rlsPushdownAlreadyOccurred && !string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
         {
@@ -346,8 +347,11 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
                 {
                     if (access == ColumnAccessLevel.Mask && _options?.IsColumnMaskingDisabled != true)
                     {
-                        var rule = metadata.ColumnMaskingRules.TryGetValue(col.ColumnName, out var mRule) ? mRule : new MaskingRule { RuleType = "REDACT" };
-                        rawVal = _maskingProvider.MaskValue(col.ColumnName, rawVal, rule);
+                        if (!inDbMaskingAlreadyOccurred)
+                        {
+                            var rule = metadata.ColumnMaskingRules.TryGetValue(col.ColumnName, out var mRule) ? mRule : new MaskingRule { RuleType = "REDACT" };
+                            rawVal = _maskingProvider.MaskValue(col.ColumnName, rawVal, rule);
+                        }
                     }
                     dict[col.ColumnName] = rawVal;
                 }

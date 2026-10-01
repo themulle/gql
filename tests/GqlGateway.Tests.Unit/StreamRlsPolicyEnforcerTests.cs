@@ -207,4 +207,114 @@ public sealed class StreamRlsPolicyEnforcerTests
         result.MaskedPayload["invoice_id"].ShouldBe(999);
         result.MaskedPayload["amount"].ShouldBe(5000.0);
     }
+
+    [Fact]
+    public async Task EvaluateAndMaskAsync_InListFilter_MatchesAndAllows()
+    {
+        var table = new TableIdentifier("sales", "crm", "orders");
+        var cdcEvent = new CdcEvent(
+            EventId: "evt-5",
+            Table: table,
+            Operation: CdcOperation.Insert,
+            TenantId: "tenant-a",
+            Before: null,
+            After: new Dictionary<string, object?> { ["id"] = 10, ["status"] = "PENDING", ["amount"] = 250 },
+            Timestamp: DateTimeOffset.UtcNow
+        );
+
+        var subscriber = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", "tenant-a"),
+            new Claim(ClaimTypes.PrimarySid, "S-1-5-CLERK")
+        }));
+
+        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
+                Table: table,
+                IsAllowed: true,
+                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+                CombinedRowFilterSql: "status IN ('PENDING', 'PROCESSING') AND amount >= 100",
+                DeniedReasons: Array.Empty<string>(),
+                HasUnconstrainedColumnAllow: true
+            )));
+
+        var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
+
+        result.IsAllowed.ShouldBeTrue();
+        result.MaskedPayload.ShouldNotBeNull();
+        result.MaskedPayload["id"].ShouldBe(10);
+    }
+
+    [Fact]
+    public async Task EvaluateAndMaskAsync_GreaterThanFilter_FiltersOutWhenNotMet()
+    {
+        var table = new TableIdentifier("sales", "crm", "orders");
+        var cdcEvent = new CdcEvent(
+            EventId: "evt-6",
+            Table: table,
+            Operation: CdcOperation.Insert,
+            TenantId: "tenant-a",
+            Before: null,
+            After: new Dictionary<string, object?> { ["id"] = 11, ["status"] = "PENDING", ["amount"] = 50 },
+            Timestamp: DateTimeOffset.UtcNow
+        );
+
+        var subscriber = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", "tenant-a"),
+            new Claim(ClaimTypes.PrimarySid, "S-1-5-CLERK")
+        }));
+
+        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
+                Table: table,
+                IsAllowed: true,
+                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+                CombinedRowFilterSql: "amount >= 100",
+                DeniedReasons: Array.Empty<string>(),
+                HasUnconstrainedColumnAllow: true
+            )));
+
+        var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
+
+        result.IsAllowed.ShouldBeFalse();
+        result.FilterReason.ShouldBe("Filtered by row-level security");
+    }
+
+    [Fact]
+    public async Task EvaluateAndMaskAsync_ComplexBooleanAndLikeFilter_EvaluatesAccurately()
+    {
+        var table = new TableIdentifier("sales", "crm", "customers");
+        var cdcEvent = new CdcEvent(
+            EventId: "evt-7",
+            Table: table,
+            Operation: CdcOperation.Insert,
+            TenantId: "tenant-a",
+            Before: null,
+            After: new Dictionary<string, object?> { ["id"] = 12, ["email"] = "vip.client@enterprise.com", ["level"] = "GOLD" },
+            Timestamp: DateTimeOffset.UtcNow
+        );
+
+        var subscriber = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tenant_id", "tenant-a"),
+            new Claim(ClaimTypes.PrimarySid, "S-1-5-MANAGER")
+        }));
+
+        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
+            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
+                Table: table,
+                IsAllowed: true,
+                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+                CombinedRowFilterSql: "(level = 'GOLD' OR level = 'PLATINUM') AND email LIKE '%.client@%'",
+                DeniedReasons: Array.Empty<string>(),
+                HasUnconstrainedColumnAllow: true
+            )));
+
+        var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
+
+        result.IsAllowed.ShouldBeTrue();
+        result.MaskedPayload.ShouldNotBeNull();
+        result.MaskedPayload["id"].ShouldBe(12);
+    }
 }
