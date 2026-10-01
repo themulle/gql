@@ -28,10 +28,12 @@ public static class WebSqlEndpoints
     public static IEndpointRouteBuilder MapWebSqlEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/api/v1/sql", HandleWebSqlRequest)
-           .WithName("ExecuteGovernedWebSqlV1");
+           .WithName("ExecuteGovernedWebSqlV1")
+           .RequireAuthorization();
 
         app.MapPost("/api/sql", HandleWebSqlRequest)
-           .WithName("ExecuteGovernedWebSql");
+           .WithName("ExecuteGovernedWebSql")
+           .RequireAuthorization();
 
         return app;
     }

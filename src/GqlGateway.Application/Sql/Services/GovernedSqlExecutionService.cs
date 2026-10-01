@@ -169,6 +169,7 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
 
                 if (!string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
                 {
+                    SqlSecurityValidator.ValidatePredicateSql(decision.CombinedRowFilterSql, "CombinedRowFilterSql");
                     rlsFilter = decision.CombinedRowFilterSql;
                 }
 

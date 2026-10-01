@@ -199,4 +199,18 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
         doc.RootElement.GetProperty("columns").GetArrayLength().ShouldBeGreaterThan(0);
         doc.RootElement.GetProperty("rows").ValueKind.ShouldBe(JsonValueKind.Array);
     }
+
+    [Fact]
+    public async Task WebSql_UnauthenticatedRequest_WhenAnonymousDisabled_Returns401()
+    {
+        var secureFactory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Gateway:Insecure:danger_allow_anonymous_access", "false");
+        });
+
+        var client = secureFactory.CreateClient();
+        var payload = new { sql = "SELECT 1" };
+        var response = await client.PostAsJsonAsync("/api/v1/sql", payload);
+        response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
 }
