@@ -28,6 +28,19 @@ public sealed class SqlConnectionFactory : ISqlConnectionFactory
         try
         {
             await connection.OpenAsync(ct).ConfigureAwait(false);
+
+            if (connection is SqliteConnection sqliteConn)
+            {
+                sqliteConn.CreateFunction("gateway_hmac_sha256", (string? val, string? salt) =>
+                {
+                    if (val == null) return null;
+                    byte[] key = System.Text.Encoding.UTF8.GetBytes(salt ?? string.Empty);
+                    byte[] data = System.Text.Encoding.UTF8.GetBytes(val);
+                    byte[] hash = System.Security.Cryptography.HMACSHA256.HashData(key, data);
+                    return "hmac_" + Convert.ToHexStringLower(hash);
+                }, isDeterministic: true);
+            }
+
             return connection;
         }
         catch

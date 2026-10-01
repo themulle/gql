@@ -289,7 +289,45 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
 
         string secured = await sqlService.RewriteSqlAsync(validJoinQuery, user, new TenantId("tenant_test"));
 
-        secured.ShouldContain("hmac_");
+        secured.ShouldContain("gateway_hmac_sha256");
         secured.ShouldContain("DEV_INSECURE_TEST_KEY_ONLY");
+    }
+
+    [Fact]
+    public async Task WebSql_JoinOnCasbinMaskedColumn_WithoutHmac_IsRejectedWithSecurityException()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var tableRepo = scope.ServiceProvider.GetRequiredService<ITableMetadataRepository>();
+        var sqlService = scope.ServiceProvider.GetRequiredService<IGovernedSqlExecutionService>();
+
+        // Table metadata has NO static ColumnMaskingRules, but sensitive column marked
+        var tableId = new TableIdentifier("default", "public", "hr_employees");
+        await tableRepo.UpsertTableMetadataAsync(new TableMetadata
+        {
+            Table = new Table { Id = Guid.NewGuid(), DisplayName = "hr_employees", TableName = "hr_employees" },
+            Identifier = tableId,
+            Columns = new List<TableColumn>
+            {
+                new() { ColumnName = "id", DataType = "integer" },
+                new() { ColumnName = "ssn", DataType = "varchar", IsSensitive = true },
+                new() { ColumnName = "tenant_id", DataType = "varchar" }
+            }
+        });
+
+        var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, "usr_test"),
+            new Claim("tenant_id", "tenant_test")
+        }, "TestAuth"));
+
+        string joinQuery = "SELECT e.id, p.id FROM hr_employees e JOIN payroll p ON e.ssn = p.ssn";
+
+        var ex = await Should.ThrowAsync<System.Security.SecurityException>(async () =>
+        {
+            await sqlService.RewriteSqlAsync(joinQuery, user, new TenantId("tenant_test"));
+        });
+
+        ex.Message.ShouldContain("Security Policy Violation: Column 'ssn'");
+        ex.Message.ShouldContain("protected by static redaction");
     }
 }

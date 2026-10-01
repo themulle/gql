@@ -139,26 +139,6 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 var colList = tableMeta.Columns.Select(c => c.ColumnName).ToList();
                 tableColumnsMap[target.TableName] = colList;
                 tableColumnsMap[target.FullName] = colList;
-
-                // SEC-JOIN-01: Zero-Trust Guardrail: Check if any statically redacted column is used as a JOIN predicate
-                if (metadata.JoinConditionColumns != null && metadata.JoinConditionColumns.Count > 0)
-                {
-                    foreach (var col in tableMeta.Columns)
-                    {
-                        if (metadata.JoinConditionColumns.Contains(col.ColumnName))
-                        {
-                            if (tableMeta.ColumnMaskingRules.TryGetValue(col.ColumnName, out var rule))
-                            {
-                                var rType = rule.RuleType?.ToUpperInvariant() ?? "REDACT";
-                                if (rType is "REDACT" or "NULLIFY" or "REGEX")
-                                {
-                                    throw new SecurityException(
-                                        $"Security Policy Violation: Column '{col.ColumnName}' in table '{target.FullName}' is protected by static redaction ('{rule.RuleType}') and cannot be used in a relational JOIN predicate. Joining on static constants produces false Cartesian cross-products and enables side-channel join inference attacks. Configure deterministic HMAC pseudonymization (RuleType = 'HMAC') or join on surrogate foreign keys (e.g. ID).");
-                                }
-                            }
-                        }
-                    }
-                }
             }
 
             // ABAC Policy Evaluation
@@ -218,6 +198,23 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                     else if (lvl == ColumnAccessLevel.Mask)
                     {
                         columnMasks[col.ColumnName] = GetMaskExpressionForRule(col.ColumnName, tableMeta, hmacSalt);
+                    }
+
+                    // SEC-JOIN-01: Zero-Trust Guardrail: Check if any statically redacted column is used as a JOIN predicate
+                    if (metadata.JoinConditionColumns != null && metadata.JoinConditionColumns.Contains(col.ColumnName))
+                    {
+                        bool isHmac = tableMeta.ColumnMaskingRules.TryGetValue(col.ColumnName, out var rule) &&
+                                      (rule.RuleType?.ToUpperInvariant() is "HMAC" or "HMAC_SHA256" or "HASH");
+
+                        if (!isHmac && (lvl == ColumnAccessLevel.Mask || lvl == ColumnAccessLevel.Deny || tableMeta.ColumnMaskingRules.ContainsKey(col.ColumnName)))
+                        {
+                            string ruleDesc = tableMeta.ColumnMaskingRules.TryGetValue(col.ColumnName, out var mRule)
+                                ? mRule.RuleType ?? "REDACT"
+                                : (lvl == ColumnAccessLevel.Deny ? "DENY" : "ABAC_MASK");
+
+                            throw new SecurityException(
+                                $"Security Policy Violation: Column '{col.ColumnName}' in table '{target.FullName}' is protected by static redaction ('{ruleDesc}') and cannot be used in a relational JOIN predicate. Joining on static constants produces false Cartesian cross-products and enables side-channel join inference attacks. Configure deterministic HMAC pseudonymization (RuleType = 'HMAC') or join on surrogate foreign keys (e.g. ID).");
+                        }
                     }
                 }
             }
@@ -445,10 +442,14 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         string safeSalt = salt.Replace("'", "''");
         return dialect switch
         {
-            DatabaseDialect.PostgreSql => $"ENCODE(DIGEST(CAST({columnName} AS TEXT) || '{safeSalt}', 'sha256'), 'hex')",
-            DatabaseDialect.SqlServer => $"CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST({columnName} AS VARCHAR(MAX)) + '{safeSalt}'), 2)",
-            DatabaseDialect.Sqlite => $"'hmac_' || HEX(SUBSTR({columnName} || '{safeSalt}', 1, 16))",
-            _ => $"'hmac_' || HEX(SUBSTR({columnName} || '{safeSalt}', 1, 16))"
+            DatabaseDialect.PostgreSql =>
+                $"ENCODE(DIGEST(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT) || '{safeSalt}', 'sha256'), 'hex')",
+            DatabaseDialect.SqlServer =>
+                $"CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST([{columnName.Replace("]", "]]")}] AS VARCHAR(MAX)) + '{safeSalt}'), 2)",
+            DatabaseDialect.Sqlite =>
+                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), '{safeSalt}')",
+            _ =>
+                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), '{safeSalt}')"
         };
     }
 
