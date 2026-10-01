@@ -69,6 +69,10 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Principal);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.ForeignKeyColumn);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.PrimaryKeyColumn);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.TargetRelationPropertyName);
 
         // 1. Resolve metadata for both tables
         var primaryMeta = await _metadataRepository.GetTableMetadataAsync(request.PrimaryTable, ct).ConfigureAwait(false)
@@ -76,6 +80,20 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
 
         var joinedMeta = await _metadataRepository.GetTableMetadataAsync(request.JoinedTable, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Beigetretene Tabelle '{request.JoinedTable}' wurde im Katalog nicht gefunden.");
+
+        // SEC-CDJ-06: Strict schema validation - prevent identifier injection and verify column existence in catalog
+        if (!primaryMeta.HasColumn(request.ForeignKeyColumn))
+        {
+            throw new ArgumentException($"Fremdschlüsselspalte '{request.ForeignKeyColumn}' existiert nicht in Tabelle '{request.PrimaryTable}'.", nameof(request));
+        }
+
+        if (!joinedMeta.HasColumn(request.PrimaryKeyColumn))
+        {
+            throw new ArgumentException($"Primärschlüsselspalte '{request.PrimaryKeyColumn}' existiert nicht in Tabelle '{request.JoinedTable}'.", nameof(request));
+        }
+
+        int clampedLimit = Math.Clamp(request.Limit, 1, 5000);
+        int clampedOffset = Math.Max(0, request.Offset);
 
         // 2. Resolve connectors
         if (!_connectorRegistry.TryGetConnectorForTable(request.PrimaryTable, out var primaryConnector) || primaryConnector == null)
@@ -126,12 +144,12 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
             ProjectedColumns: primaryProjected,
             Arguments: new Dictionary<string, object?>
             {
-                ["limit"] = request.Limit,
-                ["offset"] = request.Offset
+                ["limit"] = clampedLimit,
+                ["offset"] = clampedOffset
             },
             PushdownFilterSql: primaryDecision.CombinedRowFilterSql,
-            Limit: request.Limit,
-            Offset: request.Offset,
+            Limit: clampedLimit,
+            Offset: clampedOffset,
             RequestHeaders: request.RequestHeaders);
 
         primarySession.Items["TableMetadata"] = primaryMeta;

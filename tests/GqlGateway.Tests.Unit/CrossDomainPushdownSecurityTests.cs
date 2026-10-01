@@ -179,7 +179,10 @@ public class CrossDomainPushdownSecurityTests
         var invoicesTable = new TableIdentifier("finance", "dbo", "Invoices");
         var customersTable = new TableIdentifier("crm", "dbo", "Customers");
 
-        var invoicesMeta = CreateTableMetadata("finance", "dbo", "Invoices", [new TableColumn { ColumnName = "Id", DataType = "int" }]);
+        var invoicesMeta = CreateTableMetadata("finance", "dbo", "Invoices", [
+            new TableColumn { ColumnName = "Id", DataType = "int" },
+            new TableColumn { ColumnName = "CustomerId", DataType = "int" }
+        ]);
         var customersMeta = CreateTableMetadata("crm", "dbo", "Customers", [new TableColumn { ColumnName = "Id", DataType = "int" }]);
 
         var registry = new InMemoryConnectorRegistry();
@@ -332,6 +335,64 @@ public class CrossDomainPushdownSecurityTests
         var primaryRow = result.Rows[0];
         primaryRow["PrimaryIban"].ShouldBe("###MASKED###");
         primaryRow["Customer"].ShouldNotBeNull();
+    }
+
+    [Fact]
+    public async Task CrossDomainJoin_InvalidOrMaliciousColumns_ThrowsArgumentException()
+    {
+        // SEC-CDJ-06: Identifier injection defense & catalog column validation
+        var invoicesTable = new TableIdentifier("finance", "dbo", "Invoices");
+        var customersTable = new TableIdentifier("crm", "dbo", "Customers");
+
+        var invoicesMeta = CreateTableMetadata("finance", "dbo", "Invoices", [
+            new TableColumn { ColumnName = "Id", DataType = "int" }
+        ]);
+
+        var customersMeta = CreateTableMetadata("crm", "dbo", "Customers", [
+            new TableColumn { ColumnName = "Id", DataType = "int" }
+        ]);
+
+        var registry = new InMemoryConnectorRegistry();
+        registry.RegisterConnector("finance", new LegacyDataSourceExecutorAdapter(new MockDataExecutor([]), "finance"));
+        registry.RegisterConnector("crm", new LegacyDataSourceExecutorAdapter(new MockDataExecutor([]), "crm"));
+
+        var metaRepo = new MockMetadataRepo([invoicesMeta, customersMeta]);
+        var accessResolver = new MockAccessResolver(allowAll: true);
+        var maskingProvider = new MockMaskingProvider();
+
+        var joinEngine = new CrossDomainJoinEngine(registry, metaRepo, accessResolver, maskingProvider);
+
+        // Test non-existent / malicious foreign key column
+        var req1 = new CrossDomainJoinRequest(
+            PrimaryTable: invoicesTable,
+            JoinedTable: customersTable,
+            ForeignKeyColumn: "NonExistentFk; DROP TABLE Users;--",
+            PrimaryKeyColumn: "Id",
+            TargetRelationPropertyName: "Customer",
+            Principal: CreatePrincipal(),
+            Tenant: null);
+
+        var ex1 = await Should.ThrowAsync<ArgumentException>(async () =>
+        {
+            await joinEngine.ExecuteJoinAsync(req1);
+        });
+        ex1.Message.ShouldContain("Fremdschlüsselspalte");
+
+        // Test non-existent / malicious primary key column
+        var req2 = new CrossDomainJoinRequest(
+            PrimaryTable: invoicesTable,
+            JoinedTable: customersTable,
+            ForeignKeyColumn: "Id",
+            PrimaryKeyColumn: "MaliciousPk' OR 1=1--",
+            TargetRelationPropertyName: "Customer",
+            Principal: CreatePrincipal(),
+            Tenant: null);
+
+        var ex2 = await Should.ThrowAsync<ArgumentException>(async () =>
+        {
+            await joinEngine.ExecuteJoinAsync(req2);
+        });
+        ex2.Message.ShouldContain("Primärschlüsselspalte");
     }
 
     private sealed class MockDataExecutor : IDataSourceExecutor

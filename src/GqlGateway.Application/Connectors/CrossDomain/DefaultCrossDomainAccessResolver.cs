@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Exceptions;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
@@ -50,6 +51,19 @@ public sealed class DefaultCrossDomainAccessResolver : ICrossDomainAccessResolve
         if (_options?.IsConsentBypassed == true)
         {
             return TableAccessDecision.Allowed(table, new Dictionary<string, ColumnAccessLevel>(), rowFilterSql: null, hasUnconstrainedColumnAllow: true);
+        }
+
+        if (principal.Identity?.IsAuthenticated == true)
+        {
+            var userSidNullable = principal.GetUserSid();
+            if (userSidNullable == null)
+            {
+                throw new GatewayUnauthorizedException("Keine gültige Benutzer-SID im Authentifizierungstoken vorhanden.");
+            }
+        }
+        else if (_options?.IsConsentBypassed != true)
+        {
+            throw new GatewayUnauthorizedException("Authentication is required to query tables.");
         }
 
         var userSid = principal.GetUserSid() ?? new Sid("anonymous");
