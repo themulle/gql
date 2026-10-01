@@ -1,3 +1,4 @@
+using System;
 using GqlGateway.Api.Extensions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -5,11 +6,18 @@ using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure Kestrel limits
+// Configure Kestrel limits & high-throughput concurrency settings (F-PERF / graphql-bench)
 builder.WebHost.ConfigureKestrel(options =>
 {
     // Allow up to 100 MB for streaming dbt manifests and large audit/governance payloads
     options.Limits.MaxRequestBodySize = 100 * 1024 * 1024;
+    options.AddServerHeader = false;
+    options.Limits.MaxConcurrentConnections = null;
+    options.Limits.MaxConcurrentUpgradedConnections = null;
+    options.Limits.Http2.MaxStreamsPerConnection = 1024;
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(2);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(10);
+    options.AllowSynchronousIO = false;
 });
 
 // 1. Serilog Setup

@@ -481,8 +481,9 @@ public static class GatewayServiceCollectionExtensions
         // Canonical System Metadata & Monitoring (F-API-07)
         services.AddSingleton<IGatewaySystemMetricsService, GatewaySystemMetricsService>();
 
-        // Single-Query AST Compiler (F-PERF-09)
+        // Single-Query AST Compiler & Plan Cache (F-PERF-09 / graphql-bench)
         services.AddSingleton<ISingleQueryAstCompiler, SingleQueryAstCompiler>();
+        services.AddSingleton<ICompiledSqlQueryPlanCache, CompiledSqlQueryPlanCache>();
 
         // Human-in-the-Loop Step-Up Approval (F-AI-05)
         services.AddSingleton<IHitLStepUpApprovalService, HitLStepUpApprovalService>();
