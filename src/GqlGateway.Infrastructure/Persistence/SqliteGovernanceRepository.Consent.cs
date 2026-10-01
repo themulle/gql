@@ -616,6 +616,25 @@ public partial class SqliteGovernanceRepository
             await IncrementTableEpochInternalAsync(req.TableIdentifier, tx, ct);
             await tx.CommitAsync(ct);
 
+            var auditEntry = new AuditLogEntry
+            {
+                TenantId = req.TenantId,
+                EventType = "CONSENT_GRANTED",
+                ActorSid = req.RequesterSid,
+                TargetTable = req.TableIdentifier.ToString(),
+                Decision = "APPROVED",
+                TraceId = Guid.NewGuid().ToString("N"),
+                DetailsJson = JsonSerializer.Serialize(new
+                {
+                    ConsentId = consentId,
+                    RequestId = req.Id,
+                    GranteeType = req.RequestedGranteeType.ToString(),
+                    GranteeRef = req.RequestedGranteeRef,
+                    ValidTo = req.RequestedValidTo
+                })
+            };
+            await RecordAuditEventInternalAsync(auditEntry, ct);
+
             await _epochValidationService.InvalidateEpochAsync(req.TableIdentifier, ct);
         }
         finally
@@ -982,10 +1001,27 @@ public partial class SqliteGovernanceRepository
                 await filterCmd.ExecuteNonQueryAsync(ct);
             }
 
-            // Increment policy epoch within transaction
             await IncrementTableEpochInternalAsync(consent.TableIdentifier, tx, ct);
-
             await tx.CommitAsync(ct);
+
+            var auditEntry = new AuditLogEntry
+            {
+                TenantId = consent.TenantId,
+                EventType = "CONSENT_GRANTED",
+                ActorSid = consent.GranteeSid ?? new Sid("SYSTEM"),
+                TargetTable = consent.TableIdentifier.ToString(),
+                Decision = "GRANTED",
+                TraceId = Guid.NewGuid().ToString("N"),
+                DetailsJson = JsonSerializer.Serialize(new
+                {
+                    ConsentId = consent.Id,
+                    GranteeType = consent.GranteeType.ToString(),
+                    GranteeSid = consent.GranteeSid?.Value,
+                    ValidFrom = consent.ValidFrom,
+                    ValidTo = consent.ValidTo
+                })
+            };
+            await RecordAuditEventInternalAsync(auditEntry, ct);
 
             // Invalidate cache after successful commit
             await _epochValidationService.InvalidateEpochAsync(consent.TableIdentifier, ct);

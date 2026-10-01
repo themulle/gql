@@ -252,6 +252,13 @@ public static class GatewayApplicationBuilderExtensions
         app.MapExportEndpoints();
         app.MapHitLEndpoints();
         app.MapWebSqlEndpoints();
+        app.MapSqlEndpoints();
+
+        if (gatewayOptions.SqlEndpoints.Enabled)
+        {
+            var loader = app.Services.GetService<GqlGateway.Application.SqlEndpoints.Services.SqlEndpointLoader>();
+            loader?.LoadFromDirectory(gatewayOptions.SqlEndpoints.Directory, gatewayOptions.SqlEndpoints.EnableHotReload);
+        }
 
         return app;
     }

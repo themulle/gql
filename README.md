@@ -63,6 +63,27 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - **Live-Telemetrie in dbt Exposures**: Spiegelt reale GraphQL-Abfrage-Frequenzen und Consumer-Metadaten zurück in dbt `exposure`-Deklarationen.
   - **Omnichannel Documentation Passthrough (`F-DOC-01`)**: Lossless ingestion of dbt markdown doc-blocks and OpenMetadata business definitions into GraphQL Web UI (Banana Cake Pop), MCP AI tool signatures, Dynamic OpenAPI 3.1 Swagger, and OData CSDL `$metadata` tooltips.
 
+- **Declarative SQL-to-API Engine & Auto-Generated OpenAPI 3.0 / Swagger (`F-SQL-01`)**:
+  - **Zero-Code SQL Endpoints**: Instantly expose governed REST endpoints directly from version-controlled `.sql` files (`queries/*.sql`) via `GET` and `POST /api/v1/queries/{name}`.
+  - **Universal Parameter Syntax & AST Token Normalization**: Supports native database parameter syntax (`@param`) as well as templating syntax (`{{param}}`) with automatic token extraction, type inference, and AST normalization.
+  - **Auto-Generated OpenAPI 3.0 Specification**: Dynamically generates `/api/v1/queries/openapi.json` from parsed SQL metadata, doc-blocks (`-- @name`, `-- @summary`, `-- @param`), and query projections for immediate interactive testing in Swagger UI.
+  - **Zero-Trust AST Injection**: Automatically injects tenant isolation, Casbin ABAC, Row-Level Security (`RlsListener`), and dynamic column masking directly into the generated SQL execution plan.
+  - **Dual Ingestion Mode**: Hot-reloading via `FileSystemWatcher` (Option A) and automatic model sync from dbt pipelines (Option B).
+
+- **Governed WebSQL Engine (`F-DATA-02`)**:
+  - **Secure HTTP-based SQL Execution**: Execute ad-hoc SQL queries over HTTP (`POST /api/v1/sql`) modeled after Trino/Presto, completely eliminating the need for exposed database ports (1433/5432) or uncontrolled database logins.
+  - **AST-Level Security Linter & Rewriter**: Uses the high-performance `TrinoSqlEngine` / ANTLR4 parser to enforce strict read-only semantics (`SELECT` only), prevent multi-statement injection (`;`), block system functions (`@@`, comments), and enforce maximum result pagination limits.
+  - **Deep AST Row-Level Security Pushdown**: Injects Casbin ABAC rules and correlated subquery filters (`IN`, `EXISTS`) transparently into the `WHERE` tree before the query hits the database.
+
+- **Enterprise Governance Mutations & 4-Eyes Segregation of Duties**:
+  - **Fail-Closed Mutation Suite**: Granular GraphQL mutations (`requestConsent`, `approveConsent`, `rejectConsent`, `revokeConsent`, `recertifyConsent`) requiring explicit tenant authorization.
+  - **Anti-Self-Approval (Four-Eyes Principle / SoD)**: Data owners cannot approve their own requests; approvals strictly reject duplicate approval attempts.
+  - **Idempotency & Replay Protection**: User-scoped 24-hour distributed idempotency keys (`RedisIdempotencyStore`) prevent double-submission of approval requests.
+
+- **WORM Storage Cryptographic Audit Logging for Consents**:
+  - **Full Lifecycle Audit Sealing**: Every consent grant (`CONSENT_GRANTED`), revocation (`CONSENT_REVOKED`), and recertification (`CONSENT_RECERTIFIED_AND_EXTENDED`) is cryptographically sealed in the immutable HMAC-SHA256 hash chain.
+  - **WORM-Drive Export**: Seamless automated export to WORM storage (S3 Object Lock Compliance Mode / Read-Only filesystem) guaranteeing compliance with SEC Rule 17a-4 and GDPR audit standards.
+
 - **Distributed Multi-Instance Clustering (Redis)**:
   - **Redis Pub/Sub Event Bus (`RedisEventBus`)**: Real-time cross-pod propagation of catalog and policy epoch increments, invalidating distributed caches across all cluster nodes simultaneously.
   - **Resilient Distributed Token-Bucket Rate Limiting (`RedisRateLimiterService`)**: Sliding-window IP rate limiting and atomic token-bucket consumption per user SID across multi-node Kubernetes deployments with **transparent automatic fallback** to local `InMemoryRateLimiterService` (featuring lock-free atomic `Interlocked` counters) upon Redis cluster degradation.
@@ -197,12 +218,14 @@ dotnet build /root/gql_extensions/GqlExtensions.slnx -c Release
 ```bash
 dotnet test GqlGateway.sln -c Release
 dotnet test /root/gql_extensions/GqlExtensions.slnx -c Release
+dotnet test /root/gql_sqlparser/TrinoSqlEngine.csproj -c Release
 ```
-Currently passes **735 / 735 tests (100% green)** across all test suites:
-- **589 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure, MCP Guardrails, Differential Privacy)
-- **5 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application)
-- **98 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
+Currently passes **1,666 / 1,666 tests (100% green)** across all test suites:
+- **790 TrinoSqlEngine & WebSQL Parser Tests** (ANTLR4 parsing, AST statement validation, parameter extraction, RLS AST-injection, type inference)
+- **722 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Declarative SQL-to-API Execution, Casbin ABAC Hot-Reload, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure, MCP Guardrails, Differential Privacy)
+- **106 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Declarative SQL Endpoints & OpenAPI 3.0 Generation, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
 - **43 Extensions Tests** (Apache Iceberg v2 Lakehouse connector & partition pruning, Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion & contract validation, ServiceNow/Jira webhooks, OData)
+- **5 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application)
 
 ### 3. Run Gateway via Docker Container (Fastest / Getting Started)
 
@@ -218,9 +241,12 @@ docker compose up -d
 
 #### Sofort verfügbare Endpunkte auf Port 8080:
 - **Banana Cake Pop GraphQL IDE**: [`http://localhost:8080/graphql`](http://localhost:8080/graphql)
-- **Swagger UI (REST / OpenAPI 3.1 Explorer)**: [`http://localhost:8080/docs`](http://localhost:8080/docs)
+- **Swagger UI (REST / OpenAPI Explorer)**: [`http://localhost:8080/docs`](http://localhost:8080/docs)
+- **Declarative SQL OpenAPI 3.0 Spezifikation**: [`http://localhost:8080/api/v1/queries/openapi.json`](http://localhost:8080/api/v1/queries/openapi.json)
+- **Declarative SQL-to-API Endpoints**: `GET` / `POST http://localhost:8080/api/v1/queries/{name}`
+- **Governed WebSQL Ausführung**: `POST http://localhost:8080/api/v1/sql`
 - **OData v4 Datenabruf (REST / Excel / Power BI)**: `GET http://localhost:8080/odata/v4/{domain}/{schema}/{table}`
-- **OpenAPI 3.1 Spezifikation**: [`http://localhost:8080/odata/v4/$openapi`](http://localhost:8080/odata/v4/$openapi)
+- **OpenAPI 3.1 Spezifikation (OData)**: [`http://localhost:8080/odata/v4/$openapi`](http://localhost:8080/odata/v4/$openapi)
 - **MCP (Model Context Protocol für KI-Agenten)**: `POST http://localhost:8080/mcp`
 - **Health Checks**: [`http://localhost:8080/health/live`](http://localhost:8080/health/live) & [`/health/ready`](http://localhost:8080/health/ready)
 

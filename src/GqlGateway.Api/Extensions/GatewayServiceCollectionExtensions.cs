@@ -371,6 +371,9 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IDataSourceExecutor, DeclarativeHttpDataSourceExecutor>();
         services.AddSingleton<IDataSourceExecutor, PluginHttpDataSourceExecutor>();
         services.AddScoped<GqlGateway.Application.Sql.Interfaces.IGovernedSqlExecutionService, GqlGateway.Application.Sql.Services.GovernedSqlExecutionService>();
+        services.AddSingleton<GqlGateway.Application.SqlEndpoints.Interfaces.ISqlEndpointRegistry, GqlGateway.Application.SqlEndpoints.Services.InMemorySqlEndpointRegistry>();
+        services.AddSingleton<GqlGateway.Application.SqlEndpoints.Services.SqlEndpointLoader>();
+        services.AddScoped<GqlGateway.Application.SqlEndpoints.Interfaces.ISqlEndpointExecutionService, GqlGateway.Application.SqlEndpoints.Services.SqlEndpointExecutionService>();
 
         // Casbin ABAC Engine
         services.AddSingleton<IPolicyEnforcementService, CasbinEnforcementService>();

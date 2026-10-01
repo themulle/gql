@@ -260,4 +260,12 @@ Als Product Manager treibst du folgende Kerninitiativen voran:
      - *Precision & Scale (`F-AI-03`, `F-AI-05`, `F-AI-07`)*: Dynamic Few-Shot Golden Queries aus Auditlogs, Human-in-the-Loop Step-Up Approvals via MCP und Vektor-unterstütztes Dynamic Tool Pruning für 1.000+ Modelle.
 5. **Ingress/Egress Extensibility SDK (Dual-Mode: C# In-Process DLLs & gRPC Coprocess)**:
    - Bereitstellung einer Plugin-Architektur für Custom-Middlewares (Ingress-Auth, Egress-Masking, Custom-Audit-Sinks) sowohl in-process als C#-DLL/NuGet als auch out-of-process per standardisiertem gRPC-Contract.
+6. **Declarative SQL-to-API Engine mit Zero-Trust Governance & Auto-Swagger (`F-SQL-01`)**:
+   - Bereitstellung typisierter REST-, GraphQL- und MCP-Endpunkte direkt aus `.sql`-Dateien mit `@parameter`-Syntax.
+   - *Automatisches OpenAPI / Swagger*: Generiert `/api/v1/queries/openapi.json` vollautomatisch aus SQL-Projektionen und Header-Kommentaren (`-- @name`, `-- @summary`, `-- @param`).
+   - *Wettbewerbsvorteil gegenüber Hasura Native Queries & PostgREST*:
+     - Verwendet universelle `@parameter`-Syntax statt proprietärem `{{param}}` (keine Syntaxfehler in DB-Tools wie DBeaver/DataGrip).
+     - Webt Casbin-ABAC, RLS und Spaltenmaskierung per AST-Rewriter vollautomatisch in jedes Statement ein, statt Entwickler zur manuellen Rechteverdrahtung zu zwingen.
+     - Dual-Mode Ingestion: Option A (Hot-Reload aus Dateisystem) und Option B (automatisches Schreiben durch dbt-Manifest Ingestion).
+     - Multi-Dialekt- und Lakehouse-Unterstützung (Trino, DuckDB, Postgres, SQL Server, Snowflake).
 

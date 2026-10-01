@@ -36,6 +36,7 @@ public sealed class GatewayOptions
     [Required] public HitLStepUpOptions HitLStepUp { get; init; } = new();
     [Required] public SingleQueryPushdownOptions SingleQueryPushdown { get; init; } = new();
     [Required] public WebSqlOptions WebSql { get; init; } = new();
+    [Required] public SqlEndpointsOptions SqlEndpoints { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -797,5 +798,11 @@ public sealed class WebSqlOptions
     public bool danger_bypass_sql_governance { get; init; } = false;
 }
 
-
-
+public sealed class SqlEndpointsOptions
+{
+    public bool Enabled { get; init; } = true;
+    public string Directory { get; init; } = "queries";
+    public bool EnableHotReload { get; init; } = true;
+    public bool AutoSyncFromDbt { get; init; } = true;
+    public int MaxQueryTimeoutSeconds { get; init; } = 60;
+}
