@@ -146,13 +146,22 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
 
         if (primaryRows.Count == 0 || !joinedDecision.IsAllowed)
         {
-            // If primary has no rows or caller has no consent for joined table (SEC-CDJ-02), return primary rows with null relation
+            // If primary has no rows or caller has no consent for joined table (SEC-CDJ-02), return masked primary rows with null relation
             var sanitizedPrimaryOnly = primaryRows.Select(r =>
             {
-                var dict = new Dictionary<string, object?>(r, StringComparer.OrdinalIgnoreCase)
+                var maskedPrimary = ConnectorRowMasker.MaskRow(r, primaryMeta, primaryDecision, _maskingProvider);
+                var dict = new Dictionary<string, object?>(maskedPrimary, StringComparer.OrdinalIgnoreCase)
                 {
                     [request.TargetRelationPropertyName] = null
                 };
+
+                if (request.PrimaryProjectedColumns != null &&
+                    request.PrimaryProjectedColumns.Count > 0 &&
+                    !request.PrimaryProjectedColumns.Contains(request.ForeignKeyColumn, StringComparer.OrdinalIgnoreCase))
+                {
+                    dict.Remove(request.ForeignKeyColumn);
+                }
+
                 return (IReadOnlyDictionary<string, object?>)dict;
             }).ToList();
 
@@ -170,10 +179,19 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
         {
             var noFkRows = primaryRows.Select(r =>
             {
-                var dict = new Dictionary<string, object?>(r, StringComparer.OrdinalIgnoreCase)
+                var maskedPrimary = ConnectorRowMasker.MaskRow(r, primaryMeta, primaryDecision, _maskingProvider);
+                var dict = new Dictionary<string, object?>(maskedPrimary, StringComparer.OrdinalIgnoreCase)
                 {
                     [request.TargetRelationPropertyName] = null
                 };
+
+                if (request.PrimaryProjectedColumns != null &&
+                    request.PrimaryProjectedColumns.Count > 0 &&
+                    !request.PrimaryProjectedColumns.Contains(request.ForeignKeyColumn, StringComparer.OrdinalIgnoreCase))
+                {
+                    dict.Remove(request.ForeignKeyColumn);
+                }
+
                 return (IReadOnlyDictionary<string, object?>)dict;
             }).ToList();
 
@@ -190,9 +208,31 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
             joinedProjected = [.. joinedProjected, request.PrimaryKeyColumn];
         }
 
+        // Bound batch size to prevent Cartesian explosion / memory exhaustion (SEC-CDJ-04)
+        const int maxBatchSize = 1000;
+        var boundedFkValues = fkValues.Take(maxBatchSize).ToList();
+
+        // Build safe SQL IN-clause filter if values are alphanumeric/numeric
+        string? fkFilterSql = null;
+        bool allSafeNumbers = boundedFkValues.All(v => long.TryParse(v.ToString(), out _));
+        if (allSafeNumbers)
+        {
+            fkFilterSql = $"{request.PrimaryKeyColumn} IN ({string.Join(", ", boundedFkValues)})";
+        }
+        else
+        {
+            // Escape string literals safely against SQL injection
+            var sanitizedStrings = boundedFkValues.Select(v => $"'{v.ToString()?.Replace("'", "''")}'");
+            fkFilterSql = $"{request.PrimaryKeyColumn} IN ({string.Join(", ", sanitizedStrings)})";
+        }
+
+        var combinedJoinedFilter = string.IsNullOrWhiteSpace(joinedDecision.CombinedRowFilterSql)
+            ? fkFilterSql
+            : $"({joinedDecision.CombinedRowFilterSql}) AND ({fkFilterSql})";
+
         var joinedArgs = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
         {
-            ["limit"] = Math.Max(fkValues.Count, 500)
+            ["limit"] = Math.Max(boundedFkValues.Count, 500)
         };
 
         var joinedSession = new ConnectorSessionContext(
@@ -201,8 +241,8 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
             AccessDecision: joinedDecision,
             ProjectedColumns: joinedProjected,
             Arguments: joinedArgs,
-            PushdownFilterSql: joinedDecision.CombinedRowFilterSql,
-            Limit: Math.Max(fkValues.Count, 500),
+            PushdownFilterSql: combinedJoinedFilter,
+            Limit: Math.Max(boundedFkValues.Count, 500),
             Offset: 0,
             RequestHeaders: request.RequestHeaders);
 
@@ -244,7 +284,9 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
 
         foreach (var pRow in primaryRows)
         {
-            var dict = new Dictionary<string, object?>(pRow, StringComparer.OrdinalIgnoreCase);
+            // SEC-CDJ-05: Enforce Zero-Trust column masking on primary driving entities
+            var maskedPrimary = ConnectorRowMasker.MaskRow(pRow, primaryMeta, primaryDecision, _maskingProvider);
+            var dict = new Dictionary<string, object?>(maskedPrimary, StringComparer.OrdinalIgnoreCase);
 
             if (pRow.TryGetValue(request.ForeignKeyColumn, out var fkVal) &&
                 fkVal != null &&
@@ -256,6 +298,14 @@ public sealed class CrossDomainJoinEngine : ICrossDomainJoinEngine
             else
             {
                 dict[request.TargetRelationPropertyName] = null;
+            }
+
+            // Strip synthetic foreign key if client did not project it
+            if (request.PrimaryProjectedColumns != null &&
+                request.PrimaryProjectedColumns.Count > 0 &&
+                !request.PrimaryProjectedColumns.Contains(request.ForeignKeyColumn, StringComparer.OrdinalIgnoreCase))
+            {
+                dict.Remove(request.ForeignKeyColumn);
             }
 
             mergedResult.Add(dict);

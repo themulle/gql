@@ -280,6 +280,60 @@ public class CrossDomainPushdownSecurityTests
         streamedRows[1]["Iban"].ShouldBe("###MASKED###");
     }
 
+    [Fact]
+    public async Task CrossDomainJoin_EnforcesZeroTrustMaskingOnPrimaryRows()
+    {
+        // SEC-CDJ-05: Ensure driving primary table has column masking applied!
+        var invoicesTable = new TableIdentifier("finance", "dbo", "Invoices");
+        var customersTable = new TableIdentifier("crm", "dbo", "Customers");
+
+        var invoicesMeta = CreateTableMetadata("finance", "dbo", "Invoices", [
+            new TableColumn { ColumnName = "InvoiceId", DataType = "int" },
+            new TableColumn { ColumnName = "CustomerId", DataType = "int" },
+            new TableColumn { ColumnName = "PrimaryIban", DataType = "varchar", IsSensitive = true }
+        ]);
+
+        var customersMeta = CreateTableMetadata("crm", "dbo", "Customers", [
+            new TableColumn { ColumnName = "CustomerId", DataType = "int" },
+            new TableColumn { ColumnName = "CustomerName", DataType = "varchar" }
+        ]);
+
+        var registry = new InMemoryConnectorRegistry();
+        var invoiceRows = new List<IReadOnlyDictionary<string, object?>>
+        {
+            new Dictionary<string, object?> { ["InvoiceId"] = 1, ["CustomerId"] = 100, ["PrimaryIban"] = "DE1111222233" }
+        };
+        registry.RegisterConnector("finance", new LegacyDataSourceExecutorAdapter(new MockDataExecutor(invoiceRows), "finance"));
+
+        var customerRows = new List<IReadOnlyDictionary<string, object?>>
+        {
+            new Dictionary<string, object?> { ["CustomerId"] = 100, ["CustomerName"] = "Acme Global" }
+        };
+        registry.RegisterConnector("crm", new LegacyDataSourceExecutorAdapter(new MockDataExecutor(customerRows), "crm"));
+
+        var metaRepo = new MockMetadataRepo([invoicesMeta, customersMeta]);
+        var accessResolver = new MockAccessResolver(allowAll: true);
+        var maskingProvider = new MockMaskingProvider();
+
+        var joinEngine = new CrossDomainJoinEngine(registry, metaRepo, accessResolver, maskingProvider);
+
+        var request = new CrossDomainJoinRequest(
+            PrimaryTable: invoicesTable,
+            JoinedTable: customersTable,
+            ForeignKeyColumn: "CustomerId",
+            PrimaryKeyColumn: "CustomerId",
+            TargetRelationPropertyName: "Customer",
+            Principal: CreatePrincipal(),
+            Tenant: null);
+
+        var result = await joinEngine.ExecuteJoinAsync(request);
+
+        result.Rows.Count.ShouldBe(1);
+        var primaryRow = result.Rows[0];
+        primaryRow["PrimaryIban"].ShouldBe("###MASKED###");
+        primaryRow["Customer"].ShouldNotBeNull();
+    }
+
     private sealed class MockDataExecutor : IDataSourceExecutor
     {
         private readonly IReadOnlyList<IReadOnlyDictionary<string, object?>> _rows;
