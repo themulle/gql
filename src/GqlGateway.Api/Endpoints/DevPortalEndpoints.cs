@@ -183,7 +183,7 @@ public static class DevPortalEndpoints
               </div>
               <div class="badge-bar">
                 <span class="badge" style="background-color: {{badgeColor}}; color: #fff;">{{modeBadge}}</span>
-                <span class="badge" style="background-color: #334155; color: #f8fafc;">Env: {{environment}}</span>
+                <span class="badge" style="background-color: #334155; color: #f8fafc;">Env: {{System.Net.WebUtility.HtmlEncode(environment)}}</span>
                 {{(isOpenSchema ? "<span class=\"badge\" style=\"background-color: #059669; color: #fff;\">OpenSchema Active</span>" : "")}}
               </div>
             </header>

@@ -58,10 +58,12 @@ public sealed class MssqlChangeTrackingPoller : IMssqlChangeTrackingPoller
         };
     }
 
+    private static readonly System.Text.RegularExpressions.Regex IdentifierRegex =
+        new(@"^[a-zA-Z_][a-zA-Z0-9_]*$", System.Text.RegularExpressions.RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
+
     public static void ValidateSqlIdentifier(string identifier, string paramName)
     {
-        if (string.IsNullOrWhiteSpace(identifier) ||
-            !System.Text.RegularExpressions.Regex.IsMatch(identifier, @"^[a-zA-Z_][a-zA-Z0-9_]*$"))
+        if (string.IsNullOrWhiteSpace(identifier) || !IdentifierRegex.IsMatch(identifier))
         {
             throw new ArgumentException($"Sicherheitsfehler: Ungültiger SQL-Identifier '{identifier}'. Nur alphanumerische Zeichen und Unterstriche sind zulässig.", paramName);
         }

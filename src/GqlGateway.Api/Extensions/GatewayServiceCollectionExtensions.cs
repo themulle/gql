@@ -416,6 +416,29 @@ public static class GatewayServiceCollectionExtensions
         });
         services.AddScoped<IJustificationTriageService, JustificationTriageService>();
 
+        // Standardisiertes Connector-SPI (F-ARCH-10 nach Trino-Muster)
+        services.AddSingleton<GqlGateway.Application.Connectors.IGqlGatewayConnectorRegistry>(sp =>
+        {
+            var registry = new GqlGateway.Infrastructure.Connectors.InMemoryConnectorRegistry();
+            var sqlConnFactory = sp.GetService<ISqlConnectionFactory>();
+            var metaRepo = sp.GetService<ITableMetadataRepository>();
+            var opts = sp.GetService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>();
+            var env = sp.GetService<IHostEnvironment>();
+
+            if (sqlConnFactory != null && metaRepo != null)
+            {
+                var defaultSqlConnector = new GqlGateway.Infrastructure.Connectors.SqlConnector(
+                    connectorId: "default-sql",
+                    connectionFactory: sqlConnFactory,
+                    metadataRepository: metaRepo,
+                    options: opts,
+                    environment: env);
+                registry.RegisterConnector("default-sql", defaultSqlConnector);
+                registry.RegisterConnector("sql", defaultSqlConnector);
+            }
+            return registry;
+        });
+
         services.AddScoped<IClientIpResolver, GqlGateway.Api.Security.HttpContextClientIpResolver>();
         services.AddScoped<GatewayExecutionService>(sp => new GatewayExecutionService(
             sp.GetRequiredService<ITableMetadataRepository>(),
@@ -429,7 +452,8 @@ public static class GatewayServiceCollectionExtensions
             sp.GetService<ITrafficDrainController>(),
             sp.GetServices<IDataSourceExecutor>(),
             sp.GetService<IPolicyEnforcementService>(),
-            sp.GetService<IClientIpResolver>()));
+            sp.GetService<IClientIpResolver>(),
+            sp.GetService<GqlGateway.Application.Connectors.IGqlGatewayConnectorRegistry>()));
         services.AddScoped<IGatewayExecutionService>(sp => sp.GetRequiredService<GatewayExecutionService>());
 
         // Model Context Protocol (MCP) Server & AI Data Guardrails

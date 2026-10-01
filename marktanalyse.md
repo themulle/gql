@@ -1198,7 +1198,7 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **F-DATA-02: Governed WebSQL Engine (Trino AST Linter & RLS Rewriter)** | 8 | 2.7 | 90% | 1.4 | 1.6 W | **12.1** | ✅ **100% Abgeschlossen (GA)** (Sichere HTTP-SQL-Ausführung nach Trino-Muster mit AST-Whitelisting, RLS-Injektion & 790 Tests) |
 | **P12: Differential Privacy & Dynamic Perturbation** | 7 | 3.0 | 85% | 2.0 | 3 W | **11.9** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DBT-6: Policy & RLS Auto-Sync aus dbt Metadaten** | 7 | 2.0 | 85% | 1.5 | 1.5 W | **11.9** | ✅ **100% Abgeschlossen (GA)** (meta.casbin_roles & meta.rls_filter, 4-Eyes Proposal Approval) |
-| **F-ARCH-10: Standardisiertes Connector-SPI (`IGqlGatewayConnector`)** | 8 | 2.5 | 90% | 1.2 | 2.0 W | **10.8** | 🟡 **Priorität Wave 2** (Modulare Datenquellen-Anbindung nach Trino-SPI-Muster) |
+| **F-ARCH-10: Standardisiertes Connector-SPI (`IGqlGatewayConnector`)** | 8 | 2.5 | 90% | 1.2 | 2.0 W | **10.8** | ✅ **100% Abgeschlossen (GA)** (Trino-inspiriertes SPI: IGqlGatewayConnector, SplitManager, RecordSource, InMemoryConnectorRegistry & bi-direktionale Legacy-Adapter) |
 | **P1: Konkrete Data Catalog Connectors** | 8 | 2.5 | 90% | 1.8 | 3 W | **10.8** | ✅ **100% Abgeschlossen (GA)** |
 | **P9: Ingress/Egress Extensibility SDK & Workflow Interceptors** | 8 | 2.5 | 90% | 1.6 | 3 W | **9.6** | ✅ **100% Abgeschlossen (GA)** |
 | **P13: Data Contract & FinOps Chargeback Engine** | 8 | 2.0 | 90% | 1.3 | 2 W | **9.4** | 🟡 **Mittlere Priorität (Wave 2)** |
@@ -1359,10 +1359,14 @@ Die detaillierten Implementierungspläne des Solution Architects für die Umsetz
   * `F-DATA-01`: Hierarchical Parquet Egress & Nested Query Serialization (Dremel `LIST<STRUCT>`).
   * `F-PERF-09`: GraphQL-to-SQL AST Single-Query Compiler (`FOR JSON PATH` / `json_agg` Pushdown).
   * `F-AI-05`: Human-in-the-Loop Step-Up Approval via MCP (4-Augen & ITSM).
-  * AppSec Remediation (VULN-01..09, SEC-01..03, CQ-01..03, Type Projection Hardening).
-* **Wave 2 (Verbleibende Umsetzungsphase):**
+  * `F-OPEN-01`: OpenSchema Mode, Multi-File OpenAPI & Catalog Domain Slicing.
+  * `F-DX-01`: Zero-Config Developer Quickstart (`Profile: Quickstart`) & Interactive Dev Portal Hub (`GET /`).
   * `F-CDC-02`: Native MSSQL Change Tracking Ingestion Provider (Zero-Kafka Realtime Engine über `CHANGETABLE`).
   * `F-ARCH-10`: Standardisiertes Connector-SPI (`IGqlGatewayConnector` nach Trino-Muster).
+  * AppSec Remediation (VULN-01..09, SEC-01..03, CQ-01..03, Type Projection Hardening).
+* **Wave 2 (Aktuelle Umsetzungsphase):**
+  * `F-GOV-06`: Mehrstufige Pushdown-Kaskaden (Rule-Based & Cost-Based Pushdown) & Dreistufiger Namensraum (`Catalog.Schema.Table`) mit Cross-Domain Joins.
+  * `F-PERF-10`: Split-Engine & Streaming Result Pipelining (Zero-LOH-Allokation via `IAsyncEnumerable<T>` / Pipelines).
   * `F-AI-07`: Vector-Indexed Dynamic Tool Pruning (Scalable Catalog).
   * `F-DBT-5`: dbt Semantic Layer & MetricFlow Auto-Mapping.
   * `P13`: Data Contract & FinOps Chargeback Engine.
@@ -1370,7 +1374,6 @@ Die detaillierten Implementierungspläne des Solution Architects für die Umsetz
   * `P15`: Confidential Compute Enclave Support (SGX/SEV).
   * `P16`: Post-Quantum Cryptography Hybrid TLS (ML-KEM / PQC).
 * **Wave 3 (Verbleibende Föderations- & Feedback-Phase):**
-  * `F-GOV-06`: Cross-Domain Join Pushdown Engine (Trino-inspirierte Föderation).
   * `F-AI-08`: Closed-Loop Drift Detection & Feedback PR Generator.
   * `F-DBT-7`: dbt Mesh Multi-Project Cross-Model Federation.
 

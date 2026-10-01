@@ -35,6 +35,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
     private readonly IEnumerable<IDataSourceExecutor>? _dataSourceExecutors;
     private readonly IPolicyEnforcementService? _policyEnforcementService;
     private readonly IClientIpResolver? _clientIpResolver;
+    private readonly GqlGateway.Application.Connectors.IGqlGatewayConnectorRegistry? _connectorRegistry;
     private readonly IDataSourceExecutor _defaultSqlExecutor = new SqlDataSourceExecutor();
 
     public int LastDispatchedChildQueryCount { get; private set; }
@@ -52,7 +53,8 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         ITrafficDrainController? drainController = null,
         IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null,
         IPolicyEnforcementService? policyEnforcementService = null,
-        IClientIpResolver? clientIpResolver = null)
+        IClientIpResolver? clientIpResolver = null,
+        GqlGateway.Application.Connectors.IGqlGatewayConnectorRegistry? connectorRegistry = null)
     {
         _metadataRepository = metadataRepository;
         _consentRepository = consentRepository;
@@ -66,6 +68,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         _dataSourceExecutors = dataSourceExecutors;
         _policyEnforcementService = policyEnforcementService;
         _clientIpResolver = clientIpResolver;
+        _connectorRegistry = connectorRegistry;
     }
 
     public GatewayExecutionService(
@@ -292,20 +295,64 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         }
 
 
-        var execContext = new DataSourceExecutionContext(
-            SourceName: metadata.Table.SourceName,
-            Metadata: metadata,
-            Principal: principal,
-            AccessDecision: decision,
-            Arguments: execArgs,
-            RequestedFields: effectiveRequestedFields,
-            RequestHeaders: requestHeaders,
-            Limit: rowLimit,
-            Offset: after ?? 0,
-            Tenant: tenantId
-        );
+        IReadOnlyList<IReadOnlyDictionary<string, object?>> rawRows;
+        bool rlsPushdownAlreadyOccurred = false;
+        bool inDbMaskingAlreadyOccurred = false;
 
-        var rawRows = await executor.ExecuteAsync(execContext, ct);
+        if (_connectorRegistry != null && _connectorRegistry.TryGetConnectorForTable(table, out var connector) && connector != null)
+        {
+            var session = new GqlGateway.Domain.Connectors.ConnectorSessionContext(
+                Principal: principal,
+                Tenant: tenantId,
+                AccessDecision: decision,
+                ProjectedColumns: effectiveRequestedFields,
+                Arguments: execArgs,
+                PushdownFilterSql: decision.CombinedRowFilterSql,
+                Limit: rowLimit,
+                Offset: after ?? 0,
+                RequestHeaders: requestHeaders);
+
+            session.Items["TableMetadata"] = metadata;
+
+            var splits = await connector.SplitManager.GetSplitsAsync(metadata, session, ct).ConfigureAwait(false);
+            if (splits.Count == 0)
+            {
+                rawRows = Array.Empty<IReadOnlyDictionary<string, object?>>();
+            }
+            else
+            {
+                var combinedRows = new List<IReadOnlyDictionary<string, object?>>();
+                foreach (var split in splits)
+                {
+                    var splitRows = await connector.RecordSource.ReadBatchAsync(split, session, ct).ConfigureAwait(false);
+                    combinedRows.AddRange(splitRows);
+                }
+                rawRows = combinedRows;
+            }
+
+            rlsPushdownAlreadyOccurred = session.Items.TryGetValue("RlsPushdownExecuted", out var p1) && p1 is true;
+            inDbMaskingAlreadyOccurred = session.Items.TryGetValue("InDbColumnMaskingExecuted", out var m1) && m1 is true;
+        }
+        else
+        {
+            var execContext = new DataSourceExecutionContext(
+                SourceName: metadata.Table.SourceName,
+                Metadata: metadata,
+                Principal: principal,
+                AccessDecision: decision,
+                Arguments: execArgs,
+                RequestedFields: effectiveRequestedFields,
+                RequestHeaders: requestHeaders,
+                Limit: rowLimit,
+                Offset: after ?? 0,
+                Tenant: tenantId
+            );
+
+            rawRows = await executor.ExecuteAsync(execContext, ct);
+
+            rlsPushdownAlreadyOccurred = execContext.Items.TryGetValue("RlsPushdownExecuted", out var p2) && p2 is true;
+            inDbMaskingAlreadyOccurred = execContext.Items.TryGetValue("InDbColumnMaskingExecuted", out var m2) && m2 is true;
+        }
 
         // Central Zero-Trust Pipeline: Step 1: In-Memory RLS Post-Filtering
         // For SQL data sources where RLS pushdown has already been executed in the DB engine via WHERE clause,
@@ -313,10 +360,6 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         // For non-SQL data sources (REST, Plugins) or synthetic dev/test mock fallback without DB pushdown,
         // in-memory evaluation is enforced.
         var filteredRows = rawRows.ToList();
-
-        // Explicit execution signaling: Pushdown is considered complete only if the executor explicitly marked it.
-        bool rlsPushdownAlreadyOccurred = execContext.Items.TryGetValue("RlsPushdownExecuted", out var pushed) && pushed is true;
-        bool inDbMaskingAlreadyOccurred = execContext.Items.TryGetValue("InDbColumnMaskingExecuted", out var maskedInDb) && maskedInDb is true;
 
         if (!rlsPushdownAlreadyOccurred && !string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
         {
