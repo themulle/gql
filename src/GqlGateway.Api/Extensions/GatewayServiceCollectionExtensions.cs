@@ -439,6 +439,11 @@ public static class GatewayServiceCollectionExtensions
             return registry;
         });
 
+        services.AddSingleton<GqlGateway.Application.Connectors.Pushdown.IPushdownPlanner, GqlGateway.Application.Connectors.Pushdown.PushdownPlanner>();
+        services.AddScoped<GqlGateway.Application.Connectors.CrossDomain.ICrossDomainAccessResolver, GqlGateway.Application.Connectors.CrossDomain.DefaultCrossDomainAccessResolver>();
+        services.AddScoped<GqlGateway.Application.Connectors.CrossDomain.ICrossDomainJoinEngine, GqlGateway.Application.Connectors.CrossDomain.CrossDomainJoinEngine>();
+        services.AddSingleton<GqlGateway.Application.Connectors.Streaming.IStreamingResultPipeline, GqlGateway.Application.Connectors.Streaming.StreamingResultPipeline>();
+
         services.AddScoped<IClientIpResolver, GqlGateway.Api.Security.HttpContextClientIpResolver>();
         services.AddScoped<GatewayExecutionService>(sp => new GatewayExecutionService(
             sp.GetRequiredService<ITableMetadataRepository>(),

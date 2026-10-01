@@ -1208,7 +1208,7 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **P16: Post-Quantum Cryptography (ML-KEM / PQC)** | 6 | 2.0 | 85% | 1.6 | 2 W | **8.2** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P15: Confidential Compute Enclave Support (SGX/SEV)** | 5 | 2.8 | 80% | 1.8 | 3 W | **6.7** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **F-AI-08: Closed-Loop Drift Detection & Feedback PR Generator** | 6 | 2.0 | 75% | 1.3 | 1.8 W | **6.5** | 🔭 **Wave 2 / Wave 3** |
-| **F-GOV-06: Cross-Domain Join Pushdown Engine** | 6 | 2.5 | 80% | 1.2 | 2.5 W | **5.8** | 🔭 **Wave 2 / Wave 3** (Trino-inspirierte Föderations-Joins) |
+| **F-GOV-06: Cross-Domain Join Pushdown Engine** | 6 | 2.5 | 80% | 1.2 | 2.5 W | **5.8** | ✅ **100% Abgeschlossen (GA)** (Multi-Stage Pushdown, Cross-Domain Joins, Zero-LOH Streaming) |
 | **F-DBT-5: dbt Semantic Layer & MetricFlow Auto-Mapping** | 6 | 3.0 | 80% | 1.0 | 2.5 W | **5.7** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P14: Zero-Trust Lakehouse Arrow Flight Governor** | 6 | 2.8 | 85% | 1.4 | 3.5 W | **5.7** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P6: Data Steward Studio & Policy Simulator UI** | 7 | 2.2 | 90% | 1.6 | 4 W | **5.5** | ⚪ *UI-Komponente (Separat geführt)* |
@@ -1263,6 +1263,7 @@ flowchart TD
         D36["F-SQL-01 Declarative SQL-to-API Engine (Auto-OpenAPI 3.0, dbt Sync & Hot-Reload)"]
         D37["WORM Consent Audit Sealing & Enterprise Mutations (Anti-Self-Approval SoD)"]
         D38["AppSec Remediation (SEC-01..03, CQ-01..03, VULN-01..09, Type Projection Hardening)"]
+        D39["F-GOV-06 Multi-Stage Pushdown, Cross-Domain Joins & Streaming Result Pipelining"]
     end
 
     subgraph Wave2["Wave 2: Trino-SPI, Lakehouse Acceleration, DX & Enterprise Guardrails (Aktuelle Umsetzungsphase)"]
@@ -1281,7 +1282,6 @@ flowchart TD
 
     subgraph Wave3["Wave 3: Federation Joins, Closed-Loop Agent Feedback & dbt Mesh"]
         direction TB
-        W3_1["F-GOV-06 Cross-Domain Join Pushdown Engine (Trino-inspirierte Föderation)"]
         W3_2["F-AI-08 Closed-Loop Drift Detection & Feedback PR Generator"]
         W3_3["F-DBT-7 dbt Mesh Cross-Project Federation"]
     end
@@ -1363,10 +1363,10 @@ Die detaillierten Implementierungspläne des Solution Architects für die Umsetz
   * `F-DX-01`: Zero-Config Developer Quickstart (`Profile: Quickstart`) & Interactive Dev Portal Hub (`GET /`).
   * `F-CDC-02`: Native MSSQL Change Tracking Ingestion Provider (Zero-Kafka Realtime Engine über `CHANGETABLE`).
   * `F-ARCH-10`: Standardisiertes Connector-SPI (`IGqlGatewayConnector` nach Trino-Muster).
-  * AppSec Remediation (VULN-01..09, SEC-01..03, CQ-01..03, Type Projection Hardening).
-* **Wave 2 (Aktuelle Umsetzungsphase):**
   * `F-GOV-06`: Mehrstufige Pushdown-Kaskaden (Rule-Based & Cost-Based Pushdown) & Dreistufiger Namensraum (`Catalog.Schema.Table`) mit Cross-Domain Joins.
   * `F-PERF-10`: Split-Engine & Streaming Result Pipelining (Zero-LOH-Allokation via `IAsyncEnumerable<T>` / Pipelines).
+  * AppSec Remediation (VULN-01..09, SEC-01..03, CQ-01..03, Type Projection Hardening).
+* **Wave 2 (Aktuelle Umsetzungsphase):**
   * `F-AI-07`: Vector-Indexed Dynamic Tool Pruning (Scalable Catalog).
   * `F-DBT-5`: dbt Semantic Layer & MetricFlow Auto-Mapping.
   * `P13`: Data Contract & FinOps Chargeback Engine.

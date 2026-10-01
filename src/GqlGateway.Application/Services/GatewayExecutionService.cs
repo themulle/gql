@@ -299,7 +299,15 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         bool rlsPushdownAlreadyOccurred = false;
         bool inDbMaskingAlreadyOccurred = false;
 
-        if (_connectorRegistry != null && _connectorRegistry.TryGetConnectorForTable(table, out var connector) && connector != null)
+        GqlGateway.Application.Connectors.IGqlGatewayConnector? connector = null;
+        bool canUseConnector = _connectorRegistry != null &&
+            _connectorRegistry.TryGetConnectorForTable(table, out connector) &&
+            connector != null &&
+            (metadata.DataSourceType == DataSourceType.Sql ||
+             (!string.Equals(connector.ConnectorId, "default-sql", StringComparison.OrdinalIgnoreCase) &&
+              !string.Equals(connector.ConnectorId, "sql", StringComparison.OrdinalIgnoreCase)));
+
+        if (canUseConnector && connector != null)
         {
             var session = new GqlGateway.Domain.Connectors.ConnectorSessionContext(
                 Principal: principal,
