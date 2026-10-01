@@ -37,6 +37,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GqlGateway.Extensions.Tests
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "gql-schema-check", "tools\gql-schema-check\gql-schema-check.csproj", "{4A50CD5B-A3D9-4D7C-82DF-FA7C7170B231}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TrinoSqlEngine", "..\gql_sqlparser\TrinoSqlEngine.csproj", "{06D325EB-4D9B-407E-A001-87771D224A0D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -203,6 +205,18 @@ Global
 		{4A50CD5B-A3D9-4D7C-82DF-FA7C7170B231}.Release|x64.Build.0 = Release|Any CPU
 		{4A50CD5B-A3D9-4D7C-82DF-FA7C7170B231}.Release|x86.ActiveCfg = Release|Any CPU
 		{4A50CD5B-A3D9-4D7C-82DF-FA7C7170B231}.Release|x86.Build.0 = Release|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Debug|x64.Build.0 = Debug|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Debug|x86.Build.0 = Debug|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Release|x64.ActiveCfg = Release|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Release|x64.Build.0 = Release|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Release|x86.ActiveCfg = Release|Any CPU
+		{06D325EB-4D9B-407E-A001-87771D224A0D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\GqlGateway.Domain\GqlGateway.Domain.csproj" />
+    <ProjectReference Include="..\..\..\gql_sqlparser\TrinoSqlEngine.csproj" />
   </ItemGroup>
 
 

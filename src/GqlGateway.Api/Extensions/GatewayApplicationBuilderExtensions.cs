@@ -251,6 +251,7 @@ public static class GatewayApplicationBuilderExtensions
         app.MapBackstageEndpoints(gatewayOptions);
         app.MapExportEndpoints();
         app.MapHitLEndpoints();
+        app.MapWebSqlEndpoints();
 
         return app;
     }

@@ -35,6 +35,7 @@ public sealed class GatewayOptions
     [Required] public ParquetEgressOptions ParquetEgress { get; init; } = new();
     [Required] public HitLStepUpOptions HitLStepUp { get; init; } = new();
     [Required] public SingleQueryPushdownOptions SingleQueryPushdown { get; init; } = new();
+    [Required] public WebSqlOptions WebSql { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
     // Convenience accessors combining global 'Insecure' section and domain-specific options
@@ -56,6 +57,8 @@ public sealed class GatewayOptions
     public bool IsMcpUnmaskedAllowed => Insecure.warn_allow_unmasked_ai_access || Mcp.warn_allow_unmasked_ai_access;
     public bool IsLakehouseAuthBypassed => Insecure.danger_bypass_lakehouse_auth || Lakehouse.danger_bypass_lakehouse_auth;
     public bool AreUnsignedS3RequestsAllowed => Insecure.warn_allow_unsigned_s3_requests || Lakehouse.warn_allow_unsigned_s3_requests;
+    public bool IsWebSqlDmlAllowed => WebSql.AllowDml || WebSql.warn_allow_dml || Insecure.warn_allow_websql_dml;
+    public bool IsWebSqlGovernanceBypassed => WebSql.danger_bypass_sql_governance || Insecure.danger_bypass_websql_governance;
 
     public bool HasAnySecurityBypassActive =>
         IsAnonymousAccessAllowed ||
@@ -88,6 +91,7 @@ public sealed class GatewayOptions
         if (AreUntrustedCertificatesAllowed) list.Add("DANGER:danger_allow_untrusted_certificates");
         if (IsMcpAuthBypassed) list.Add("DANGER:danger_bypass_mcp_auth");
         if (IsLakehouseAuthBypassed) list.Add("DANGER:danger_bypass_lakehouse_auth");
+        if (IsWebSqlGovernanceBypassed) list.Add("DANGER:danger_bypass_websql_governance");
         if (IsAllCorsAllowed) list.Add("WARN:warn_allow_all_cors_origins");
         if (IsRateLimitingDisabled) list.Add("WARN:warn_disable_rate_limiting");
         if (AreQueryLimitsRelaxed) list.Add("WARN:warn_relaxed_query_limits");
@@ -98,6 +102,7 @@ public sealed class GatewayOptions
         if (AreExternalSystemsMockedIfUnreachable) list.Add("WARN:warn_mock_external_systems_if_unreachable");
         if (IsMcpUnmaskedAllowed) list.Add("WARN:warn_allow_unmasked_ai_access");
         if (AreUnsignedS3RequestsAllowed) list.Add("WARN:warn_allow_unsigned_s3_requests");
+        if (IsWebSqlDmlAllowed) list.Add("WARN:warn_allow_websql_dml");
         return list;
     }
 }
@@ -216,6 +221,16 @@ public sealed class InsecureGettingStartedOptions
     /// [WARN] Erlaubt unsignierte, anonyme S3/Object-Store-Anfragen an lokale MinIO- oder Test-Instanzen.
     /// </summary>
     public bool warn_allow_unsigned_s3_requests { get; init; } = false;
+
+    /// <summary>
+    /// [DANGER] Deaktiviert sämtliche RLS-, Maskierungs- und Consent-Prüfungen im WebSQL-Endpunkt (/api/v1/sql).
+    /// </summary>
+    public bool danger_bypass_websql_governance { get; init; } = false;
+
+    /// <summary>
+    /// [WARN] Erlaubt DML-Operationen (INSERT, UPDATE, DELETE) im WebSQL-Endpunkt (/api/v1/sql).
+    /// </summary>
+    public bool warn_allow_websql_dml { get; init; } = false;
 }
 
 public sealed class PluginsOptions
@@ -767,6 +782,19 @@ public sealed class SingleQueryPushdownOptions
         DatabaseDialect.PostgreSql,
         DatabaseDialect.Sqlite
     ];
+}
+
+public sealed class WebSqlOptions
+{
+    public bool Enabled { get; init; } = true;
+    public bool AllowDml { get; init; } = false;
+    public long DefaultMaxRows { get; init; } = 1000;
+    public long MaxAllowedRows { get; init; } = 10000;
+    public int MaxQueryLength { get; init; } = 64_000;
+    public int ExecutionTimeoutSeconds { get; init; } = 30;
+    public string DefaultDataSourceName { get; init; } = "default";
+    public bool warn_allow_dml { get; init; } = false;
+    public bool danger_bypass_sql_governance { get; init; } = false;
 }
 
 
