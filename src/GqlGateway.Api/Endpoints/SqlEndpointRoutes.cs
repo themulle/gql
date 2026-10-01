@@ -19,22 +19,29 @@ public static class SqlEndpointRoutes
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    public static IEndpointRouteBuilder MapSqlEndpoints(this IEndpointRouteBuilder app)
+    public static IEndpointRouteBuilder MapSqlEndpoints(this IEndpointRouteBuilder app, GatewayOptions? gatewayOptions = null)
     {
-        var group = app.MapGroup("/api/v1/queries")
-                       .RequireAuthorization();
+        var group = app.MapGroup("/api/v1/queries");
 
         group.MapGet("/", HandleListEndpoints)
-             .WithName("ListSqlEndpoints");
+             .WithName("ListSqlEndpoints")
+             .RequireAuthorization();
 
-        group.MapGet("/openapi.json", HandleOpenApiSpec)
+        var openApiEndpoint = group.MapGet("/openapi.json", HandleOpenApiSpec)
              .WithName("GetSqlEndpointsOpenApiSpec");
 
+        if (gatewayOptions?.IsOpenSchemaAllowed != true)
+        {
+            openApiEndpoint.RequireAuthorization();
+        }
+
         group.MapGet("/{name}", HandleGetEndpoint)
-             .WithName("ExecuteSqlEndpointGet");
+             .WithName("ExecuteSqlEndpointGet")
+             .RequireAuthorization();
 
         group.MapPost("/{name}", HandlePostEndpoint)
-             .WithName("ExecuteSqlEndpointPost");
+             .WithName("ExecuteSqlEndpointPost")
+             .RequireAuthorization();
 
         return app;
     }

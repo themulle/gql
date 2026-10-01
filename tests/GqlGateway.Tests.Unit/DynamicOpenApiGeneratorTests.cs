@@ -2,6 +2,7 @@ namespace GqlGateway.Tests.Unit;
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -141,6 +142,90 @@ public sealed class DynamicOpenApiGeneratorTests
         cacheManager.InvalidateCache();
 
         var bytes3 = await cacheManager.GetOrAddAsync("finance", isYaml: false, Factory);
+        factoryInvocationCount.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task GenerateOpenApiJsonAsync_WithModularTrue_EmploysExternalRefsForSchemas()
+    {
+        var repo = Substitute.For<ITableMetadataRepository>();
+        repo.GetAllTablesAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<TableMetadata>>(CreateSampleTables()));
+
+        var generator = new DynamicOpenApiGenerator(repo, NullLogger<DynamicOpenApiGenerator>.Instance);
+        var json = await generator.GenerateOpenApiJsonAsync(null, modular: true);
+
+        using var doc = JsonDocument.Parse(json);
+        var schemas = doc.RootElement.GetProperty("components").GetProperty("schemas");
+
+        schemas.TryGetProperty("finance_dbo_invoices", out var invoiceSchema).ShouldBeTrue();
+        invoiceSchema.TryGetProperty("$ref", out var refProp).ShouldBeTrue();
+        refProp.GetString().ShouldBe("/odata/v4/$openapi/schemas/finance/dbo/invoices");
+
+        schemas.TryGetProperty("sales_dbo_leads", out var leadSchema).ShouldBeTrue();
+        leadSchema.TryGetProperty("$ref", out var leadRefProp).ShouldBeTrue();
+        leadRefProp.GetString().ShouldBe("/odata/v4/$openapi/schemas/sales/dbo/leads");
+    }
+
+    [Fact]
+    public async Task GenerateEntitySchemaJsonAsync_ReturnsIsolatedTableSchema()
+    {
+        var repo = Substitute.For<ITableMetadataRepository>();
+        repo.GetAllTablesAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<TableMetadata>>(CreateSampleTables()));
+
+        var generator = new DynamicOpenApiGenerator(repo, NullLogger<DynamicOpenApiGenerator>.Instance);
+        var schemaJson = await generator.GenerateEntitySchemaJsonAsync(new TableIdentifier("finance", "dbo", "invoices"));
+
+        schemaJson.ShouldNotBeNull();
+        using var doc = JsonDocument.Parse(schemaJson!);
+        var root = doc.RootElement;
+
+        root.GetProperty("title").GetString().ShouldBe("finance_dbo_invoices");
+        root.GetProperty("type").GetString().ShouldBe("object");
+        root.GetProperty("properties").TryGetProperty("customer_name", out _).ShouldBeTrue();
+        root.GetProperty("properties").GetProperty("iban").GetProperty("x-sensitive").GetBoolean().ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task GetIndexDocumentAsync_ReturnsAggregatedDomainCatalog()
+    {
+        var repo = Substitute.For<ITableMetadataRepository>();
+        repo.GetAllTablesAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<TableMetadata>>(CreateSampleTables()));
+
+        var generator = new DynamicOpenApiGenerator(repo, NullLogger<DynamicOpenApiGenerator>.Instance);
+        var index = await generator.GetIndexDocumentAsync("https://gateway.example.com");
+
+        index.TotalTables.ShouldBe(2);
+        index.Domains.Count.ShouldBe(2);
+
+        var financeDomain = index.Domains.FirstOrDefault(d => d.Domain == "finance");
+        financeDomain.ShouldNotBeNull();
+        financeDomain!.TableCount.ShouldBe(1);
+        financeDomain.JsonUrl.ShouldBe("https://gateway.example.com/odata/v4/finance/openapi.json");
+        financeDomain.YamlUrl.ShouldBe("https://gateway.example.com/odata/v4/finance/openapi.yaml");
+
+        index.Apis.Count.ShouldBeGreaterThan(0);
+        index.Apis.ShouldContain(a => a.Name == "All Domains (Monolithic)");
+    }
+
+    [Fact]
+    public async Task OpenApiCacheManager_DistinguishesModularAndStandardKeys()
+    {
+        var cacheManager = new OpenApiCacheManager();
+        int factoryInvocationCount = 0;
+
+        Task<string> Factory(CancellationToken _)
+        {
+            Interlocked.Increment(ref factoryInvocationCount);
+            return Task.FromResult("{\"openapi\": \"3.1.0\"}");
+        }
+
+        var standard = await cacheManager.GetOrAddAsync("finance", false, false, Factory);
+        var modular = await cacheManager.GetOrAddAsync("finance", false, true, Factory);
+
+        standard.ShouldNotBeSameAs(modular);
         factoryInvocationCount.ShouldBe(2);
     }
 }

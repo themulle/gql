@@ -806,7 +806,7 @@ public static class GatewayServiceCollectionExtensions
             gqlBuilder.UseOnlyPersistedOperationAllowed();
         }
 
-        if (!gatewayOptions.GraphQL.EnableIntrospection && !gatewayOptions.IsIntrospectionForced)
+        if (!gatewayOptions.GraphQL.EnableIntrospection && !gatewayOptions.IsIntrospectionForced && !gatewayOptions.IsOpenSchemaAllowed)
         {
             gqlBuilder.DisableIntrospection();
         }

@@ -19,6 +19,16 @@ public interface IOpenApiCacheManager
         CancellationToken ct = default);
 
     /// <summary>
+    /// Gets or creates the cached UTF-8 byte representation for an OpenAPI specification with modular mode.
+    /// </summary>
+    Task<byte[]> GetOrAddAsync(
+        string? domainScope,
+        bool isYaml,
+        bool isModular,
+        Func<CancellationToken, Task<string>> factory,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Invalidates all cached OpenAPI documents (e.g. upon catalog schema refresh).
     /// </summary>
     void InvalidateCache();

@@ -148,6 +148,25 @@ public class DataPathSecurityTests : IDisposable
     }
 
     [Fact]
+    public async Task Catalog_WhenOpenSchemaEnabled_AllowsAnonymousAndNonPrivilegedUsers()
+    {
+        var options = Options.Create(new GatewayOptions
+        {
+            OpenSchema = true
+        });
+
+        // Anonymous accessor
+        var anonymousAccessor = new HttpContextAccessor
+        {
+            HttpContext = new DefaultHttpContext()
+        };
+
+        var catalog = await _query.GetCatalogAsync(_repository, anonymousAccessor, options);
+        catalog.ShouldContain(t => t.TableName == "finance_table_1");
+        catalog.ShouldContain(t => t.TableName == "finance_table_2");
+    }
+
+    [Fact]
     public async Task Catalog_DenyColumns_AreExcludedFromCatalogDto()
     {
         var table = new TableIdentifier("finance", "dbo", "finance_table_1");

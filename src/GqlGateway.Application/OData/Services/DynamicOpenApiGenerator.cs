@@ -34,21 +34,92 @@ public sealed class DynamicOpenApiGenerator : IDynamicOpenApiGenerator
         _options = options ?? new OpenApiDocumentOptions();
     }
 
-    public async Task<string> GenerateOpenApiJsonAsync(string? domainScope = null, CancellationToken ct = default)
+    public async Task<string> GenerateOpenApiJsonAsync(string? domainScope = null, bool modular = false, CancellationToken ct = default)
     {
-        var rootNode = await BuildOpenApiNodeAsync(domainScope, ct).ConfigureAwait(false);
+        var rootNode = await BuildOpenApiNodeAsync(domainScope, modular, ct).ConfigureAwait(false);
         return rootNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
     }
 
-    public async Task<string> GenerateOpenApiYamlAsync(string? domainScope = null, CancellationToken ct = default)
+    public async Task<string> GenerateOpenApiYamlAsync(string? domainScope = null, bool modular = false, CancellationToken ct = default)
     {
-        var rootNode = await BuildOpenApiNodeAsync(domainScope, ct).ConfigureAwait(false);
+        var rootNode = await BuildOpenApiNodeAsync(domainScope, modular, ct).ConfigureAwait(false);
         var sb = new StringBuilder();
         ConvertJsonNodeToYaml(rootNode, sb, indentLevel: 0);
         return sb.ToString();
     }
 
-    private async Task<JsonObject> BuildOpenApiNodeAsync(string? domainScope, CancellationToken ct)
+    public async Task<string?> GenerateEntitySchemaJsonAsync(TableIdentifier tableId, CancellationToken ct = default)
+    {
+        var allTables = await _metadataRepo.GetAllTablesAsync(ct).ConfigureAwait(false);
+        var table = allTables.FirstOrDefault(t =>
+            string.Equals(t.Identifier.Domain, tableId.Domain, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(t.Identifier.Schema, tableId.Schema, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(t.Identifier.TableName, tableId.TableName, StringComparison.OrdinalIgnoreCase));
+
+        if (table == null)
+        {
+            return null;
+        }
+
+        var schemaNode = BuildEntitySchemaNode(table);
+        schemaNode["$schema"] = "https://json-schema.org/draft/2020-12/schema";
+        schemaNode["title"] = FormatSchemaName(table.Identifier);
+        return schemaNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    public async Task<OpenApiIndexDocument> GetIndexDocumentAsync(string? baseUrl = null, CancellationToken ct = default)
+    {
+        var allTables = await _metadataRepo.GetAllTablesAsync(ct).ConfigureAwait(false);
+        var serverPrefix = _options.ServerUrl.Trim('/');
+        var root = string.IsNullOrWhiteSpace(baseUrl)
+            ? (string.IsNullOrEmpty(serverPrefix) ? "" : "/" + serverPrefix)
+            : (string.IsNullOrEmpty(serverPrefix) ? baseUrl.TrimEnd('/') : $"{baseUrl.TrimEnd('/')}/{serverPrefix}");
+
+        var domainGroups = allTables
+            .GroupBy(t => t.Identifier.Domain, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        var summaries = new List<OpenApiDomainSummary>();
+        var apis = new List<OpenApiApiEntry>
+        {
+            new("All Domains (Monolithic)", $"{root}/$openapi"),
+            new("All Domains (Modular $ref)", $"{root}/$openapi?mode=modular"),
+            new("Declarative SQL Endpoints", "/api/v1/queries/openapi.json")
+        };
+
+        foreach (var group in domainGroups)
+        {
+            var domain = group.Key;
+            var tableNames = group.Select(t => t.Identifier.TableName).OrderBy(n => n).ToList();
+            var jsonUrl = $"{root}/{domain}/openapi.json";
+            var yamlUrl = $"{root}/{domain}/openapi.yaml";
+
+            summaries.Add(new OpenApiDomainSummary(
+                Domain: domain,
+                TableCount: group.Count(),
+                JsonUrl: jsonUrl,
+                YamlUrl: yamlUrl,
+                Tables: tableNames
+            ));
+
+            var displayName = char.ToUpperInvariant(domain[0]) + (domain.Length > 1 ? domain[1..] : "");
+            apis.Add(new OpenApiApiEntry(
+                Name: $"{displayName} Domain ({group.Count()} tables)",
+                Url: jsonUrl,
+                Domain: domain
+            ));
+        }
+
+        return new OpenApiIndexDocument(
+            TotalDomains: domainGroups.Count,
+            TotalTables: allTables.Count,
+            Domains: summaries,
+            Apis: apis
+        );
+    }
+
+    private async Task<JsonObject> BuildOpenApiNodeAsync(string? domainScope, bool modular, CancellationToken ct)
     {
         var allTables = await _metadataRepo.GetAllTablesAsync(ct).ConfigureAwait(false);
 
@@ -65,7 +136,7 @@ public sealed class DynamicOpenApiGenerator : IDynamicOpenApiGenerator
             ["openapi"] = "3.1.0",
             ["info"] = new JsonObject
             {
-                ["title"] = _options.Title,
+                ["title"] = !string.IsNullOrWhiteSpace(domainScope) ? $"{_options.Title} - {domainScope.ToUpperInvariant()}" : _options.Title,
                 ["version"] = _options.Version,
                 ["description"] = _options.Description
             },
@@ -89,46 +160,19 @@ public sealed class DynamicOpenApiGenerator : IDynamicOpenApiGenerator
             var tableName = table.Identifier.TableName;
             var pathKey = $"/{domain}/{schema}/{tableName}";
             var schemaName = FormatSchemaName(table.Identifier);
+            var remoteRefUrl = $"{_options.ServerUrl.TrimEnd('/')}/$openapi/schemas/{domain}/{schema}/{tableName}";
 
-            // 1. Build Entity Schema
-            var entityDesc = !string.IsNullOrWhiteSpace(table.Table.Description)
-                ? table.Table.Description
-                : (!string.IsNullOrWhiteSpace(table.Table.DisplayName)
-                    ? table.Table.DisplayName
-                    : $"Entity model for {domain}.{schema}.{tableName}");
-
-            var entitySchema = new JsonObject
+            if (modular)
             {
-                ["type"] = "object",
-                ["description"] = entityDesc
-            };
-
-            if (!string.IsNullOrWhiteSpace(table.Table.LongDescription))
-            {
-                entitySchema["x-long-description"] = table.Table.LongDescription;
-            }
-
-            var properties = new JsonObject();
-            var requiredCols = new JsonArray();
-
-            foreach (var col in table.Columns)
-            {
-                var colProp = MapColumnToJsonSchema(col);
-                properties[col.ColumnName] = colProp;
-
-                if (table.PrimaryKeyColumns.Contains(col.ColumnName, StringComparer.OrdinalIgnoreCase))
+                schemas[schemaName] = new JsonObject
                 {
-                    requiredCols.Add(col.ColumnName);
-                }
+                    ["$ref"] = remoteRefUrl
+                };
             }
-
-            entitySchema["properties"] = properties;
-            if (requiredCols.Count > 0)
+            else
             {
-                entitySchema["required"] = requiredCols;
+                schemas[schemaName] = BuildEntitySchemaNode(table);
             }
-
-            schemas[schemaName] = entitySchema;
 
             // 2. Build Path Operation
             var getOperation = new JsonObject
@@ -149,6 +193,7 @@ public sealed class DynamicOpenApiGenerator : IDynamicOpenApiGenerator
             getOperation["parameters"] = parameters;
 
             // 3. Responses
+            var itemRef = modular ? remoteRefUrl : $"#/components/schemas/{schemaName}";
             var responses = new JsonObject
             {
                 ["200"] = new JsonObject
@@ -170,7 +215,7 @@ public sealed class DynamicOpenApiGenerator : IDynamicOpenApiGenerator
                                         ["type"] = "array",
                                         ["items"] = new JsonObject
                                         {
-                                            ["$ref"] = $"#/components/schemas/{schemaName}"
+                                            ["$ref"] = itemRef
                                         }
                                     }
                                 }
@@ -207,6 +252,52 @@ public sealed class DynamicOpenApiGenerator : IDynamicOpenApiGenerator
         };
 
         return root;
+    }
+
+    private JsonObject BuildEntitySchemaNode(TableMetadata table)
+    {
+        var domain = table.Identifier.Domain;
+        var schema = table.Identifier.Schema;
+        var tableName = table.Identifier.TableName;
+
+        var entityDesc = !string.IsNullOrWhiteSpace(table.Table.Description)
+            ? table.Table.Description
+            : (!string.IsNullOrWhiteSpace(table.Table.DisplayName)
+                ? table.Table.DisplayName
+                : $"Entity model for {domain}.{schema}.{tableName}");
+
+        var entitySchema = new JsonObject
+        {
+            ["type"] = "object",
+            ["description"] = entityDesc
+        };
+
+        if (!string.IsNullOrWhiteSpace(table.Table.LongDescription))
+        {
+            entitySchema["x-long-description"] = table.Table.LongDescription;
+        }
+
+        var properties = new JsonObject();
+        var requiredCols = new JsonArray();
+
+        foreach (var col in table.Columns)
+        {
+            var colProp = MapColumnToJsonSchema(col);
+            properties[col.ColumnName] = colProp;
+
+            if (table.PrimaryKeyColumns.Contains(col.ColumnName, StringComparer.OrdinalIgnoreCase))
+            {
+                requiredCols.Add(col.ColumnName);
+            }
+        }
+
+        entitySchema["properties"] = properties;
+        if (requiredCols.Count > 0)
+        {
+            entitySchema["required"] = requiredCols;
+        }
+
+        return entitySchema;
     }
 
     private static JsonObject CreateQueryParam(string name, string type, string description)

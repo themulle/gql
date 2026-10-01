@@ -121,4 +121,87 @@ public sealed class OpenApiIntegrationTests : IClassFixture<WebApplicationFactor
 
         response.StatusCode.ShouldBe(HttpStatusCode.Forbidden);
     }
+
+    [Fact]
+    public async Task OpenApiIndexEndpoint_Returns200WithCatalogAndDomains()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-ADMIN-SID");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "GovernanceAdmin");
+
+        var response = await client.GetAsync("/odata/v4/$openapi/index");
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        response.Content.Headers.ContentType?.MediaType.ShouldBe("application/json");
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        root.GetProperty("totalDomains").GetInt32().ShouldBeGreaterThanOrEqualTo(1);
+        root.GetProperty("totalTables").GetInt32().ShouldBeGreaterThanOrEqualTo(1);
+        root.GetProperty("domains").EnumerateArray().Any(d => d.GetProperty("domain").GetString() == "finance").ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task OpenApiModularMode_ReturnsRemoteComponentRefs()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-ADMIN-SID");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "GovernanceAdmin");
+
+        var response = await client.GetAsync("/odata/v4/finance/openapi.json?mode=modular");
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var schemas = doc.RootElement.GetProperty("components").GetProperty("schemas");
+
+        var firstSchema = schemas.EnumerateObject().First();
+        firstSchema.Value.TryGetProperty("$ref", out var refProp).ShouldBeTrue();
+        refProp.GetString().ShouldStartWith("/odata/v4/$openapi/schemas/finance/");
+    }
+
+    [Fact]
+    public async Task OpenApiEntitySchemaEndpoint_Returns200WithEntitySchema()
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-ADMIN-SID");
+        client.DefaultRequestHeaders.Add("X-Test-Roles", "GovernanceAdmin");
+
+        var response = await client.GetAsync("/odata/v4/$openapi/schemas/finance/dbo/finance_table_1");
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        response.Content.Headers.ContentType?.MediaType.ShouldBe("application/json");
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("type").GetString().ShouldBe("object");
+        doc.RootElement.GetProperty("properties").EnumerateObject().Any().ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task OpenApiEndpoints_WhenOpenSchemaEnabled_AllowsAnonymousAccess()
+    {
+        using var openFactory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("Gateway:OpenSchema", "true");
+        });
+
+        var anonymousClient = openFactory.CreateClient();
+
+        // 1. Root OpenAPI
+        var openApiResponse = await anonymousClient.GetAsync("/odata/v4/$openapi");
+        openApiResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 2. OpenAPI Index
+        var indexResponse = await anonymousClient.GetAsync("/odata/v4/$openapi/index");
+        indexResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 3. Domain OpenAPI
+        var domainResponse = await anonymousClient.GetAsync("/odata/v4/finance/openapi.json");
+        domainResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+
+        // 4. Standalone Schema
+        var schemaResponse = await anonymousClient.GetAsync("/odata/v4/$openapi/schemas/finance/dbo/finance_table_1");
+        schemaResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+    }
 }

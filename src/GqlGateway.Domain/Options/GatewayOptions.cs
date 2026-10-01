@@ -39,7 +39,14 @@ public sealed class GatewayOptions
     [Required] public SqlEndpointsOptions SqlEndpoints { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
 
+    /// <summary>
+    /// Open Schema Mode: Allows anyone to view the entire data catalog, OpenAPI specs, and schema documentation.
+    /// Default: false (Disabled).
+    /// </summary>
+    public bool OpenSchema { get; init; } = false;
+
     // Convenience accessors combining global 'Insecure' section and domain-specific options
+    public bool IsOpenSchemaAllowed => OpenSchema || Catalog.OpenSchema;
     public bool IsAnonymousAccessAllowed => Insecure.danger_allow_anonymous_access || Authentication.danger_allow_anonymous_access;
     public bool IsConsentBypassed => Insecure.danger_bypass_consent_checks || GovernanceDb.danger_bypass_consent_checks;
     public bool IsColumnMaskingDisabled => Insecure.danger_disable_column_masking || DataMasking.danger_disable_column_masking;
@@ -575,6 +582,13 @@ public sealed class DataCatalogOptions
     public DataCatalogSyncMode SyncMode { get; init; } = DataCatalogSyncMode.Mirror;
     [Range(1, 1440)] public int SyncIntervalMinutes { get; init; } = 60;
     public string WebhookSecret { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Open Schema Mode: Wenn true, dürfen alle Benutzer (auch ohne GovernanceAdmin/CatalogReader Rollen)
+    /// den gesamten Datenkatalog, OpenAPI-Spezifikationen, Indexe und Tabellenschemata einsehen.
+    /// Standard: false (Disabled - Zero-Trust Role-Enforcement aktiv).
+    /// </summary>
+    public bool OpenSchema { get; init; } = false;
 
     /// <summary>
     /// Wenn true, können alle authentifizierten Benutzer den vollständigen Metadaten-Katalog

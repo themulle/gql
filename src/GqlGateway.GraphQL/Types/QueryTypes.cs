@@ -85,6 +85,23 @@ public sealed class Query
         CancellationToken ct = default)
     {
         var principal = httpContextAccessor?.HttpContext?.User;
+        var isOpenSchema = options?.Value?.IsOpenSchemaAllowed == true;
+
+        if (isOpenSchema)
+        {
+            var tables = await metadataRepository.GetAllTablesAsync(ct);
+            return tables.Select(t => new TableMetadataDto
+            {
+                Domain = t.Identifier.Domain,
+                Schema = t.Table.SchemaName,
+                TableName = t.Table.TableName,
+                DisplayName = t.Table.DisplayName,
+                Sensitivity = t.Table.Sensitivity,
+                Description = t.Table.Description,
+                Columns = t.Columns.Select(c => c.ColumnName).ToList()
+            }).ToList();
+        }
+
         if (principal?.Identity?.IsAuthenticated != true)
         {
             throw new GraphQLException(ErrorBuilder.New()

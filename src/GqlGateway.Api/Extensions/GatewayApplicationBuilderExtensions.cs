@@ -252,7 +252,7 @@ public static class GatewayApplicationBuilderExtensions
         app.MapExportEndpoints();
         app.MapHitLEndpoints();
         app.MapWebSqlEndpoints();
-        app.MapSqlEndpoints();
+        app.MapSqlEndpoints(gatewayOptions);
 
         if (gatewayOptions.SqlEndpoints.Enabled)
         {

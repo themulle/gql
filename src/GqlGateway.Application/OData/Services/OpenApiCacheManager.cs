@@ -15,13 +15,23 @@ public sealed class OpenApiCacheManager : IOpenApiCacheManager
     private const int MaxCacheEntries = 200;
     private readonly ConcurrentDictionary<string, byte[]> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    public async Task<byte[]> GetOrAddAsync(
+    public Task<byte[]> GetOrAddAsync(
         string? domainScope,
         bool isYaml,
         Func<CancellationToken, Task<string>> factory,
         CancellationToken ct = default)
     {
-        var key = BuildKey(domainScope, isYaml);
+        return GetOrAddAsync(domainScope, isYaml, isModular: false, factory, ct);
+    }
+
+    public async Task<byte[]> GetOrAddAsync(
+        string? domainScope,
+        bool isYaml,
+        bool isModular,
+        Func<CancellationToken, Task<string>> factory,
+        CancellationToken ct = default)
+    {
+        var key = BuildKey(domainScope, isYaml, isModular);
         if (_cache.TryGetValue(key, out var cachedBytes))
         {
             return cachedBytes;
@@ -43,15 +53,16 @@ public sealed class OpenApiCacheManager : IOpenApiCacheManager
         _cache.Clear();
     }
 
-    private static string BuildKey(string? domainScope, bool isYaml)
+    private static string BuildKey(string? domainScope, bool isYaml, bool isModular)
     {
         var format = isYaml ? "yaml" : "json";
+        var mod = isModular ? "_modular" : "";
         if (string.IsNullOrWhiteSpace(domainScope))
         {
-            return $"global_{format}";
+            return $"global_{format}{mod}";
         }
 
         var sanitized = new string(domainScope.Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').Take(64).ToArray());
-        return $"{sanitized.ToLowerInvariant()}_{format}";
+        return $"{sanitized.ToLowerInvariant()}_{format}{mod}";
     }
 }

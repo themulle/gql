@@ -34,93 +34,165 @@ public static class ODataEndpoints
             return Results.Content(xml, "application/xml;charset=utf-8");
         }).RequireAuthorization();
 
+        bool IsOpenApiAuthorized(HttpContext context)
+        {
+            if (gatewayOptions.IsOpenSchemaAllowed)
+            {
+                return true;
+            }
+            if (context.User?.Identity?.IsAuthenticated != true)
+            {
+                return false;
+            }
+            var roles = context.User.GetUserRoles();
+            return roles.Contains("GovernanceAdmin") ||
+                   roles.Contains("ClusterAdmin") ||
+                   roles.Contains("DataOwner") ||
+                   roles.Contains("SchemaAdmin") ||
+                   roles.Contains("CatalogReader");
+        }
+
+        IResult? CheckOpenApiAuth(HttpContext context)
+        {
+            if (IsOpenApiAuthorized(context))
+            {
+                return null;
+            }
+            return context.User?.Identity?.IsAuthenticated == true ? Results.Forbid() : Results.Unauthorized();
+        }
+
+        RouteHandlerBuilder ConfigureOpenApiAuth(RouteHandlerBuilder builder)
+        {
+            if (!gatewayOptions.IsOpenSchemaAllowed)
+            {
+                builder.RequireAuthorization();
+            }
+            return builder;
+        }
+
         // Dynamic OpenAPI 3.1 & Swagger UI Explorer (F-API-03)
-        app.MapGet("/odata/v4/$openapi", async (
+        ConfigureOpenApiAuth(app.MapGet("/odata/v4/$openapi", async (
             IDynamicOpenApiGenerator generator,
             IOpenApiCacheManager cacheManager,
             HttpContext context) =>
         {
-            var roles = context.User.GetUserRoles();
-            bool isPrivileged = roles.Contains("GovernanceAdmin") ||
-                               roles.Contains("ClusterAdmin") ||
-                               roles.Contains("DataOwner") ||
-                               roles.Contains("SchemaAdmin") ||
-                               roles.Contains("CatalogReader");
-            if (!isPrivileged)
-            {
-                return Results.Forbid();
-            }
+            var authCheck = CheckOpenApiAuth(context);
+            if (authCheck != null) return authCheck;
 
             var format = context.Request.Query["format"].ToString();
             var accept = context.Request.Headers.Accept.ToString();
             bool isYaml = string.Equals(format, "yaml", StringComparison.OrdinalIgnoreCase) ||
                           accept.Contains("application/yaml", StringComparison.OrdinalIgnoreCase);
 
+            var mode = context.Request.Query["mode"].ToString();
+            bool isModular = string.Equals(mode, "modular", StringComparison.OrdinalIgnoreCase);
+
             var bytes = await cacheManager.GetOrAddAsync(
                 domainScope: null,
                 isYaml: isYaml,
-                factory: ct => isYaml ? generator.GenerateOpenApiYamlAsync(null, ct) : generator.GenerateOpenApiJsonAsync(null, ct),
+                isModular: isModular,
+                factory: ct => isYaml
+                    ? generator.GenerateOpenApiYamlAsync(null, isModular, ct)
+                    : generator.GenerateOpenApiJsonAsync(null, isModular, ct),
                 ct: context.RequestAborted);
 
             var contentType = isYaml ? "application/yaml;charset=utf-8" : "application/json;charset=utf-8";
             return Results.Bytes(bytes, contentType: contentType);
-        }).RequireAuthorization();
+        }));
 
-        app.MapGet("/odata/v4/{domain}/openapi.json", async (
+        // OpenAPI Catalog Index Endpoint (Lists all available domain slices & API specs)
+        ConfigureOpenApiAuth(app.MapGet("/odata/v4/$openapi/index", async (
+            IDynamicOpenApiGenerator generator,
+            HttpContext context) =>
+        {
+            var authCheck = CheckOpenApiAuth(context);
+            if (authCheck != null) return authCheck;
+
+            var serviceRoot = $"{context.Request.Scheme}://{context.Request.Host}/odata/v4";
+            var indexDoc = await generator.GetIndexDocumentAsync(serviceRoot, context.RequestAborted);
+            return Results.Json(indexDoc, contentType: "application/json;charset=utf-8");
+        }));
+
+        ConfigureOpenApiAuth(app.MapGet("/api/v1/openapi/index", async (
+            IDynamicOpenApiGenerator generator,
+            HttpContext context) =>
+        {
+            var authCheck = CheckOpenApiAuth(context);
+            if (authCheck != null) return authCheck;
+
+            var serviceRoot = $"{context.Request.Scheme}://{context.Request.Host}/odata/v4";
+            var indexDoc = await generator.GetIndexDocumentAsync(serviceRoot, context.RequestAborted);
+            return Results.Json(indexDoc, contentType: "application/json;charset=utf-8");
+        }));
+
+        // Isolated Entity Schema Endpoint ($ref target for modular OpenAPI specifications)
+        ConfigureOpenApiAuth(app.MapGet("/odata/v4/$openapi/schemas/{domain}/{schema}/{tableName}", async (
+            string domain,
+            string schema,
+            string tableName,
+            IDynamicOpenApiGenerator generator,
+            HttpContext context) =>
+        {
+            var authCheck = CheckOpenApiAuth(context);
+            if (authCheck != null) return authCheck;
+
+            var tableId = new TableIdentifier(domain, schema, tableName);
+            var json = await generator.GenerateEntitySchemaJsonAsync(tableId, context.RequestAborted);
+            if (json == null)
+            {
+                return Results.NotFound(new { error = $"Table '{domain}.{schema}.{tableName}' not found in metadata repository." });
+            }
+
+            return Results.Content(json, "application/json;charset=utf-8");
+        }));
+
+        ConfigureOpenApiAuth(app.MapGet("/odata/v4/{domain}/openapi.json", async (
             string domain,
             IDynamicOpenApiGenerator generator,
             IOpenApiCacheManager cacheManager,
             HttpContext context) =>
         {
-            var roles = context.User.GetUserRoles();
-            bool isPrivileged = roles.Contains("GovernanceAdmin") ||
-                               roles.Contains("ClusterAdmin") ||
-                               roles.Contains("DataOwner") ||
-                               roles.Contains("SchemaAdmin") ||
-                               roles.Contains("CatalogReader");
-            if (!isPrivileged)
-            {
-                return Results.Forbid();
-            }
+            var authCheck = CheckOpenApiAuth(context);
+            if (authCheck != null) return authCheck;
+
+            var mode = context.Request.Query["mode"].ToString();
+            bool isModular = string.Equals(mode, "modular", StringComparison.OrdinalIgnoreCase);
 
             var bytes = await cacheManager.GetOrAddAsync(
                 domainScope: domain,
                 isYaml: false,
-                factory: ct => generator.GenerateOpenApiJsonAsync(domain, ct),
+                isModular: isModular,
+                factory: ct => generator.GenerateOpenApiJsonAsync(domain, isModular, ct),
                 ct: context.RequestAborted);
 
             return Results.Bytes(bytes, contentType: "application/json;charset=utf-8");
-        }).RequireAuthorization();
+        }));
 
-        app.MapGet("/odata/v4/{domain}/openapi.yaml", async (
+        ConfigureOpenApiAuth(app.MapGet("/odata/v4/{domain}/openapi.yaml", async (
             string domain,
             IDynamicOpenApiGenerator generator,
             IOpenApiCacheManager cacheManager,
             HttpContext context) =>
         {
-            var roles = context.User.GetUserRoles();
-            bool isPrivileged = roles.Contains("GovernanceAdmin") ||
-                               roles.Contains("ClusterAdmin") ||
-                               roles.Contains("DataOwner") ||
-                               roles.Contains("SchemaAdmin") ||
-                               roles.Contains("CatalogReader");
-            if (!isPrivileged)
-            {
-                return Results.Forbid();
-            }
+            var authCheck = CheckOpenApiAuth(context);
+            if (authCheck != null) return authCheck;
+
+            var mode = context.Request.Query["mode"].ToString();
+            bool isModular = string.Equals(mode, "modular", StringComparison.OrdinalIgnoreCase);
 
             var bytes = await cacheManager.GetOrAddAsync(
                 domainScope: domain,
                 isYaml: true,
-                factory: ct => generator.GenerateOpenApiYamlAsync(domain, ct),
+                isModular: isModular,
+                factory: ct => generator.GenerateOpenApiYamlAsync(domain, isModular, ct),
                 ct: context.RequestAborted);
 
             return Results.Bytes(bytes, contentType: "application/yaml;charset=utf-8");
-        }).RequireAuthorization();
+        }));
 
         app.MapGet("/odata/v4/$swagger", (HttpContext context, IWebHostEnvironment env) =>
         {
-            if (!env.IsDevelopment() && context.User?.Identity?.IsAuthenticated != true)
+            if (!gatewayOptions.IsOpenSchemaAllowed && !env.IsDevelopment() && context.User?.Identity?.IsAuthenticated != true)
             {
                 return Results.Unauthorized();
             }
@@ -131,7 +203,7 @@ public static class ODataEndpoints
 
         app.MapGet("/docs", (HttpContext context, IWebHostEnvironment env) =>
         {
-            if (!env.IsDevelopment() && context.User?.Identity?.IsAuthenticated != true)
+            if (!gatewayOptions.IsOpenSchemaAllowed && !env.IsDevelopment() && context.User?.Identity?.IsAuthenticated != true)
             {
                 return Results.Unauthorized();
             }
@@ -207,23 +279,69 @@ public static class ODataEndpoints
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>GqlGateway - OData v4 OpenAPI 3.1 Explorer</title>
+      <title>GqlGateway - OpenAPI 3.1 & OData Explorer</title>
       <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css" crossorigin="anonymous" />
+      <style>
+        .swagger-ui .topbar { background-color: #1e293b; padding: 10px 0; }
+        .swagger-ui .topbar .download-url-wrapper { display: flex; align-items: center; gap: 8px; }
+        .swagger-ui .topbar .download-url-wrapper input[type=text] { border-radius: 4px; padding: 6px 10px; }
+      </style>
     </head>
     <body>
     <div id="swagger-ui"></div>
     <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-standalone-preset.js" crossorigin="anonymous"></script>
     <script nonce="{{nonce}}">
-      window.onload = () => {
+      window.onload = async () => {
+        const params = new URLSearchParams(window.location.search);
+        const targetDomain = params.get('domain');
+        const customUrl = params.get('url');
+
+        let specUrls = [
+          { url: '/odata/v4/$openapi', name: 'All Domains (Monolithic)' },
+          { url: '/odata/v4/$openapi?mode=modular', name: 'All Domains (Modular $ref)' },
+          { url: '/api/v1/queries/openapi.json', name: 'Declarative SQL Queries' }
+        ];
+        let primaryName = 'All Domains (Monolithic)';
+
+        try {
+          const res = await fetch('/odata/v4/$openapi/index', { credentials: 'same-origin' });
+          if (res.ok) {
+            const data = await res.json();
+            if (data && Array.isArray(data.apis)) {
+              specUrls = data.apis.map(a => ({ url: a.url, name: a.name }));
+            }
+          }
+        } catch (e) {
+          // Graceful fallback to default URLs if unauthenticated or network error
+        }
+
+        if (targetDomain) {
+          const match = specUrls.find(s => s.name.toLowerCase().includes(targetDomain.toLowerCase()) || s.url.toLowerCase().includes(`/${targetDomain.toLowerCase()}/`));
+          if (match) {
+            primaryName = match.name;
+          }
+        } else if (customUrl) {
+          const match = specUrls.find(s => s.url === customUrl);
+          if (match) {
+            primaryName = match.name;
+          } else {
+            specUrls.unshift({ url: customUrl, name: 'Custom Specification' });
+            primaryName = 'Custom Specification';
+          }
+        }
+
         window.ui = SwaggerUIBundle({
-          url: '/odata/v4/$openapi',
+          urls: specUrls,
+          "urls.primaryName": primaryName,
           dom_id: '#swagger-ui',
           presets: [
             SwaggerUIBundle.presets.apis,
-            SwaggerUIBundle.SwaggerUIStandalonePreset
+            SwaggerUIStandalonePreset
           ],
-          layout: "BaseLayout",
-          deepLinking: true
+          layout: "StandaloneLayout",
+          deepLinking: true,
+          displayRequestDuration: true
         });
       };
     </script>
@@ -231,3 +349,4 @@ public static class ODataEndpoints
     </html>
     """;
 }
+
