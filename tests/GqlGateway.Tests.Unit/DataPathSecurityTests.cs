@@ -167,6 +167,35 @@ public class DataPathSecurityTests : IDisposable
     }
 
     [Fact]
+    public async Task Catalog_WhenDomainSpecifiedOrInScope_FiltersToDomain()
+    {
+        var options = Options.Create(new GatewayOptions { OpenSchema = true });
+        var httpContext = new DefaultHttpContext();
+        httpContext.Items["DomainScope"] = "finance";
+        var accessor = new HttpContextAccessor { HttpContext = httpContext };
+
+        var catalogFromScope = await _query.GetCatalogAsync(domain: null, first: null, after: null, search: null,
+            _repository, _repository, accessor, options);
+        catalogFromScope.All(t => t.Domain == "finance").ShouldBeTrue();
+
+        var emptyDomainCatalog = await _query.GetCatalogAsync(domain: "nonexistent", first: null, after: null, search: null,
+            _repository, _repository, accessor, options);
+        emptyDomainCatalog.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task Catalog_WhenPaginationAndSearchSpecified_PaginatesAndFilters()
+    {
+        var options = Options.Create(new GatewayOptions { OpenSchema = true });
+        var accessor = new HttpContextAccessor { HttpContext = new DefaultHttpContext() };
+
+        var searchResult = await _query.GetCatalogAsync(domain: null, first: 1, after: null, search: "finance_table_1",
+            _repository, _repository, accessor, options);
+        searchResult.Count.ShouldBe(1);
+        searchResult[0].TableName.ShouldBe("finance_table_1");
+    }
+
+    [Fact]
     public async Task Catalog_DenyColumns_AreExcludedFromCatalogDto()
     {
         var table = new TableIdentifier("finance", "dbo", "finance_table_1");

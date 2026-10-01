@@ -1174,9 +1174,13 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
 | **F-DOC-01: Omnichannel Documentation Passthrough (GQL, MCP, Swagger, OData)** | 10 | 2.8 | 95% | 1.5 | 1.0 W | **39.9** | ✅ **100% Abgeschlossen (GA)** (GQL, MCP Tools/Resources, OpenAPI 3.1, OData CSDL) |
 | **F-DBT-1: `run_results.json` Health Telemetry & Circuit Breaker** | 9 | 2.5 | 95% | 1.8 | 1.0 W | **38.4** | ✅ **100% Abgeschlossen (GA)** (Circuit Breaker, RBAC-APIs, AST-Quarantäne) |
+| **F-OPEN-01: OpenSchema Mode, Multi-File OpenAPI & Catalog Domain Slicing** | 9 | 2.6 | 95% | 1.3 | 0.8 W | **36.1** | 🚀 **In Umsetzung (Wave 2 Quick-Win)** (OpenSchema für MCP/GQL, Multi-File Partitioning & `/graphql/{domain}`) |
+| **F-DX-01: Zero-Config Developer Quickstart, Interactive Dev Portal & Self-Healing Hints** | 10 | 2.8 | 95% | 1.2 | 1.0 W | **31.9** | 🚀 **Top-Prio DX Initiative (Wave 2 Quick-Win)** (Batteries-Included Dev Preset, In-Memory SQLite Seed, Identity Switcher & Dev Portal `/`) |
+| **F-SQL-01: Declarative SQL-to-API Engine & Auto-OpenAPI 3.0** | 9 | 2.9 | 95% | 1.5 | 1.5 W | **24.8** | ✅ **100% Abgeschlossen (GA)** (SQL Endpoints, Parameter Parsing, Auto-OpenAPI Swagger 3.0, dbt Sync & RLS Pushdown) |
+| **F-CDC-02: Native MSSQL Change Tracking Ingestion Provider** | 8 | 2.8 | 90% | 1.5 | 1.5 W | **20.2** | 🟡 **Top-Priorität Wave 2** (Zero-Kafka Realtime Engine über `CHANGETABLE`, Versions-Checkpointing & In-Stream Casbin ABAC / RLS) |
 | **F-DBT-3: Live Telemetry-Driven Exposures (Ops, P99, Consumers)** | 7 | 2.0 | 90% | 1.2 | 0.8 W | **18.9** | ✅ **100% Abgeschlossen (GA)** (InMemoryTelemetryMetricsProvider, Enriched exposures.yaml) |
-| **F-DBT-2: dbt Model Contract Enforcement & Breaking Change Gate** | 8 | 2.5 | 90% | 1.5 | 1.5 W | **18.0** | ✅ **100% Abgeschlossen (GA)** (DbtContractLinter, CI Gate & Breaking Change Guard) |
 | **F-PERF-08: Hierarchical Resource Groups & Workload Queuing (Trino Pattern)** | 9 | 2.5 | 90% | 1.4 | 1.5 W | **18.9** | ✅ **100% Abgeschlossen (GA)** (Tiering, Concurrency Leasing, Anti-Barging, SEC-02) |
+| **F-DBT-2: dbt Model Contract Enforcement & Breaking Change Gate** | 8 | 2.5 | 90% | 1.5 | 1.5 W | **18.0** | ✅ **100% Abgeschlossen (GA)** (DbtContractLinter, CI Gate & Breaking Change Guard) |
 | **F-API-07: Canonical System Metadaten & Monitoring Schema (`$system` / `__gateway`)** | 7 | 2.0 | 95% | 1.3 | 1.0 W | **17.3** | ✅ **100% Abgeschlossen (GA)** (GatewaySystemMetricsService, Endpoints, RBAC SEC-01) |
 | **F-AI-02: Semantic MCP Schema Compiler (dbt & OpenMetadata Ingestion)** | 8 | 3.0 | 90% | 1.6 | 2.0 W | **17.3** | ✅ **100% Abgeschlossen (GA)** (dbt/Katalog Ingestion in Tools & Resources) |
 | **F-API-03: Dynamic OData OpenAPI 3.1 & Swagger UI (`/odata/v4/$openapi`)** | 9 | 2.5 | 95% | 1.2 | 1.5 W | **17.1** | ✅ **100% Abgeschlossen (GA)** (OpenAPI JSON/YAML, Domain-Scope, Swagger UI) |
@@ -1184,20 +1188,23 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **F-API-04: Declarative Web API OpenAPI/Swagger Schema & Doc Ingestion** | 8 | 2.2 | 90% | 1.2 | 1.2 W | **15.8** | ✅ **100% Abgeschlossen (GA)** (OpenApiIngestionService, Virtual HTTP Tables & Catalog Ingestion) |
 | **F-AI-06: Provenance & Lineage Footnoting (Explainable AI / EU AI Act)** | 7 | 2.5 | 85% | 2.0 | 2.0 W | **14.9** | ✅ **100% Abgeschlossen (GA)** (Revisionssichere `_provenance` Footnotes) |
 | **P10: Policy Simulation Sandbox ("What-If" Replay)** | 8 | 2.8 | 90% | 1.8 | 2.5 W | **14.5** | ✅ **100% Abgeschlossen (GA)** |
-| **F-SQL-01: Declarative SQL-to-API Engine & Auto-OpenAPI 3.0** | 9 | 2.9 | 95% | 1.5 | 1.5 W | **24.8** | ✅ **100% Abgeschlossen (GA)** (SQL Endpoints, Parameter Parsing, Auto-OpenAPI Swagger 3.0, dbt Sync & RLS Pushdown) |
-| **F-CDC-02: Native MSSQL Change Tracking Ingestion Provider** | 8 | 2.8 | 90% | 1.5 | 1.5 W | **20.2** | 🟡 **Top-Priorität Wave 2** (Zero-Kafka Realtime Engine über `CHANGETABLE`, Versions-Checkpointing & In-Stream Casbin ABAC / RLS) |
 | **F-DATA-01: Hierarchical Parquet Egress & Nested Query Serialization** | 8 | 2.8 | 90% | 1.5 | 1.5 W | **13.4** | ✅ **100% Abgeschlossen (GA)** (ParquetExportService, Export-Endpoints, Content Negotiation, Dremel LIST<STRUCT>) |
-| **F-PERF-09: GraphQL-to-SQL AST Single-Query Compiler (`FOR JSON PATH`)** | 9 | 3.0 | 90% | 1.5 | 2.0 W | **12.2** | ✅ **100% Abgeschlossen (GA)** (SingleQueryAstCompiler, FOR JSON / json_agg, multi-level RLS & Type-Coercion) |
-| **F-DATA-02: Governed WebSQL Engine (Trino AST Linter & RLS Rewriter)** | 8 | 2.7 | 90% | 1.4 | 1.6 W | **12.1** | ✅ **100% Abgeschlossen (GA)** (Sichere HTTP-SQL-Ausführung nach Trino-Muster mit AST-Whitelisting, RLS-Injektion & 790 Tests) |
 | **F-AI-03: Dynamic Few-Shot "Golden Query" Injection (Audit Replay)** | 8 | 2.2 | 90% | 1.1 | 1.3 W | **13.4** | ✅ **100% Abgeschlossen (GA)** (GoldenQueryService, examples:// Resources & MCP Tool) |
 | **P11: Smart Schema Deprecation & Sunsetting Engine** | 9 | 2.2 | 95% | 1.4 | 2 W | **13.2** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DBT-4: dbt Cloud & Orchestrator HMAC Webhook Receiver** | 8 | 1.5 | 90% | 1.2 | 1.0 W | **12.9** | ✅ **100% Abgeschlossen (GA)** (Timing-safe HMAC-SHA256 Webhook Receiver) |
 | **F-AI-05: Human-in-the-Loop Step-Up Approval via MCP (4-Augen)** | 7 | 2.8 | 80% | 1.8 | 2.2 W | **12.8** | ✅ **100% Abgeschlossen (GA)** (HitLStepUpApprovalService, Endpunkte, Anti-Self-Approval, Fail-Closed) |
+| **P2: Dynamic Client Quotas & Cost Telemetrie** | 9 | 1.8 | 95% | 1.2 | 1.5 W | **12.3** | ✅ **100% Abgeschlossen (GA)** |
+| **F-PERF-09: GraphQL-to-SQL AST Single-Query Compiler (`FOR JSON PATH`)** | 9 | 3.0 | 90% | 1.5 | 2.0 W | **12.2** | ✅ **100% Abgeschlossen (GA)** (SingleQueryAstCompiler, FOR JSON / json_agg, multi-level RLS & Type-Coercion) |
+| **F-DATA-02: Governed WebSQL Engine (Trino AST Linter & RLS Rewriter)** | 8 | 2.7 | 90% | 1.4 | 1.6 W | **12.1** | ✅ **100% Abgeschlossen (GA)** (Sichere HTTP-SQL-Ausführung nach Trino-Muster mit AST-Whitelisting, RLS-Injektion & 790 Tests) |
 | **P12: Differential Privacy & Dynamic Perturbation** | 7 | 3.0 | 85% | 2.0 | 3 W | **11.9** | ✅ **100% Abgeschlossen (GA)** |
 | **F-DBT-6: Policy & RLS Auto-Sync aus dbt Metadaten** | 7 | 2.0 | 85% | 1.5 | 1.5 W | **11.9** | ✅ **100% Abgeschlossen (GA)** (meta.casbin_roles & meta.rls_filter, 4-Eyes Proposal Approval) |
 | **F-ARCH-10: Standardisiertes Connector-SPI (`IGqlGatewayConnector`)** | 8 | 2.5 | 90% | 1.2 | 2.0 W | **10.8** | 🟡 **Priorität Wave 2** (Modulare Datenquellen-Anbindung nach Trino-SPI-Muster) |
+| **P1: Konkrete Data Catalog Connectors** | 8 | 2.5 | 90% | 1.8 | 3 W | **10.8** | ✅ **100% Abgeschlossen (GA)** |
+| **P9: Ingress/Egress Extensibility SDK & Workflow Interceptors** | 8 | 2.5 | 90% | 1.6 | 3 W | **9.6** | ✅ **100% Abgeschlossen (GA)** |
 | **P13: Data Contract & FinOps Chargeback Engine** | 8 | 2.0 | 90% | 1.3 | 2 W | **9.4** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **F-AI-07: Vector-Indexed Dynamic Tool Pruning (Scalable Catalog)** | 6 | 2.5 | 85% | 1.1 | 1.5 W | **9.4** | 🟡 **Priorität Wave 2** |
+| **P7: Subgraph Federation (Hot Chocolate Fusion)** | 6 | 2.5 | 90% | 1.2 | 1.8 W | **9.0** | ✅ **100% Abgeschlossen (GA)** |
+| **P3: CDN Cache-Tag Headers & Edge Invalidation** | 8 | 2.2 | 90% | 1.1 | 2 W | **8.7** | ✅ **100% Abgeschlossen (GA)** |
 | **P16: Post-Quantum Cryptography (ML-KEM / PQC)** | 6 | 2.0 | 85% | 1.6 | 2 W | **8.2** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P15: Confidential Compute Enclave Support (SGX/SEV)** | 5 | 2.8 | 80% | 1.8 | 3 W | **6.7** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **F-AI-08: Closed-Loop Drift Detection & Feedback PR Generator** | 6 | 2.0 | 75% | 1.3 | 1.8 W | **6.5** | 🔭 **Wave 2 / Wave 3** |
@@ -1205,14 +1212,9 @@ $$\text{RICE-C Score} = \frac{\text{Reach} \times \text{Impact} \times \text{Con
 | **F-DBT-5: dbt Semantic Layer & MetricFlow Auto-Mapping** | 6 | 3.0 | 80% | 1.0 | 2.5 W | **5.7** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P14: Zero-Trust Lakehouse Arrow Flight Governor** | 6 | 2.8 | 85% | 1.4 | 3.5 W | **5.7** | 🟡 **Mittlere Priorität (Wave 2)** |
 | **P6: Data Steward Studio & Policy Simulator UI** | 7 | 2.2 | 90% | 1.6 | 4 W | **5.5** | ⚪ *UI-Komponente (Separat geführt)* |
-| **F-DBT-7: dbt Mesh Multi-Project Cross-Model Federation** | 5 | 2.0 | 75% | 1.0 | 2.0 W | **3.7** | 🔭 **Wave 2 / Wave 3** |
-| **P2: Dynamic Client Quotas & Cost Telemetrie** | 9 | 1.8 | 95% | 1.2 | 1.5 W | **12.3** | ✅ **100% Abgeschlossen (GA)** |
-| **P1: Konkrete Data Catalog Connectors** | 8 | 2.5 | 90% | 1.8 | 3 W | **10.8** | ✅ **100% Abgeschlossen (GA)** |
-| **P9: Ingress/Egress Extensibility SDK & Workflow Interceptors** | 8 | 2.5 | 90% | 1.6 | 3 W | **9.6** | ✅ **100% Abgeschlossen (GA)** |
-| **P7: Subgraph Federation (Hot Chocolate Fusion)** | 6 | 2.5 | 90% | 1.2 | 1.8 W | **9.0** | ✅ **100% Abgeschlossen (GA)** |
-| **P3: CDN Cache-Tag Headers & Edge Invalidation** | 8 | 2.2 | 90% | 1.1 | 2 W | **8.7** | ✅ **100% Abgeschlossen (GA)** |
 | **P5: Realtime Event Subscriptions (Kafka/CDC)** | 7 | 2.5 | 85% | 1.3 | 4 W | **4.8** | ✅ **100% Abgeschlossen (GA)** |
 | **P4: Modern Lakehouse Connector (Iceberg / Parquet)** | 6 | 3.0 | 90% | 1.3 | 4 W | **4.3** | ✅ **100% Abgeschlossen (GA)** |
+| **F-DBT-7: dbt Mesh Multi-Project Cross-Model Federation** | 5 | 2.0 | 75% | 1.0 | 2.0 W | **3.7** | 🔭 **Wave 2 / Wave 3** |
 | **P8: Schema Registry & CI/CD Checks (`rover`-Pendant)** | 6 | 1.8 | 85% | 1.2 | 3.5 W | **3.1** | ✅ **100% Abgeschlossen (GA)** |
 
 ---
@@ -1263,8 +1265,10 @@ flowchart TD
         D38["AppSec Remediation (SEC-01..03, CQ-01..03, VULN-01..09, Type Projection Hardening)"]
     end
 
-    subgraph Wave2["Wave 2: Trino-SPI, Lakehouse Acceleration & Enterprise Guardrails (Verbleibende Umsetzungsphase)"]
+    subgraph Wave2["Wave 2: Trino-SPI, Lakehouse Acceleration, DX & Enterprise Guardrails (Aktuelle Umsetzungsphase)"]
         direction TB
+        W2_OPEN["F-OPEN-01 OpenSchema Mode, Multi-File OpenAPI & Catalog Slicing"]
+        W2_DX["F-DX-01 Zero-Config Developer Quickstart & Dev Portal Hub"]
         W2_0["F-CDC-02 Native MSSQL Change Tracking Ingestion (Zero-Kafka Realtime)"]
         W2_2["F-ARCH-10 Standardisiertes Connector-SPI (IGqlGatewayConnector nach Trino-Muster)"]
         W2_3["F-AI-07 Vector-Indexed Dynamic Tool Pruning (Scalable Catalog)"]
@@ -1305,7 +1309,9 @@ flowchart TD
    - **Umfassende AppSec-Remediation & Härtung:** Behebung aller Befunde aus den Security-Reviews (VULN-01 bis VULN-09, SEC-01 bis SEC-03, CQ-01 bis CQ-03, Type Projection Hardening).
 
 2. **Nächste strategische Umsetzungsphase: Verbleibende Wave 2 Initiativen:**
-   - **Top-Priorität: `F-CDC-02` Native MSSQL Change Tracking Ingestion Provider (RICE-C Score: 20.2):** Aufhebung der "Kafka-Barriere" für Enterprise-Kunden durch schlüsselfertige Realtime-Subscriptions direkt über SQL Server `CHANGETABLE`. Bietet sofortigen Marktvorteil gegenüber Apollo (kein DB-CDC) und Hasura (teure, ressourcenhungrige Trigger).
+   - **Top-Priorität DX & Scalability: `F-OPEN-01` OpenSchema Mode, Multi-File OpenAPI & Catalog Domain Slicing (RICE-C Score: 36.1):** Schützt das Gateway vor Introspection- und Schema-Explosionen bei zehntausenden Tabellen (Mega-Schemas). Erlaubt offene Erkundung des Datenkatalogs via `/graphql/{domain}` und `catalog(domain, first, after, search)` sowie Zero-Barrier MCP-Tool-Discovery bei gleichzeitig fail-closed geschützten Datenabfragen.
+   - **Top-Priorität DX: `F-DX-01` Zero-Config Developer Quickstart & Interactive Dev Portal (RICE-C Score: 31.9):** Senkt die Time-to-First-Query von 30 Minuten auf 30 Sekunden durch ein schlüsselfertiges `Quickstart`-Profil, In-Memory SQLite Seed-Katalog, interaktiven Root-Hub (`GET /`) mit 1-Click Identity-Switcher (Alice, Bob, Carol) und kontextbezogene "Fix-It"-Fehlermeldungen im Dev-Modus.
+   - **Top-Priorität Data Streaming: `F-CDC-02` Native MSSQL Change Tracking Ingestion Provider (RICE-C Score: 20.2):** Aufhebung der "Kafka-Barriere" für Enterprise-Kunden durch schlüsselfertige Realtime-Subscriptions direkt über SQL Server `CHANGETABLE`. Bietet sofortigen Marktvorteil gegenüber Apollo (kein DB-CDC) und Hasura (teure, ressourcenhungrige Trigger).
    - In Wave 2 rücken parallel **`F-ARCH-10` Standardisiertes Connector-SPI** (`IGqlGatewayConnector` nach Trino-Muster), **`F-AI-07` Vector Tool Pruning**, **`F-DBT-5` MetricFlow Resolvers**, **`P13` Data Contract & FinOps Chargeback**, **`P14` Arrow Flight Governor**, **`P15` Confidential Compute Enclaves** und **`P16` Post-Quantum TLS** in den Umsetzungsfokus.
 
 ---

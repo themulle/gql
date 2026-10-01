@@ -235,8 +235,28 @@ public static class GatewayApplicationBuilderExtensions
             pluginManager.LoadPluginsFromDirectory(gatewayOptions.Plugins.Directory);
         }
 
+        // Domain-scoped GraphQL endpoint: /graphql/{domain} rewrites path to /graphql and sets DomainScope
+        app.Use(async (context, next) =>
+        {
+            var path = context.Request.Path.Value;
+            if (!string.IsNullOrEmpty(path) && path.StartsWith(endpoint + "/", StringComparison.OrdinalIgnoreCase))
+            {
+                var subPath = path[(endpoint.Length + 1)..].Trim('/');
+                if (!string.IsNullOrEmpty(subPath) && !subPath.Contains('/'))
+                {
+                    context.Items["DomainScope"] = subPath;
+                    context.Request.Path = endpoint;
+                }
+            }
+            await next(context);
+        });
+
         app.UseWebSockets();
-        app.MapGraphQL(endpoint).RequireAuthorization();
+        var gqlEndpoint = app.MapGraphQL(endpoint);
+        if (!gatewayOptions.IsAnonymousAccessAllowed && !gatewayOptions.IsOpenSchemaAllowed)
+        {
+            gqlEndpoint.RequireAuthorization();
+        }
 
         // 3. Modular Feature Endpoints (Route Groups)
         app.MapAuthEndpoints();

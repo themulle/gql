@@ -70,27 +70,45 @@ public sealed class Query
     public FinanceQuery GetFinance() => new();
     public HrQuery GetHr() => new();
 
+    [GraphQLIgnore]
     public Task<IReadOnlyList<TableMetadataDto>> GetCatalogAsync(
         [Service] IGovernanceRepository repository,
         [Service] IHttpContextAccessor httpContextAccessor,
         [Service] IOptions<GatewayOptions>? options = null,
         CancellationToken ct = default)
-        => GetCatalogAsync(repository, repository, httpContextAccessor, options, ct);
+        => GetCatalogAsync(null, null, null, null, repository, repository, httpContextAccessor, options, ct);
 
     public async Task<IReadOnlyList<TableMetadataDto>> GetCatalogAsync(
+        string? domain = null,
+        int? first = null,
+        int? after = null,
+        string? search = null,
         [Service] ITableMetadataRepository metadataRepository = default!,
         [Service] IConsentRepository consentRepository = default!,
         [Service] IHttpContextAccessor httpContextAccessor = default!,
         [Service] IOptions<GatewayOptions>? options = null,
         CancellationToken ct = default)
     {
-        var principal = httpContextAccessor?.HttpContext?.User;
+        var httpContext = httpContextAccessor?.HttpContext;
+        var principal = httpContext?.User;
         var isOpenSchema = options?.Value?.IsOpenSchemaAllowed == true;
+
+        if (string.IsNullOrWhiteSpace(domain))
+        {
+            if (httpContext?.Items.TryGetValue("DomainScope", out var ds) == true && ds is string scopeStr && !string.IsNullOrWhiteSpace(scopeStr))
+            {
+                domain = scopeStr;
+            }
+            else if (httpContext?.Request?.Headers.TryGetValue("X-Domain-Scope", out var headerScope) == true && !string.IsNullOrWhiteSpace(headerScope))
+            {
+                domain = headerScope.ToString();
+            }
+        }
 
         if (isOpenSchema)
         {
             var tables = await metadataRepository.GetAllTablesAsync(ct);
-            return tables.Select(t => new TableMetadataDto
+            var dtos = tables.Select(t => new TableMetadataDto
             {
                 Domain = t.Identifier.Domain,
                 Schema = t.Table.SchemaName,
@@ -99,7 +117,8 @@ public sealed class Query
                 Sensitivity = t.Table.Sensitivity,
                 Description = t.Table.Description,
                 Columns = t.Columns.Select(c => c.ColumnName).ToList()
-            }).ToList();
+            });
+            return FilterAndPaginateCatalog(dtos, domain, search, first, after);
         }
 
         if (principal?.Identity?.IsAuthenticated != true)
@@ -129,7 +148,7 @@ public sealed class Query
         var allTables = await metadataRepository.GetAllTablesAsync(ct);
         if (isGlobalAdmin || allowDiscovery)
         {
-            return allTables.Select(t => new TableMetadataDto
+            var dtos = allTables.Select(t => new TableMetadataDto
             {
                 Domain = t.Identifier.Domain,
                 Schema = t.Table.SchemaName,
@@ -138,7 +157,8 @@ public sealed class Query
                 Sensitivity = t.Table.Sensitivity,
                 Description = t.Table.Description,
                 Columns = t.Columns.Select(c => c.ColumnName).ToList()
-            }).ToList();
+            });
+            return FilterAndPaginateCatalog(dtos, domain, search, first, after);
         }
 
         // F-CONS-04: Non-admins only see tables for which they have at least one active ALLOW consent
@@ -159,7 +179,7 @@ public sealed class Query
             .GroupBy(c => c.TableIdentifier)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        return allTables
+        var visibleTables = allTables
             .Where(t => allowedTableIds.Contains(t.Identifier) && !unconditionallyDeniedTableIds.Contains(t.Identifier))
             .Select(t =>
             {
@@ -200,7 +220,45 @@ public sealed class Query
                     Description = t.Table.Description,
                     Columns = visibleColumns
                 };
-            }).ToList();
+            });
+
+        return FilterAndPaginateCatalog(visibleTables, domain, search, first, after);
+    }
+
+    private static IReadOnlyList<TableMetadataDto> FilterAndPaginateCatalog(
+        IEnumerable<TableMetadataDto> tables,
+        string? domain,
+        string? search,
+        int? first,
+        int? after)
+    {
+        var query = tables;
+
+        if (!string.IsNullOrWhiteSpace(domain))
+        {
+            query = query.Where(t => string.Equals(t.Domain, domain, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            query = query.Where(t =>
+                t.TableName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                (t.DisplayName != null && t.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
+                (t.Description != null && t.Description.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
+                t.Columns.Any(c => c.Contains(search, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        if (after.HasValue && after.Value > 0)
+        {
+            query = query.Skip(after.Value);
+        }
+
+        if (first.HasValue && first.Value > 0)
+        {
+            query = query.Take(first.Value);
+        }
+
+        return query.ToList();
     }
 
     public async Task<ConsentRevocationImpactReport> CalculateConsentRevocationImpactAsync(
