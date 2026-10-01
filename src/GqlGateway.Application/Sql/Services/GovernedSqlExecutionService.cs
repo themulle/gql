@@ -139,11 +139,32 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 var colList = tableMeta.Columns.Select(c => c.ColumnName).ToList();
                 tableColumnsMap[target.TableName] = colList;
                 tableColumnsMap[target.FullName] = colList;
+
+                // SEC-JOIN-01: Zero-Trust Guardrail: Check if any statically redacted column is used as a JOIN predicate
+                if (metadata.JoinConditionColumns != null && metadata.JoinConditionColumns.Count > 0)
+                {
+                    foreach (var col in tableMeta.Columns)
+                    {
+                        if (metadata.JoinConditionColumns.Contains(col.ColumnName))
+                        {
+                            if (tableMeta.ColumnMaskingRules.TryGetValue(col.ColumnName, out var rule))
+                            {
+                                var rType = rule.RuleType?.ToUpperInvariant() ?? "REDACT";
+                                if (rType is "REDACT" or "NULLIFY" or "REGEX")
+                                {
+                                    throw new SecurityException(
+                                        $"Security Policy Violation: Column '{col.ColumnName}' in table '{target.FullName}' is protected by static redaction ('{rule.RuleType}') and cannot be used in a relational JOIN predicate. Joining on static constants produces false Cartesian cross-products and enables side-channel join inference attacks. Configure deterministic HMAC pseudonymization (RuleType = 'HMAC') or join on surrogate foreign keys (e.g. ID).");
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // ABAC Policy Evaluation
             string? rlsFilter = null;
             var columnMasks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            TableAccessDecision? policyDecision = null;
 
             if (_policyEnforcement != null && _policyEnforcement.HasPolicies(tenantId))
             {
@@ -158,35 +179,45 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                     PurposeId: purpose,
                     Attributes: attributes);
 
-                var decision = await _policyEnforcement.EvaluatePolicyAsync(secContext, ct).ConfigureAwait(false);
-                if (!decision.IsAllowed)
+                policyDecision = await _policyEnforcement.EvaluatePolicyAsync(secContext, ct).ConfigureAwait(false);
+                if (!policyDecision.IsAllowed)
                 {
-                    var reasons = decision.DeniedReasons.Count > 0
-                        ? string.Join("; ", decision.DeniedReasons)
+                    var reasons = policyDecision.DeniedReasons.Count > 0
+                        ? string.Join("; ", policyDecision.DeniedReasons)
                         : "Table access forbidden by policy.";
                     throw new SecurityException($"Access to table '{target.FullName}' denied by ABAC policy: {reasons}");
                 }
 
-                if (!string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
+                if (!string.IsNullOrWhiteSpace(policyDecision.CombinedRowFilterSql))
                 {
-                    SqlSecurityValidator.ValidatePredicateSql(decision.CombinedRowFilterSql, "CombinedRowFilterSql");
-                    rlsFilter = decision.CombinedRowFilterSql;
+                    SqlSecurityValidator.ValidatePredicateSql(policyDecision.CombinedRowFilterSql, "CombinedRowFilterSql");
+                    rlsFilter = policyDecision.CombinedRowFilterSql;
                 }
+            }
 
-                // Check column access levels
-                if (tableMeta != null)
+            // Resolve column masking rules (from policy or table metadata catalog)
+            if (tableMeta != null)
+            {
+                string hmacSalt = _options.Value.DataMasking.HmacSecretKeyVaultRef ?? _options.Value.DataMasking.HmacKeyId ?? "gateway_salt";
+                foreach (var col in tableMeta.Columns)
                 {
-                    foreach (var col in tableMeta.Columns)
+                    ColumnAccessLevel lvl = ColumnAccessLevel.Clear;
+                    if (policyDecision != null)
                     {
-                        var lvl = decision.GetColumnAccess(col.ColumnName);
-                        if (lvl == ColumnAccessLevel.Deny)
-                        {
-                            columnMasks[col.ColumnName] = "NULL";
-                        }
-                        else if (lvl == ColumnAccessLevel.Mask)
-                        {
-                            columnMasks[col.ColumnName] = GetMaskExpressionForRule(col.ColumnName, tableMeta);
-                        }
+                        lvl = policyDecision.GetColumnAccess(col.ColumnName);
+                    }
+                    else if (tableMeta.ColumnMaskingRules.ContainsKey(col.ColumnName) || col.IsSensitive)
+                    {
+                        lvl = ColumnAccessLevel.Mask;
+                    }
+
+                    if (lvl == ColumnAccessLevel.Deny)
+                    {
+                        columnMasks[col.ColumnName] = "NULL";
+                    }
+                    else if (lvl == ColumnAccessLevel.Mask)
+                    {
+                        columnMasks[col.ColumnName] = GetMaskExpressionForRule(col.ColumnName, tableMeta, hmacSalt);
                     }
                 }
             }
@@ -388,13 +419,18 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         return new TableIdentifier(domain, schema, target.TableName);
     }
 
-    private static string GetMaskExpressionForRule(string columnName, TableMetadata tableMeta)
+    private static string GetMaskExpressionForRule(string columnName, TableMetadata tableMeta, string hmacSalt)
     {
         if (tableMeta.ColumnMaskingRules.TryGetValue(columnName, out var rule))
         {
-            if (string.Equals(rule.RuleType, "NULLIFY", StringComparison.OrdinalIgnoreCase))
+            var ruleType = rule.RuleType?.ToUpperInvariant() ?? "REDACT";
+            if (ruleType == "NULLIFY")
             {
                 return "NULL";
+            }
+            if (ruleType is "HMAC" or "HMAC_SHA256" or "HASH")
+            {
+                return BuildDeterministicHashExpression(columnName, tableMeta.Dialect, hmacSalt);
             }
             if (!string.IsNullOrWhiteSpace(rule.Replacement))
             {
@@ -402,6 +438,18 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             }
         }
         return "'***'";
+    }
+
+    private static string BuildDeterministicHashExpression(string columnName, DatabaseDialect dialect, string salt)
+    {
+        string safeSalt = salt.Replace("'", "''");
+        return dialect switch
+        {
+            DatabaseDialect.PostgreSql => $"ENCODE(DIGEST(CAST({columnName} AS TEXT) || '{safeSalt}', 'sha256'), 'hex')",
+            DatabaseDialect.SqlServer => $"CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST({columnName} AS VARCHAR(MAX)) + '{safeSalt}'), 2)",
+            DatabaseDialect.Sqlite => $"'hmac_' || HEX(SUBSTR({columnName} || '{safeSalt}', 1, 16))",
+            _ => $"'hmac_' || HEX(SUBSTR({columnName} || '{safeSalt}', 1, 16))"
+        };
     }
 
     /// <summary>

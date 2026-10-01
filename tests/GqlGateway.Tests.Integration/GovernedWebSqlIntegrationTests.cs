@@ -213,4 +213,83 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
         var response = await client.PostAsJsonAsync("/api/v1/sql", payload);
         response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
     }
+
+    [Fact]
+    public async Task WebSql_JoinOnStaticallyRedactedColumn_IsRejectedWithSecurityException()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var tableRepo = scope.ServiceProvider.GetRequiredService<ITableMetadataRepository>();
+        var sqlService = scope.ServiceProvider.GetRequiredService<IGovernedSqlExecutionService>();
+
+        var tableId = new TableIdentifier("default", "public", "crm_customers");
+        await tableRepo.UpsertTableMetadataAsync(new TableMetadata
+        {
+            Table = new Table { Id = Guid.NewGuid(), DisplayName = "crm_customers", TableName = "crm_customers" },
+            Identifier = tableId,
+            Columns = new List<TableColumn>
+            {
+                new() { ColumnName = "id", DataType = "integer" },
+                new() { ColumnName = "email", DataType = "varchar" },
+                new() { ColumnName = "tenant_id", DataType = "varchar" }
+            },
+            ColumnMaskingRules = new Dictionary<string, MaskingRule>
+            {
+                ["email"] = new MaskingRule { RuleType = "REDACT", Replacement = "***" }
+            }
+        });
+
+        var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, "usr_test"),
+            new Claim("tenant_id", "tenant_test")
+        }, "TestAuth"));
+
+        string attackQuery = "SELECT c.id, o.id FROM crm_customers c JOIN orders o ON c.email = o.email";
+
+        var ex = await Should.ThrowAsync<System.Security.SecurityException>(async () =>
+        {
+            await sqlService.RewriteSqlAsync(attackQuery, user, new TenantId("tenant_test"));
+        });
+
+        ex.Message.ShouldContain("Security Policy Violation: Column 'email'");
+        ex.Message.ShouldContain("protected by static redaction");
+    }
+
+    [Fact]
+    public async Task WebSql_JoinOnHmacPseudonymizedColumn_SucceedsAndPushesDownDeterministicHash()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var tableRepo = scope.ServiceProvider.GetRequiredService<ITableMetadataRepository>();
+        var sqlService = scope.ServiceProvider.GetRequiredService<IGovernedSqlExecutionService>();
+
+        var tableId = new TableIdentifier("default", "public", "secure_users");
+        await tableRepo.UpsertTableMetadataAsync(new TableMetadata
+        {
+            Table = new Table { Id = Guid.NewGuid(), DisplayName = "secure_users", TableName = "secure_users", SourceType = "SQLite" },
+            Identifier = tableId,
+            Columns = new List<TableColumn>
+            {
+                new() { ColumnName = "id", DataType = "integer" },
+                new() { ColumnName = "email", DataType = "varchar" },
+                new() { ColumnName = "tenant_id", DataType = "varchar" }
+            },
+            ColumnMaskingRules = new Dictionary<string, MaskingRule>
+            {
+                ["email"] = new MaskingRule { RuleType = "HMAC" }
+            }
+        });
+
+        var user = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim(ClaimTypes.NameIdentifier, "usr_test"),
+            new Claim("tenant_id", "tenant_test")
+        }, "TestAuth"));
+
+        string validJoinQuery = "SELECT u.id, o.id FROM secure_users u JOIN orders o ON u.email = o.email";
+
+        string secured = await sqlService.RewriteSqlAsync(validJoinQuery, user, new TenantId("tenant_test"));
+
+        secured.ShouldContain("hmac_");
+        secured.ShouldContain("DEV_INSECURE_TEST_KEY_ONLY");
+    }
 }
