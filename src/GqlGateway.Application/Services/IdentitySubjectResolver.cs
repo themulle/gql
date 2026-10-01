@@ -24,7 +24,8 @@ public sealed class IdentitySubjectResolver : IIdentitySubjectResolver
 
         // 1. Resolve Tenant if present
         TenantId? tenant = null;
-        var tidClaim = principal.FindFirst("tid")?.Value
+        var tidClaim = principal.FindFirst("tenant_id")?.Value
+            ?? principal.FindFirst("tid")?.Value
             ?? principal.FindFirst("tenant")?.Value
             ?? principal.FindFirst("http://schemas.microsoft.com/identity/claims/tenantid")?.Value;
 

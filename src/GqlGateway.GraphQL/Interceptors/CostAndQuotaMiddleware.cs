@@ -35,7 +35,27 @@ public sealed class CostAndQuotaMiddleware
             httpContext = accessor?.HttpContext;
         }
 
-        var doc = context.OperationDocumentInfo?.Document;
+        DocumentNode? doc = context.OperationDocumentInfo?.Document;
+        if (doc == null && context.Request.Document is IOperationDocumentNodeProvider nodeProvider)
+        {
+            doc = nodeProvider.Document;
+        }
+        if (doc == null && context.Request.Document is not null)
+        {
+            try
+            {
+                var docStr = context.Request.Document.ToString();
+                if (!string.IsNullOrWhiteSpace(docStr))
+                {
+                    doc = Utf8GraphQLParser.Parse(docStr);
+                }
+            }
+            catch
+            {
+                // Ignore parse error, next pipeline stages will handle validation/syntax error
+            }
+        }
+
         if (httpContext == null || doc == null || context.Schema == null)
         {
             await _next(context).ConfigureAwait(false);
@@ -46,8 +66,9 @@ public sealed class CostAndQuotaMiddleware
         var tierResolver = httpContext.RequestServices.GetRequiredService<IClientTierResolver>();
         string? apiKey = httpContext.Request.Headers.TryGetValue("X-API-Key", out var ak) ? ak.ToString() : null;
         string? clientIp = httpContext.Connection.RemoteIpAddress?.ToString();
+        var principal = httpContext.User ?? (context.ContextData.TryGetValue("ClaimsPrincipal", out var cpObj) && cpObj is System.Security.Claims.ClaimsPrincipal cp ? cp : null);
 
-        var clientContext = await tierResolver.ResolveAsync(httpContext.User, apiKey, clientIp, context.RequestAborted).ConfigureAwait(false);
+        var clientContext = await tierResolver.ResolveAsync(principal, apiKey, clientIp, context.RequestAborted).ConfigureAwait(false);
 
         // 2. Calculate cost via QueryCostAnalyzerRule
         int calculatedCost = QueryCostAnalyzerRule.CalculateCost(doc, context.Schema);

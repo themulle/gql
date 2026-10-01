@@ -20,9 +20,10 @@ public interface ISemanticMcpCompiler
         CancellationToken ct = default);
 
     /// <summary>
-    /// Retrieves semantic resources (glossary://, dbt://) for on-demand LLM context grounding.
+    /// Retrieves semantic resources (glossary://, dbt://) for on-demand LLM context grounding with optional user consent filtering.
     /// </summary>
     Task<IReadOnlyList<McpResourceItem>> GetSemanticResourcesAsync(
         string? domainScope = null,
+        System.Security.Claims.ClaimsPrincipal? principal = null,
         CancellationToken ct = default);
 }

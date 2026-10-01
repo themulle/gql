@@ -10,6 +10,6 @@ public interface IMcpStdioRunner
         TextReader input,
         TextWriter output,
         string servicePrincipalId = "cli-developer",
-        string tenantId = "default",
+        string tenantId = "legacy-single-tenant",
         CancellationToken cancellationToken = default);
 }

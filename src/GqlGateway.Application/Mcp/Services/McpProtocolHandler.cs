@@ -100,8 +100,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
             "ping" => HandlePing(rpcId),
             "tools/list" => HandleToolsList(rpcId),
             "tools/call" => await HandleToolsCallAsync(rpcId, root, session, cancellationToken).ConfigureAwait(false),
-            "resources/list" => await HandleResourcesListAsync(rpcId, cancellationToken).ConfigureAwait(false),
-            "resources/read" => await HandleResourcesReadAsync(rpcId, root, cancellationToken).ConfigureAwait(false),
+            "resources/list" => await HandleResourcesListAsync(rpcId, session, cancellationToken).ConfigureAwait(false),
+            "resources/read" => await HandleResourcesReadAsync(rpcId, root, session, cancellationToken).ConfigureAwait(false),
             _ => CreateErrorResponse(rpcId, -32601, $"Method '{method}' not found.")
         };
     }
@@ -266,7 +266,37 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
             : serialized;
     }
 
-    private async Task<string> HandleResourcesListAsync(object? id, CancellationToken ct)
+    private static System.Security.Claims.ClaimsPrincipal? BuildPrincipalFromSession(McpSessionContext? session)
+    {
+        if (session == null) return null;
+        var identity = new System.Security.Claims.ClaimsIdentity("MCP");
+        if (!string.IsNullOrWhiteSpace(session.UserSid))
+        {
+            identity.AddClaim(new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.PrimarySid, session.UserSid));
+            identity.AddClaim(new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.NameIdentifier, session.UserSid));
+        }
+        if (!string.IsNullOrWhiteSpace(session.TenantId))
+        {
+            identity.AddClaim(new System.Security.Claims.Claim("tenant_id", session.TenantId));
+        }
+        if (session.Roles != null)
+        {
+            foreach (var r in session.Roles)
+            {
+                identity.AddClaim(new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.Role, r));
+            }
+        }
+        if (session.GroupSids != null)
+        {
+            foreach (var g in session.GroupSids)
+            {
+                identity.AddClaim(new System.Security.Claims.Claim(System.Security.Claims.ClaimTypes.GroupSid, g));
+            }
+        }
+        return new System.Security.Claims.ClaimsPrincipal(identity);
+    }
+
+    private async Task<string> HandleResourcesListAsync(object? id, McpSessionContext? session, CancellationToken ct)
     {
         if (_semanticCompiler == null)
         {
@@ -279,7 +309,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
             """;
         }
 
-        var resources = await _semanticCompiler.GetSemanticResourcesAsync(null, ct).ConfigureAwait(false);
+        var principal = BuildPrincipalFromSession(session);
+        var resources = await _semanticCompiler.GetSemanticResourcesAsync(null, principal, ct).ConfigureAwait(false);
         var items = new List<string>(resources.Count);
         foreach (var r in resources)
         {
@@ -304,7 +335,7 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         """;
     }
 
-    private async Task<string> HandleResourcesReadAsync(object? id, JsonElement root, CancellationToken ct)
+    private async Task<string> HandleResourcesReadAsync(object? id, JsonElement root, McpSessionContext? session, CancellationToken ct)
     {
         if (_semanticCompiler == null)
         {
@@ -319,7 +350,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         }
 
         var uri = uriProp.GetString();
-        var allResources = await _semanticCompiler.GetSemanticResourcesAsync(null, ct).ConfigureAwait(false);
+        var principal = BuildPrincipalFromSession(session);
+        var allResources = await _semanticCompiler.GetSemanticResourcesAsync(null, principal, ct).ConfigureAwait(false);
         var target = allResources.FirstOrDefault(r => string.Equals(r.Uri, uri, StringComparison.OrdinalIgnoreCase));
 
         if (target == null)

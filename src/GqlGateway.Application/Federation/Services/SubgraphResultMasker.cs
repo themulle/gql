@@ -167,8 +167,13 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             return true;
         }
 
-        if (lower == "ssn" || lower.Contains("socialsecurity", StringComparison.Ordinal) || lower == "salary" ||
-            lower == "gehalt" || lower == "diagnosis" || lower == "medicalrecord" ||
+        if (lower == "ssn" || lower.Contains("socialsecurity", StringComparison.Ordinal) ||
+            lower.Contains("salary", StringComparison.Ordinal) || lower.Contains("gehalt", StringComparison.Ordinal) ||
+            lower.Contains("compensation", StringComparison.Ordinal) || lower.Contains("wage", StringComparison.Ordinal) ||
+            lower.Contains("balance", StringComparison.Ordinal) || lower.Contains("saldo", StringComparison.Ordinal) ||
+            lower.Contains("taxid", StringComparison.Ordinal) || lower.Contains("steuernummer", StringComparison.Ordinal) ||
+            lower.Contains("birth", StringComparison.Ordinal) || lower.Contains("geburtsdatum", StringComparison.Ordinal) ||
+            lower == "diagnosis" || lower == "medicalrecord" ||
             lower == "healthcondition" || lower.Contains("creditcard", StringComparison.Ordinal) ||
             lower.Contains("passwort", StringComparison.Ordinal) || lower.Contains("password", StringComparison.Ordinal))
         {

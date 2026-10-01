@@ -304,6 +304,10 @@ public sealed class Query
         {
             tenantId = tid;
         }
+        else
+        {
+            tenantId = principal.GetTenantId();
+        }
 
         bool isGovAdmin = roles.Contains("GovernanceAdmin", StringComparer.OrdinalIgnoreCase);
         bool isClusterAdmin = roles.Contains("ClusterAdmin", StringComparer.OrdinalIgnoreCase);

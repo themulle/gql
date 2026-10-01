@@ -95,6 +95,26 @@ public sealed partial class ColumnMaskingProvider : IColumnMaskingProvider
                 return null;
 
             case "REDACT":
+                if (rawValue is int or long or short or sbyte or byte or uint or ulong or ushort)
+                {
+                    return 0;
+                }
+                if (rawValue is decimal)
+                {
+                    return 0m;
+                }
+                if (rawValue is double)
+                {
+                    return 0.0;
+                }
+                if (rawValue is float)
+                {
+                    return 0.0f;
+                }
+                if (rawValue is bool)
+                {
+                    return false;
+                }
                 return rule.Replacement ?? "REDACTED";
 
             case "HMAC":

@@ -12,6 +12,7 @@ using GqlGateway.Application.OData.Interfaces;
 /// </summary>
 public sealed class OpenApiCacheManager : IOpenApiCacheManager
 {
+    private const int MaxCacheEntries = 200;
     private readonly ConcurrentDictionary<string, byte[]> _cache = new(StringComparer.OrdinalIgnoreCase);
 
     public async Task<byte[]> GetOrAddAsync(
@@ -24,6 +25,11 @@ public sealed class OpenApiCacheManager : IOpenApiCacheManager
         if (_cache.TryGetValue(key, out var cachedBytes))
         {
             return cachedBytes;
+        }
+
+        if (_cache.Count >= MaxCacheEntries)
+        {
+            _cache.Clear();
         }
 
         var contentString = await factory(ct).ConfigureAwait(false);
@@ -45,7 +51,7 @@ public sealed class OpenApiCacheManager : IOpenApiCacheManager
             return $"global_{format}";
         }
 
-        var sanitized = new string(domainScope.Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
+        var sanitized = new string(domainScope.Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').Take(64).ToArray());
         return $"{sanitized.ToLowerInvariant()}_{format}";
     }
 }

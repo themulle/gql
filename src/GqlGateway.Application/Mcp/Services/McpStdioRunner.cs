@@ -22,7 +22,7 @@ public sealed class McpStdioRunner(
         TextReader input,
         TextWriter output,
         string servicePrincipalId = "cli-developer",
-        string tenantId = "default",
+        string tenantId = "legacy-single-tenant",
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);

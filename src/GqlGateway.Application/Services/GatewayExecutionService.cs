@@ -34,6 +34,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
     private readonly ITrafficDrainController? _drainController;
     private readonly IEnumerable<IDataSourceExecutor>? _dataSourceExecutors;
     private readonly IPolicyEnforcementService? _policyEnforcementService;
+    private readonly IClientIpResolver? _clientIpResolver;
     private readonly IDataSourceExecutor _defaultSqlExecutor = new SqlDataSourceExecutor();
 
     public int LastDispatchedChildQueryCount { get; private set; }
@@ -50,7 +51,8 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         IOptions<GatewayOptions>? options = null,
         ITrafficDrainController? drainController = null,
         IEnumerable<IDataSourceExecutor>? dataSourceExecutors = null,
-        IPolicyEnforcementService? policyEnforcementService = null)
+        IPolicyEnforcementService? policyEnforcementService = null,
+        IClientIpResolver? clientIpResolver = null)
     {
         _metadataRepository = metadataRepository;
         _consentRepository = consentRepository;
@@ -63,6 +65,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         _drainController = drainController;
         _dataSourceExecutors = dataSourceExecutors;
         _policyEnforcementService = policyEnforcementService;
+        _clientIpResolver = clientIpResolver;
     }
 
     public GatewayExecutionService(
@@ -137,18 +140,16 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
         var roles = principal.GetUserRoles();
 
         // Resolve TenantId upfront for cache and consent isolation
-        var tenantId = TenantId.LegacySingleTenant;
-        if (principal.FindFirst("tenant")?.Value is { Length: > 0 } tVal && TenantId.TryParse(tVal, out var parsedFromClaim))
+        var tenantId = principal.GetTenantId();
+        if (tenantId == TenantId.LegacySingleTenant && requestHeaders != null &&
+            (requestHeaders.TryGetValue("X-Tenant-ID", out var tHeaders) || requestHeaders.TryGetValue("X-Tenant-Id", out tHeaders)) &&
+            tHeaders.Length > 0 && TenantId.TryParse(tHeaders[0], out var parsedFromHeader))
         {
-            tenantId = parsedFromClaim;
-        }
-        else if (principal.FindFirst("tenant_id")?.Value is { Length: > 0 } tIdVal && TenantId.TryParse(tIdVal, out var parsedFromIdClaim))
-        {
-            tenantId = parsedFromIdClaim;
-        }
-        else if (requestHeaders != null && requestHeaders.TryGetValue("X-Tenant-ID", out var tHeaders) && tHeaders.Length > 0 && TenantId.TryParse(tHeaders[0], out var parsedFromHeader))
-        {
-            tenantId = parsedFromHeader;
+            bool isAdmin = principal.IsInRole("GatewayAdmin") || principal.IsInRole("PlatformAdmin") || principal.IsInRole("ClusterAdmin");
+            if (principal.Identity?.IsAuthenticated != true || isAdmin)
+            {
+                tenantId = parsedFromHeader;
+            }
         }
 
         // Verify table existence in metadata catalog
@@ -202,11 +203,10 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
                 attributes[claim.Type] = claim.Value;
             }
 
-            var clientIp = System.Net.IPAddress.Loopback;
-            if (principal.FindFirst("ip")?.Value is { Length: > 0 } ipStr && System.Net.IPAddress.TryParse(ipStr, out var parsedIp))
-            {
-                clientIp = parsedIp;
-            }
+            var clientIp = _clientIpResolver?.ResolveClientIp() ??
+                (principal.FindFirst("ip")?.Value is { Length: > 0 } ipStr && System.Net.IPAddress.TryParse(ipStr, out var parsedIp)
+                    ? parsedIp
+                    : System.Net.IPAddress.Loopback);
 
             var purpose = principal.FindFirst("purpose")?.Value ?? principal.FindFirst("purpose_id")?.Value;
 
@@ -665,15 +665,7 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
             return TableAccessDecision.Denied(table, $"Table '{table}' not found in metadata catalog.");
         }
 
-        var tenantId = TenantId.LegacySingleTenant;
-        if (principal.FindFirst("tenant")?.Value is { Length: > 0 } tVal && TenantId.TryParse(tVal, out var parsedFromClaim))
-        {
-            tenantId = parsedFromClaim;
-        }
-        else if (principal.FindFirst("tenant_id")?.Value is { Length: > 0 } tIdVal && TenantId.TryParse(tIdVal, out var parsedFromIdClaim))
-        {
-            tenantId = parsedFromIdClaim;
-        }
+        var tenantId = principal.GetTenantId();
 
         var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
         var decision = await _cacheService.GetCachedDecisionAsync(tenantId, userSid, table, contextHash, ct);
@@ -719,11 +711,10 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
                 attributes[claim.Type] = claim.Value;
             }
 
-            var clientIp = System.Net.IPAddress.Loopback;
-            if (principal.FindFirst("ip")?.Value is { Length: > 0 } ipStr && System.Net.IPAddress.TryParse(ipStr, out var parsedIp))
-            {
-                clientIp = parsedIp;
-            }
+            var clientIp = _clientIpResolver?.ResolveClientIp() ??
+                (principal.FindFirst("ip")?.Value is { Length: > 0 } ipStr && System.Net.IPAddress.TryParse(ipStr, out var parsedIp)
+                    ? parsedIp
+                    : System.Net.IPAddress.Loopback);
 
             var purpose = principal.FindFirst("purpose")?.Value ?? principal.FindFirst("purpose_id")?.Value;
 

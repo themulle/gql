@@ -121,6 +121,13 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
                 claims.Add(new Claim(ClaimTypes.Role, r));
             }
         }
+        else if (userSid.Contains("ADMIN", StringComparison.OrdinalIgnoreCase))
+        {
+            claims.Add(new Claim(ClaimTypes.Role, "ClusterAdmin"));
+            claims.Add(new Claim(ClaimTypes.Role, "GovernanceAdmin"));
+            claims.Add(new Claim(ClaimTypes.Role, "DataOwner"));
+            claims.Add(new Claim(ClaimTypes.Role, "Developer"));
+        }
 
         var testTenant = headers.TryGetValue("X-Test-Tenant", out var tenantVal) && !string.IsNullOrWhiteSpace(tenantVal)
             ? tenantVal.ToString().Trim()

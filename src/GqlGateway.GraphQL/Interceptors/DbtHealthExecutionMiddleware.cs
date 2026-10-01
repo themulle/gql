@@ -53,6 +53,19 @@ public sealed class DbtHealthExecutionMiddleware
             return;
         }
 
+        Microsoft.AspNetCore.Http.HttpContext? httpContext = null;
+        if (context.ContextData.TryGetValue("HttpContext", out var hcObj) && hcObj is Microsoft.AspNetCore.Http.HttpContext hc)
+        {
+            httpContext = hc;
+        }
+        else
+        {
+            var accessor = context.RequestServices.GetService<Microsoft.AspNetCore.Http.IHttpContextAccessor>();
+            httpContext = accessor?.HttpContext;
+        }
+
+        var principal = httpContext?.User ?? (context.ContextData.TryGetValue("ClaimsPrincipal", out var cpObj) && cpObj is System.Security.Claims.ClaimsPrincipal cp ? cp : null);
+
         // 1. Extract referenced models (field names, nested selections, and name arguments)
         var referencedModels = ExtractReferencedModels(doc);
         var degradedModels = new List<DbtHealthState>();
@@ -65,22 +78,29 @@ public sealed class DbtHealthExecutionMiddleware
 
             if (health.Status == DbtModelHealthStatus.Quarantined)
             {
-                var error = ErrorBuilder.New()
-                    .SetMessage($"Die angeforderte Tabelle/Modell '{modelName}' befindet sich in Quarantäne aufgrund fehlgeschlagener dbt-Tests ({health.ActiveFailures.Count} Fehler).")
+                bool isPrivileged = principal?.IsInRole("GovernanceAdmin") == true ||
+                                    principal?.IsInRole("DataOwner") == true ||
+                                    principal?.IsInRole("ClusterAdmin") == true;
+
+                var errBuilder = ErrorBuilder.New()
+                    .SetMessage($"Die angeforderte Tabelle/Modell '{modelName}' befindet sich in Quarantäne aufgrund fehlgeschlagener dbt-Tests.")
                     .SetCode("TABLE_IN_QUARANTINE")
                     .SetExtension("table", modelName)
-                    .SetExtension("dbtHealthStatus", "Quarantined")
-                    .SetExtension("activeFailures", health.ActiveFailures.Select(f => new
+                    .SetExtension("dbtHealthStatus", "Quarantined");
+
+                if (isPrivileged)
+                {
+                    errBuilder.SetExtension("activeFailures", health.ActiveFailures.Select(f => new
                     {
                         testName = f.TestName,
                         columnName = f.ColumnName,
                         severity = f.Severity,
                         message = f.Message,
                         failedRowsCount = f.FailedRowsCount
-                    }).ToList())
-                    .Build();
+                    }).ToList());
+                }
 
-                context.Result = OperationResult.FromError(error);
+                context.Result = OperationResult.FromError(errBuilder.Build());
                 return;
             }
 

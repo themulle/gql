@@ -358,15 +358,20 @@ public sealed class Mutation
         }
 
         var roles = principal?.FindAll(ClaimTypes.Role).Select(r => r.Value).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new();
-        bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
+        bool isCrossTenantAdmin = roles.Contains("ClusterAdmin") || roles.Contains("PlatformAdmin");
+        bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || isCrossTenantAdmin;
 
         var tenantId = TenantId.LegacySingleTenant;
         if (httpContextAccessor?.HttpContext?.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
         {
             tenantId = tid;
         }
+        else if (principal != null)
+        {
+            tenantId = principal.GetTenantId();
+        }
 
-        if (req.TenantId != tenantId && !isPrivilegedAdmin)
+        if (req.TenantId != tenantId && !isCrossTenantAdmin)
         {
             throw new GraphQLException(ErrorBuilder.New()
                 .SetCode("FORBIDDEN")
@@ -509,15 +514,20 @@ public sealed class Mutation
         }
 
         var roles = principal?.FindAll(ClaimTypes.Role).Select(r => r.Value).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new();
-        bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
+        bool isCrossTenantAdmin = roles.Contains("ClusterAdmin") || roles.Contains("PlatformAdmin");
+        bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || isCrossTenantAdmin;
 
         var tenantId = TenantId.LegacySingleTenant;
         if (httpContextAccessor?.HttpContext?.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
         {
             tenantId = tid;
         }
+        else if (principal != null)
+        {
+            tenantId = principal.GetTenantId();
+        }
 
-        if (req.TenantId != tenantId && !isPrivilegedAdmin)
+        if (req.TenantId != tenantId && !isCrossTenantAdmin)
         {
             throw new GraphQLException(ErrorBuilder.New()
                 .SetCode("FORBIDDEN")
@@ -595,15 +605,20 @@ public sealed class Mutation
 
         var principal = httpContextAccessor?.HttpContext?.User;
         var roles = principal?.FindAll(ClaimTypes.Role).Select(r => r.Value).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? new();
-        bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
+        bool isCrossTenantAdmin = roles.Contains("ClusterAdmin") || roles.Contains("PlatformAdmin");
+        bool isPrivilegedAdmin = roles.Contains("GovernanceAdmin") || isCrossTenantAdmin;
 
         var tenantId = TenantId.LegacySingleTenant;
         if (httpContextAccessor?.HttpContext?.Items.TryGetValue("TenantId", out var tidObj) == true && tidObj is TenantId tid)
         {
             tenantId = tid;
         }
+        else if (principal != null)
+        {
+            tenantId = principal.GetTenantId();
+        }
 
-        if (consent.TenantId != tenantId && !isPrivilegedAdmin)
+        if (consent.TenantId != tenantId && !isCrossTenantAdmin)
         {
             throw new GraphQLException(ErrorBuilder.New()
                 .SetCode("FORBIDDEN")

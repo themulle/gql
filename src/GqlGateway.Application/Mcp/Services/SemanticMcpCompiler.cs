@@ -18,11 +18,13 @@ using Microsoft.Extensions.Logging;
 public sealed class SemanticMcpCompiler(
     ITableMetadataRepository metadataRepo,
     ILogger<SemanticMcpCompiler> logger,
-    IGoldenQueryService? goldenQueryService = null) : ISemanticMcpCompiler
+    IGoldenQueryService? goldenQueryService = null,
+    IConsentRepository? consentRepo = null) : ISemanticMcpCompiler
 {
     private readonly ITableMetadataRepository _metadataRepo = metadataRepo ?? throw new ArgumentNullException(nameof(metadataRepo));
     private readonly ILogger<SemanticMcpCompiler> _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     private readonly IGoldenQueryService? _goldenQueryService = goldenQueryService;
+    private readonly IConsentRepository? _consentRepo = consentRepo;
     private static readonly JsonSerializerOptions CachedIndentedOptions = new() { WriteIndented = true };
 
     public async Task<McpToolDefinition> CompileToolAsync(
@@ -96,9 +98,42 @@ public sealed class SemanticMcpCompiler(
 
     public async Task<IReadOnlyList<McpResourceItem>> GetSemanticResourcesAsync(
         string? domainScope = null,
+        System.Security.Claims.ClaimsPrincipal? principal = null,
         CancellationToken ct = default)
     {
         var allTables = await _metadataRepo.GetAllTablesAsync(ct).ConfigureAwait(false);
+
+        if (principal != null && _consentRepo != null)
+        {
+            var roles = principal.GetUserRoles();
+            bool isGlobalAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
+
+            if (!isGlobalAdmin)
+            {
+                var userSid = principal.GetUserSid();
+                var groupSids = principal.GetGroupSids();
+                var tenantId = principal.GetTenantId();
+
+                if (userSid != null)
+                {
+                    var allSubjects = groupSids.Append(userSid.Value).ToList();
+                    var activeConsents = await _consentRepo.GetAllActiveConsentsForSubjectsAsync(
+                        allSubjects, roles, DateTimeOffset.UtcNow, tenantId, ct).ConfigureAwait(false);
+
+                    var allowedTableIds = activeConsents
+                        .Where(c => c.Effect == ConsentEffect.Allow)
+                        .Select(c => c.TableIdentifier)
+                        .ToHashSet();
+
+                    allTables = allTables.Where(t => allowedTableIds.Contains(t.Identifier)).ToList();
+                }
+                else
+                {
+                    allTables = Array.Empty<TableMetadata>();
+                }
+            }
+        }
+
         var filtered = string.IsNullOrWhiteSpace(domainScope)
             ? allTables
             : allTables.Where(t => string.Equals(t.Identifier.Domain, domainScope, StringComparison.OrdinalIgnoreCase));

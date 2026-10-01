@@ -231,7 +231,10 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         var groupsStr = context.GroupSids != null && context.GroupSids.Count > 0
             ? string.Join(",", context.GroupSids.Select(g => g.Value).OrderBy(s => s, StringComparer.Ordinal))
             : string.Empty;
-        var cacheKey = $"{context.Tenant.Value}:{context.UserSid.Value}:{tableStr}:{context.PurposeId}:{context.Department}:{context.Region}:{context.ClearanceLevel}:{context.ClientIp}:G[{groupsStr}]";
+        var attrsStr = context.Attributes != null && context.Attributes.Count > 0
+            ? string.Join(";", context.Attributes.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key}={kv.Value}"))
+            : string.Empty;
+        var cacheKey = $"{context.Tenant.Value}:{context.UserSid.Value}:{tableStr}:{context.PurposeId}:{context.Department}:{context.Region}:{context.ClearanceLevel}:{context.ClientIp}:G[{groupsStr}]:A[{attrsStr}]";
 
         if (_decisionCache.TryGetValue(cacheKey, out var cachedEntry))
         {

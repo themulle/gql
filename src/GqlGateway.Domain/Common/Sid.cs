@@ -70,8 +70,9 @@ public static class ClaimsPrincipalExtensions
         if (principal == null) return TenantId.LegacySingleTenant;
 
         var val = principal.FindFirst("tenant_id")?.Value
+            ?? principal.FindFirst("tid")?.Value
             ?? principal.FindFirst("tenant")?.Value
-            ?? principal.FindFirst("tid")?.Value;
+            ?? principal.FindFirst("http://schemas.microsoft.com/identity/claims/tenantid")?.Value;
 
         if (string.IsNullOrWhiteSpace(val))
         {

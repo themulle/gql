@@ -141,6 +141,15 @@ public static class DbtEndpoints
             HttpContext context,
             IDbtContractValidator validator) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner") ||
+                               context.User.IsInRole("Developer");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             if (context.Request.ContentLength > 100 * 1024 * 1024)
             {
                 return Results.BadRequest(new { error = "Manifest size exceeds maximum allowed size (100 MB)." });
@@ -176,6 +185,15 @@ public static class DbtEndpoints
             HttpContext context,
             IDbtHealthCircuitBreaker circuitBreaker) =>
         {
+            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
+                               context.User.IsInRole("ClusterAdmin") ||
+                               context.User.IsInRole("DataOwner") ||
+                               context.User.IsInRole("Developer");
+            if (!isPrivileged)
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             if (context.Request.Query.TryGetValue("table", out var tableName) && !string.IsNullOrWhiteSpace(tableName))
             {
                 var db = context.Request.Query.TryGetValue("database", out var dbVal) && !string.IsNullOrWhiteSpace(dbVal) ? dbVal.ToString() : "default";

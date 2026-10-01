@@ -57,6 +57,8 @@ public sealed class DataCatalogSyncService : IDataCatalogSyncService
             syncedTables++;
             affectedTables.Add(tableAsset.Identifier);
 
+            var existing = await _metadataRepo.GetTableMetadataAsync(tableAsset.Identifier, ct).ConfigureAwait(false);
+
             bool isArt9 = tableAsset.Tags.Any(t => catalogOpts.GdprArticle9Tags.Contains(t, StringComparer.OrdinalIgnoreCase)) ||
                           tableAsset.Classifications.Any(c => catalogOpts.GdprArticle9Tags.Contains(c, StringComparer.OrdinalIgnoreCase));
 
@@ -73,6 +75,13 @@ public sealed class DataCatalogSyncService : IDataCatalogSyncService
                 syncedColumns++;
                 var matchedTag = col.Tags.FirstOrDefault(t => catalogOpts.TagToMaskingRuleMap.ContainsKey(t));
                 var isSensitive = matchedTag != null || col.Tags.Any(t => catalogOpts.PiiTags.Contains(t, StringComparer.OrdinalIgnoreCase));
+
+                // Ratchet: Never downgrade sensitive status if existing column is already sensitive
+                var existingCol = existing?.Columns?.FirstOrDefault(c => string.Equals(c.ColumnName, col.ColumnName, StringComparison.OrdinalIgnoreCase));
+                if (existingCol?.IsSensitive == true)
+                {
+                    isSensitive = true;
+                }
 
                 if (matchedTag != null && catalogOpts.TagToMaskingRuleMap.TryGetValue(matchedTag, out var ruleType))
                 {
@@ -93,6 +102,32 @@ public sealed class DataCatalogSyncService : IDataCatalogSyncService
                 });
             }
 
+            // Merge with existing masking rules so custom / manual rules are preserved
+            if (existing?.ColumnMaskingRules != null)
+            {
+                foreach (var (colName, rule) in existing.ColumnMaskingRules)
+                {
+                    if (!maskingRules.ContainsKey(colName))
+                    {
+                        maskingRules[colName] = rule;
+                    }
+                }
+            }
+
+            // Ratchet: Sensitivity must not be downgraded from HIGH/RESTRICTED to NORMAL
+            string finalSensitivity = isArt9 ? "HIGH" : (existing?.Table?.Sensitivity ?? "NORMAL");
+            if (existing?.Table != null &&
+                (string.Equals(existing.Table.Sensitivity, "HIGH", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(existing.Table.Sensitivity, "RESTRICTED", StringComparison.OrdinalIgnoreCase)) &&
+                !isArt9)
+            {
+                finalSensitivity = existing.Table.Sensitivity;
+                warnings.Add($"Table '{tableAsset.Identifier}': Retained existing high sensitivity '{existing.Table.Sensitivity}'.");
+            }
+
+            bool finalRequiresFourEyes = isArt9 || (existing?.Table?.RequiresFourEyes == true);
+            var finalDataSourceType = existing?.Table?.DataSourceType ?? DataSourceType.Sql;
+
             var metadata = new TableMetadata
             {
                 Identifier = tableAsset.Identifier,
@@ -104,10 +139,10 @@ public sealed class DataCatalogSyncService : IDataCatalogSyncService
                     DisplayName = tableAsset.DisplayName ?? tableAsset.Identifier.TableName,
                     Description = tableAsset.Description,
                     DocumentationSource = "DataCatalog",
-                    DataSourceType = DataSourceType.Sql,
+                    DataSourceType = finalDataSourceType,
                     SourceType = tableAsset.SourceType,
-                    Sensitivity = isArt9 ? "HIGH" : "NORMAL",
-                    RequiresFourEyes = isArt9
+                    Sensitivity = finalSensitivity,
+                    RequiresFourEyes = finalRequiresFourEyes
                 },
                 Columns = tableColumns,
                 ColumnMaskingRules = maskingRules

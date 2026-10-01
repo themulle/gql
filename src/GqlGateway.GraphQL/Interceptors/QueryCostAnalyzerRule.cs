@@ -51,13 +51,19 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
         }
     }
 
+    private static int SafeAdd(int a, int b) => (int)Math.Min((long)int.MaxValue, (long)a + b);
+
     public int ComputeCost(DocumentNode document, ISchemaDefinition schema)
     {
         var fragments = document.Definitions
             .OfType<FragmentDefinitionNode>()
             .ToDictionary(f => f.Name.Value, f => f, StringComparer.Ordinal);
 
-        var visitedFragments = new HashSet<string>(StringComparer.Ordinal);
+        var activeFragments = new HashSet<string>(StringComparer.Ordinal);
+        var fragmentCostCache = new Dictionary<string, int>(StringComparer.Ordinal);
+        var maskingCostCache = new Dictionary<string, int>(StringComparer.Ordinal);
+        int spreadCounter = 0;
+        const int maxSpreadExpansions = 250;
         int totalCost = 0;
 
         foreach (var def in document.Definitions)
@@ -71,7 +77,16 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                     _ => schema.QueryType
                 };
 
-                totalCost += CalculateSelectionSetCost(operation.SelectionSet, rootType, fragments, visitedFragments, schema);
+                totalCost = SafeAdd(totalCost, CalculateSelectionSetCost(
+                    operation.SelectionSet,
+                    rootType,
+                    fragments,
+                    activeFragments,
+                    fragmentCostCache,
+                    maskingCostCache,
+                    schema,
+                    ref spreadCounter,
+                    maxSpreadExpansions));
             }
         }
 
@@ -82,8 +97,12 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
         SelectionSetNode? selectionSet,
         IObjectTypeDefinition? currentType,
         IReadOnlyDictionary<string, FragmentDefinitionNode> fragments,
-        HashSet<string> visitedFragments,
-        ISchemaDefinition schema)
+        HashSet<string> activeFragments,
+        Dictionary<string, int> fragmentCostCache,
+        Dictionary<string, int> maskingCostCache,
+        ISchemaDefinition schema,
+        ref int spreadCounter,
+        int maxSpreadExpansions)
     {
         if (selectionSet == null || selectionSet.Selections.Count == 0)
         {
@@ -97,7 +116,7 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
             {
                 if (field.Name.Value.StartsWith("__", StringComparison.Ordinal))
                 {
-                    cost += 1;
+                    cost = SafeAdd(cost, 1);
                     continue;
                 }
 
@@ -153,21 +172,21 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                         ? Math.Min(requestedLimit, _maxResponseRows)
                         : _maxResponseRows;
 
-                    cost += _defaultListMultiplier * effectiveRows;
+                    cost = SafeAdd(cost, SafeAdd(0, (int)Math.Min((long)int.MaxValue, (long)_defaultListMultiplier * effectiveRows)));
 
                     if (field.SelectionSet != null)
                     {
-                        cost += CalculateMaskingCost(field.SelectionSet, fragments, visitedFragments);
-                        cost += CalculateSelectionSetCost(field.SelectionSet, nextType, fragments, visitedFragments, schema);
+                        cost = SafeAdd(cost, CalculateMaskingCost(field.SelectionSet, fragments, activeFragments, maskingCostCache));
+                        cost = SafeAdd(cost, CalculateSelectionSetCost(field.SelectionSet, nextType, fragments, activeFragments, fragmentCostCache, maskingCostCache, schema, ref spreadCounter, maxSpreadExpansions));
                     }
                 }
                 else
                 {
                     // Non-paginated entity, scalar, or unpaginated relation list
-                    cost += isList ? 5 : 1;
+                    cost = SafeAdd(cost, isList ? 5 : 1);
                     if (field.SelectionSet != null)
                     {
-                        cost += CalculateSelectionSetCost(field.SelectionSet, nextType, fragments, visitedFragments, schema);
+                        cost = SafeAdd(cost, CalculateSelectionSetCost(field.SelectionSet, nextType, fragments, activeFragments, fragmentCostCache, maskingCostCache, schema, ref spreadCounter, maxSpreadExpansions));
                     }
                 }
             }
@@ -179,11 +198,21 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                     inlineType = foundType;
                 }
 
-                cost += CalculateSelectionSetCost(inlineFrag.SelectionSet, inlineType, fragments, visitedFragments, schema);
+                cost = SafeAdd(cost, CalculateSelectionSetCost(inlineFrag.SelectionSet, inlineType, fragments, activeFragments, fragmentCostCache, maskingCostCache, schema, ref spreadCounter, maxSpreadExpansions));
             }
             else if (selection is FragmentSpreadNode fragmentSpread)
             {
-                if (fragments.TryGetValue(fragmentSpread.Name.Value, out var fragDef) && visitedFragments.Add(fragDef.Name.Value))
+                spreadCounter++;
+                if (spreadCounter > maxSpreadExpansions)
+                {
+                    return SafeAdd(_maxAllowedCost, 1000);
+                }
+
+                if (fragmentCostCache.TryGetValue(fragmentSpread.Name.Value, out var cachedFragCost))
+                {
+                    cost = SafeAdd(cost, cachedFragCost);
+                }
+                else if (fragments.TryGetValue(fragmentSpread.Name.Value, out var fragDef) && activeFragments.Add(fragDef.Name.Value))
                 {
                     IObjectTypeDefinition? fragType = currentType;
                     if (fragDef.TypeCondition != null && schema.Types.TryGetType<IObjectTypeDefinition>(fragDef.TypeCondition.Name.Value, out var foundType))
@@ -191,8 +220,10 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                         fragType = foundType;
                     }
 
-                    cost += CalculateSelectionSetCost(fragDef.SelectionSet, fragType, fragments, visitedFragments, schema);
-                    visitedFragments.Remove(fragDef.Name.Value);
+                    int fragCost = CalculateSelectionSetCost(fragDef.SelectionSet, fragType, fragments, activeFragments, fragmentCostCache, maskingCostCache, schema, ref spreadCounter, maxSpreadExpansions);
+                    activeFragments.Remove(fragDef.Name.Value);
+                    fragmentCostCache[fragDef.Name.Value] = fragCost;
+                    cost = SafeAdd(cost, fragCost);
                 }
             }
         }
@@ -203,7 +234,8 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
     private static int CalculateMaskingCost(
         SelectionSetNode selectionSet,
         IReadOnlyDictionary<string, FragmentDefinitionNode> fragments,
-        HashSet<string> visitedFragments)
+        HashSet<string> activeFragments,
+        Dictionary<string, int> maskingCostCache)
     {
         int maskingCost = 0;
         foreach (var childSel in selectionSet.Selections)
@@ -212,19 +244,26 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
             {
                 if (IsMaskedCandidate(childField.Name.Value))
                 {
-                    maskingCost += 3;
+                    maskingCost = SafeAdd(maskingCost, 3);
                 }
             }
             else if (childSel is InlineFragmentNode inlineFrag)
             {
-                maskingCost += CalculateMaskingCost(inlineFrag.SelectionSet, fragments, visitedFragments);
+                maskingCost = SafeAdd(maskingCost, CalculateMaskingCost(inlineFrag.SelectionSet, fragments, activeFragments, maskingCostCache));
             }
-            else if (childSel is FragmentSpreadNode spread &&
-                     fragments.TryGetValue(spread.Name.Value, out var fragDef) &&
-                     visitedFragments.Add(fragDef.Name.Value))
+            else if (childSel is FragmentSpreadNode spread)
             {
-                maskingCost += CalculateMaskingCost(fragDef.SelectionSet, fragments, visitedFragments);
-                visitedFragments.Remove(fragDef.Name.Value);
+                if (maskingCostCache.TryGetValue(spread.Name.Value, out var cachedMaskCost))
+                {
+                    maskingCost = SafeAdd(maskingCost, cachedMaskCost);
+                }
+                else if (fragments.TryGetValue(spread.Name.Value, out var fragDef) && activeFragments.Add(fragDef.Name.Value))
+                {
+                    int fragMaskCost = CalculateMaskingCost(fragDef.SelectionSet, fragments, activeFragments, maskingCostCache);
+                    activeFragments.Remove(fragDef.Name.Value);
+                    maskingCostCache[fragDef.Name.Value] = fragMaskCost;
+                    maskingCost = SafeAdd(maskingCost, fragMaskCost);
+                }
             }
         }
         return maskingCost;

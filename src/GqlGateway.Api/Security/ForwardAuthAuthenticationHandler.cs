@@ -55,25 +55,15 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
 
         var headers = Request.Headers;
 
-        // 1. Identify User Header (Traefik or generic ingress)
+        // 1. Identify User Header (Traefik or generic ingress - strictly configured or default)
         string? username = null;
-        if (!string.IsNullOrWhiteSpace(forwardAuthOptions.UserHeader) &&
-            headers.TryGetValue(forwardAuthOptions.UserHeader, out var customUserVal) &&
-            !string.IsNullOrWhiteSpace(customUserVal))
+        var userHeader = !string.IsNullOrWhiteSpace(forwardAuthOptions.UserHeader)
+            ? forwardAuthOptions.UserHeader
+            : "X-Forwarded-User";
+
+        if (headers.TryGetValue(userHeader, out var userVal) && !string.IsNullOrWhiteSpace(userVal))
         {
-            username = customUserVal.ToString().Trim();
-        }
-        else if (headers.TryGetValue("X-Forwarded-User", out var fwdUserVal) && !string.IsNullOrWhiteSpace(fwdUserVal))
-        {
-            username = fwdUserVal.ToString().Trim();
-        }
-        else if (headers.TryGetValue("X-Auth-Request-User", out var authUserVal) && !string.IsNullOrWhiteSpace(authUserVal))
-        {
-            username = authUserVal.ToString().Trim();
-        }
-        else if (headers.TryGetValue("X-Forwarded-Preferred-Username", out var prefUserVal) && !string.IsNullOrWhiteSpace(prefUserVal))
-        {
-            username = prefUserVal.ToString().Trim();
+            username = userVal.ToString().Trim();
         }
 
         if (string.IsNullOrWhiteSpace(username))
@@ -174,8 +164,8 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
             }
         }
 
-        // 4. Construct Claims Principal
-        var userSid = (username.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase) || Guid.TryParse(username, out _))
+        // 4. Construct Claims Principal - Always namespace ForwardAuth user SIDs to prevent arbitrary AD/Windows SID spoofing
+        var userSid = username.StartsWith("S-1-5-21-FORWARD-", StringComparison.OrdinalIgnoreCase)
             ? username
             : $"S-1-5-21-FORWARD-{username.ToUpperInvariant()}";
 
@@ -187,33 +177,25 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
             new("objectSid", userSid)
         };
 
-        // Extract Email if present
-        if (!string.IsNullOrWhiteSpace(forwardAuthOptions.EmailHeader) &&
-            headers.TryGetValue(forwardAuthOptions.EmailHeader, out var emailVal) &&
-            !string.IsNullOrWhiteSpace(emailVal))
+        // Extract Email if present (strictly configured or default)
+        var emailHeader = !string.IsNullOrWhiteSpace(forwardAuthOptions.EmailHeader)
+            ? forwardAuthOptions.EmailHeader
+            : "X-Forwarded-Email";
+
+        if (headers.TryGetValue(emailHeader, out var emailVal) && !string.IsNullOrWhiteSpace(emailVal))
         {
             claims.Add(new Claim(ClaimTypes.Email, emailVal.ToString().Trim()));
         }
-        else if (headers.TryGetValue("X-Forwarded-Email", out var fwdEmail) && !string.IsNullOrWhiteSpace(fwdEmail))
-        {
-            claims.Add(new Claim(ClaimTypes.Email, fwdEmail.ToString().Trim()));
-        }
 
-        // Extract Groups (comma or semicolon separated)
+        // Extract Groups (strictly configured or default, comma or semicolon separated)
+        var groupsHeader = !string.IsNullOrWhiteSpace(forwardAuthOptions.GroupsHeader)
+            ? forwardAuthOptions.GroupsHeader
+            : "X-Forwarded-Groups";
+
         string? groupsRaw = null;
-        if (!string.IsNullOrWhiteSpace(forwardAuthOptions.GroupsHeader) &&
-            headers.TryGetValue(forwardAuthOptions.GroupsHeader, out var customGroupsVal) &&
-            !string.IsNullOrWhiteSpace(customGroupsVal))
+        if (headers.TryGetValue(groupsHeader, out var customGroupsVal) && !string.IsNullOrWhiteSpace(customGroupsVal))
         {
             groupsRaw = customGroupsVal.ToString();
-        }
-        else if (headers.TryGetValue("X-Forwarded-Groups", out var fwdGroupsVal) && !string.IsNullOrWhiteSpace(fwdGroupsVal))
-        {
-            groupsRaw = fwdGroupsVal.ToString();
-        }
-        else if (headers.TryGetValue("X-Auth-Request-Groups", out var authGroupsVal) && !string.IsNullOrWhiteSpace(authGroupsVal))
-        {
-            groupsRaw = authGroupsVal.ToString();
         }
 
         if (!string.IsNullOrWhiteSpace(groupsRaw))
@@ -225,21 +207,15 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
             }
         }
 
-        // Extract Roles (comma or semicolon separated)
+        // Extract Roles (strictly configured or default, comma or semicolon separated)
+        var rolesHeader = !string.IsNullOrWhiteSpace(forwardAuthOptions.RolesHeader)
+            ? forwardAuthOptions.RolesHeader
+            : "X-Forwarded-Roles";
+
         string? rolesRaw = null;
-        if (!string.IsNullOrWhiteSpace(forwardAuthOptions.RolesHeader) &&
-            headers.TryGetValue(forwardAuthOptions.RolesHeader, out var customRolesVal) &&
-            !string.IsNullOrWhiteSpace(customRolesVal))
+        if (headers.TryGetValue(rolesHeader, out var customRolesVal) && !string.IsNullOrWhiteSpace(customRolesVal))
         {
             rolesRaw = customRolesVal.ToString();
-        }
-        else if (headers.TryGetValue("X-Forwarded-Roles", out var fwdRolesVal) && !string.IsNullOrWhiteSpace(fwdRolesVal))
-        {
-            rolesRaw = fwdRolesVal.ToString();
-        }
-        else if (headers.TryGetValue("X-Auth-Request-Roles", out var authRolesVal) && !string.IsNullOrWhiteSpace(authRolesVal))
-        {
-            rolesRaw = authRolesVal.ToString();
         }
 
         if (!string.IsNullOrWhiteSpace(rolesRaw))
@@ -251,25 +227,15 @@ public sealed class ForwardAuthAuthenticationHandler : AuthenticationHandler<Aut
             }
         }
 
-        // Extract Tenant
+        // Extract Tenant (strictly configured or default)
+        var tenantHeader = !string.IsNullOrWhiteSpace(forwardAuthOptions.TenantHeader)
+            ? forwardAuthOptions.TenantHeader
+            : "X-Forwarded-Tenant";
+
         string? tenant = null;
-        if (!string.IsNullOrWhiteSpace(forwardAuthOptions.TenantHeader) &&
-            headers.TryGetValue(forwardAuthOptions.TenantHeader, out var customTenantVal) &&
-            !string.IsNullOrWhiteSpace(customTenantVal))
+        if (headers.TryGetValue(tenantHeader, out var customTenantVal) && !string.IsNullOrWhiteSpace(customTenantVal))
         {
             tenant = customTenantVal.ToString().Trim();
-        }
-        else if (headers.TryGetValue("X-Forwarded-Tenant", out var fwdTenantVal) && !string.IsNullOrWhiteSpace(fwdTenantVal))
-        {
-            tenant = fwdTenantVal.ToString().Trim();
-        }
-        else if (headers.TryGetValue("X-Auth-Request-Tenant", out var authTenantVal) && !string.IsNullOrWhiteSpace(authTenantVal))
-        {
-            tenant = authTenantVal.ToString().Trim();
-        }
-        else if (headers.TryGetValue("X-Forwarded-Tenant-Id", out var fwdTenantIdVal) && !string.IsNullOrWhiteSpace(fwdTenantIdVal))
-        {
-            tenant = fwdTenantIdVal.ToString().Trim();
         }
         else if (!string.IsNullOrWhiteSpace(forwardAuthOptions.DefaultTenantId))
         {

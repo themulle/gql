@@ -412,6 +412,7 @@ public static class GatewayServiceCollectionExtensions
         });
         services.AddScoped<IJustificationTriageService, JustificationTriageService>();
 
+        services.AddScoped<IClientIpResolver, GqlGateway.Api.Security.HttpContextClientIpResolver>();
         services.AddScoped<GatewayExecutionService>(sp => new GatewayExecutionService(
             sp.GetRequiredService<ITableMetadataRepository>(),
             sp.GetRequiredService<IConsentRepository>(),
@@ -423,7 +424,8 @@ public static class GatewayServiceCollectionExtensions
             sp.GetService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
             sp.GetService<ITrafficDrainController>(),
             sp.GetServices<IDataSourceExecutor>(),
-            sp.GetService<IPolicyEnforcementService>()));
+            sp.GetService<IPolicyEnforcementService>(),
+            sp.GetService<IClientIpResolver>()));
         services.AddScoped<IGatewayExecutionService>(sp => sp.GetRequiredService<GatewayExecutionService>());
 
         // Model Context Protocol (MCP) Server & AI Data Guardrails
@@ -765,6 +767,7 @@ public static class GatewayServiceCollectionExtensions
             .UseDocumentParser()
             .UseDocumentValidation()
             .UseRequest<GqlGateway.GraphQL.Interceptors.DbtHealthExecutionMiddleware>()
+            .UseRequest<GqlGateway.GraphQL.Interceptors.SchemaSunsettingExecutionMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CostAndQuotaMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Interceptors.CdnCacheTagMiddleware>()
             .UseRequest<GqlGateway.GraphQL.Federation.SubgraphResultMaskingMiddleware>()

@@ -46,9 +46,15 @@ public static class McpEndpoints
                 ?? principal.Identity?.Name
                 ?? (gatewayOptions.IsMcpAuthBypassed ? "anonymous-ai-agent" : "unknown-agent");
 
-            var tenantId = principal.FindFirst("tenant_id")?.Value
-                ?? principal.FindFirst("tid")?.Value
-                ?? "default";
+            string tenantId;
+            if (context.Items.TryGetValue(TenantResolutionMiddleware.TenantIdItemKey, out var itemTenant) && itemTenant is TenantId tId)
+            {
+                tenantId = tId.Value;
+            }
+            else
+            {
+                tenantId = principal.GetTenantId().Value;
+            }
 
             var userSid = principal.GetUserSid()?.Value;
             var roles = principal.GetUserRoles().ToList();
@@ -197,9 +203,15 @@ public static class McpEndpoints
                     ?? principal.Identity?.Name
                     ?? (gatewayOptions.IsMcpAuthBypassed ? "anonymous-ai-agent" : "cli-developer");
 
-                var tenantId = principal.FindFirst("tenant_id")?.Value
-                    ?? principal.FindFirst("tid")?.Value
-                    ?? "default";
+                string tenantId;
+                if (context.Items.TryGetValue(TenantResolutionMiddleware.TenantIdItemKey, out var itemTenant) && itemTenant is TenantId tId)
+                {
+                    tenantId = tId.Value;
+                }
+                else
+                {
+                    tenantId = principal.GetTenantId().Value;
+                }
 
                 var userSid = principal.GetUserSid()?.Value;
                 var roles = principal.GetUserRoles().ToList();

@@ -65,11 +65,27 @@ public static class SchemaRegistryEndpoints
             HttpContext httpContext,
             SchemaRegistrationRequest request,
             ISchemaRegistryService registry,
+            ClaimsPrincipal principal,
             CancellationToken ct) =>
         {
             if (httpContext.Request.ContentLength > 10 * 1024 * 1024)
             {
                 return Results.BadRequest(new { error = "Schema check payload exceeds maximum allowed size (10 MB)." });
+            }
+
+            var canCheck = principal.IsInRole("GovernanceAdmin") ||
+                           principal.IsInRole("SchemaAdmin") ||
+                           principal.IsInRole("GatewayAdmin") ||
+                           principal.IsInRole("PlatformAdmin") ||
+                           principal.IsInRole("ClusterAdmin") ||
+                           principal.IsInRole("Developer") ||
+                           principal.IsInRole("DataOwner") ||
+                           principal.HasClaim(c => (c.Type == "role" || c.Type == ClaimTypes.Role) &&
+                               (c.Value == "GovernanceAdmin" || c.Value == "SchemaAdmin" || c.Value == "GatewayAdmin" || c.Value == "PlatformAdmin" || c.Value == "ClusterAdmin" || c.Value == "Developer" || c.Value == "DataOwner"));
+
+            if (!canCheck)
+            {
+                return Results.Json(new { error = "Checking schemas requires Developer, SchemaAdmin, or ClusterAdmin privileges." }, statusCode: StatusCodes.Status403Forbidden);
             }
 
             var diff = await registry.CheckSchemaAsync(request.ServiceName, request.Sdl, ct);
