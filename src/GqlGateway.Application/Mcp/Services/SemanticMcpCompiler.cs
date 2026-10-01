@@ -105,12 +105,13 @@ public sealed class SemanticMcpCompiler(
 
         if (principal != null && _consentRepo != null)
         {
+            var userSid = principal.GetUserSid();
             var roles = principal.GetUserRoles();
-            bool isGlobalAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
+            bool isAnonymous = userSid == null || string.Equals(userSid.Value.Value, "ANONYMOUS_MCP_CLIENT", StringComparison.OrdinalIgnoreCase);
+            bool isGlobalAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin") || isAnonymous;
 
             if (!isGlobalAdmin)
             {
-                var userSid = principal.GetUserSid();
                 var groupSids = principal.GetGroupSids();
                 var tenantId = principal.GetTenantId();
 

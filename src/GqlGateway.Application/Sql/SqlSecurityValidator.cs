@@ -1,6 +1,7 @@
 namespace GqlGateway.Application.Sql;
 
 using System;
+using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
 using Antlr4.Runtime.Misc;
 using TrinoSqlEngine;
@@ -14,6 +15,9 @@ public static partial class SqlSecurityValidator
 {
     private static readonly FastSqlEngine Engine = new() { MaxQueryLength = 4096 };
 
+    private static readonly ConcurrentDictionary<string, bool> ValidatedPredicatesCache = new(StringComparer.Ordinal);
+    private const int MaxValidationCacheSize = 2000;
+
     [GeneratedRegex(@"@([a-zA-Z0-9_]+)")]
     private static partial Regex ParameterTokenRegex();
 
@@ -24,6 +28,12 @@ public static partial class SqlSecurityValidator
     public static void ValidatePredicateSql(string? predicate, string fieldName)
     {
         if (string.IsNullOrWhiteSpace(predicate))
+        {
+            return;
+        }
+
+        // Fast-path: Return immediately if already verified safe in hot-cache
+        if (ValidatedPredicatesCache.ContainsKey(predicate))
         {
             return;
         }
@@ -54,7 +64,9 @@ public static partial class SqlSecurityValidator
         }
 
         // Fast normalization of query parameters (@p0, @tenant_id) to valid identifiers for AST verification
-        string normalized = ParameterTokenRegex().Replace(predicate, "__param_$1");
+        string normalized = predicate.Contains('@')
+            ? ParameterTokenRegex().Replace(predicate, "__param_$1")
+            : predicate;
 
         try
         {
@@ -63,6 +75,13 @@ public static partial class SqlSecurityValidator
             {
                 throw new ArgumentException($"SQL predicate in '{fieldName}' has invalid expression syntax.", fieldName);
             }
+
+            if (ValidatedPredicatesCache.Count >= MaxValidationCacheSize)
+            {
+                ValidatedPredicatesCache.Clear();
+            }
+
+            ValidatedPredicatesCache[predicate] = true;
         }
         catch (ParseCanceledException ex)
         {

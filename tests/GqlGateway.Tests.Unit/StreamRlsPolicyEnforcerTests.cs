@@ -317,4 +317,34 @@ public sealed class StreamRlsPolicyEnforcerTests
         result.MaskedPayload.ShouldNotBeNull();
         result.MaskedPayload["id"].ShouldBe(12);
     }
+
+    [Fact]
+    public void StreamingRowFilterAstEvaluator_HighThroughputEvaluation_MatchesAccurately()
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["level"] = "GOLD",
+            ["email"] = "alice.smith@enterprise.com",
+            ["age"] = 35,
+            ["country"] = "DE"
+        };
+
+        const string filterSql = "(level = 'GOLD' OR level = 'PLATINUM') AND age >= 18 AND country IN ('DE', 'AT', 'CH') AND email LIKE '%.smith@%'";
+
+        for (int i = 0; i < 500; i++)
+        {
+            bool isMatch = StreamingRowFilterAstEvaluator.Matches(payload, filterSql);
+            isMatch.ShouldBeTrue();
+        }
+
+        var nonMatchingPayload = new Dictionary<string, object?>
+        {
+            ["level"] = "SILVER",
+            ["email"] = "bob@other.com",
+            ["age"] = 16,
+            ["country"] = "US"
+        };
+
+        StreamingRowFilterAstEvaluator.Matches(nonMatchingPayload, filterSql).ShouldBeFalse();
+    }
 }

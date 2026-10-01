@@ -11,18 +11,22 @@ using Antlr4.Runtime.Misc;
 using TrinoSqlEngine;
 
 /// <summary>
-/// High-throughput AST-based evaluator for SQL Row-Level Security (RLS) predicates on in-memory streaming CDC events.
-/// Replaces brittle regexes with full AST parsing supporting comparisons, IN, LIKE, IS NULL, BETWEEN, and nested boolean logic.
+/// High-throughput compiled AST evaluator for SQL Row-Level Security (RLS) predicates on in-memory streaming CDC events.
+/// Pre-compiles Antlr SQL AST into high-speed Zero-Allocation evaluation plans supporting comparisons, IN, LIKE, IS NULL, BETWEEN, and boolean logic.
 /// </summary>
 public static partial class StreamingRowFilterAstEvaluator
 {
     private static readonly FastSqlEngine Engine = new() { MaxQueryLength = 4096 };
-    private static readonly ConcurrentDictionary<string, SqlBaseParser.StandaloneExpressionContext?> ExpressionCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Func<IReadOnlyDictionary<string, object?>, bool>?> PlanCache = new(StringComparer.Ordinal);
     private const int MaxCacheSize = 1000;
 
     [GeneratedRegex(@"@([a-zA-Z0-9_]+)")]
     private static partial Regex ParameterTokenRegex();
 
+    /// <summary>
+    /// Evaluates whether the given CDC payload matches the SQL row filter.
+    /// Fast-path uses pre-compiled zero-allocation delegate plan from PlanCache.
+    /// </summary>
     public static bool Matches(IReadOnlyDictionary<string, object?> payload, string? filterSql)
     {
         if (string.IsNullOrWhiteSpace(filterSql))
@@ -35,8 +39,8 @@ public static partial class StreamingRowFilterAstEvaluator
             return false;
         }
 
-        var ast = GetOrParseAst(filterSql);
-        if (ast == null)
+        var plan = GetOrCompilePlan(filterSql);
+        if (plan == null)
         {
             // Unparseable or unsupported subquery filter -> fail-closed for zero-trust security
             return false;
@@ -44,7 +48,7 @@ public static partial class StreamingRowFilterAstEvaluator
 
         try
         {
-            return EvaluateBoolean(ast.expression(), payload);
+            return plan(payload);
         }
         catch
         {
@@ -53,64 +57,92 @@ public static partial class StreamingRowFilterAstEvaluator
         }
     }
 
-    private static SqlBaseParser.StandaloneExpressionContext? GetOrParseAst(string filterSql)
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? GetOrCompilePlan(string filterSql)
     {
-        if (ExpressionCache.TryGetValue(filterSql, out var cached))
+        if (PlanCache.TryGetValue(filterSql, out var cached))
         {
             return cached;
         }
 
-        if (ExpressionCache.Count >= MaxCacheSize)
+        if (PlanCache.Count >= MaxCacheSize)
         {
-            ExpressionCache.Clear();
+            PlanCache.Clear();
         }
 
-        SqlBaseParser.StandaloneExpressionContext? parsed = null;
+        Func<IReadOnlyDictionary<string, object?>, bool>? plan = null;
         try
         {
-            // Normalize parameters (@p0, @tenant) into valid identifiers for AST parser
-            string normalized = ParameterTokenRegex().Replace(filterSql, "__param_$1");
+            string normalized = filterSql.Contains('@')
+                ? ParameterTokenRegex().Replace(filterSql, "__param_$1")
+                : filterSql;
+
             var (tree, _) = Engine.ParseExpression(normalized.AsMemory());
-            parsed = tree;
+            if (tree?.expression() != null)
+            {
+                plan = CompileBoolean(tree.expression());
+            }
         }
         catch
         {
-            parsed = null;
+            plan = null;
         }
 
-        ExpressionCache[filterSql] = parsed;
-        return parsed;
+        PlanCache[filterSql] = plan;
+        return plan;
     }
 
-    private static bool EvaluateBoolean(RuleContext? ctx, IReadOnlyDictionary<string, object?> payload)
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileBoolean(RuleContext? ctx)
     {
-        if (ctx == null) return false;
+        if (ctx == null) return null;
 
         return ctx switch
         {
             SqlBaseParser.ExpressionContext exprCtx =>
-                EvaluateBoolean(exprCtx.booleanExpression(), payload),
+                CompileBoolean(exprCtx.booleanExpression()),
 
             SqlBaseParser.AndContext andCtx =>
-                EvaluateBoolean(andCtx.booleanExpression(0), payload) && EvaluateBoolean(andCtx.booleanExpression(1), payload),
+                CompileAnd(andCtx),
 
             SqlBaseParser.OrContext orCtx =>
-                EvaluateBoolean(orCtx.booleanExpression(0), payload) || EvaluateBoolean(orCtx.booleanExpression(1), payload),
+                CompileOr(orCtx),
 
             SqlBaseParser.LogicalNotContext notCtx =>
-                !EvaluateBoolean(notCtx.booleanExpression(), payload),
+                CompileNot(notCtx),
 
             SqlBaseParser.ParenthesizedExpressionContext parenCtx =>
-                EvaluateBoolean(parenCtx.expression(), payload),
+                CompileBoolean(parenCtx.expression()),
 
             SqlBaseParser.PredicatedContext predCtx =>
-                EvaluatePredicated(predCtx, payload),
+                CompilePredicated(predCtx),
 
-            _ => EvaluateChildExpressions(ctx, payload)
+            _ => null
         };
     }
 
-    private static bool EvaluatePredicated(SqlBaseParser.PredicatedContext ctx, IReadOnlyDictionary<string, object?> payload)
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileAnd(SqlBaseParser.AndContext andCtx)
+    {
+        var left = CompileBoolean(andCtx.booleanExpression(0));
+        var right = CompileBoolean(andCtx.booleanExpression(1));
+        if (left == null || right == null) return null;
+        return payload => left(payload) && right(payload);
+    }
+
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileOr(SqlBaseParser.OrContext orCtx)
+    {
+        var left = CompileBoolean(orCtx.booleanExpression(0));
+        var right = CompileBoolean(orCtx.booleanExpression(1));
+        if (left == null || right == null) return null;
+        return payload => left(payload) || right(payload);
+    }
+
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileNot(SqlBaseParser.LogicalNotContext notCtx)
+    {
+        var inner = CompileBoolean(notCtx.booleanExpression());
+        if (inner == null) return null;
+        return payload => !inner(payload);
+    }
+
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompilePredicated(SqlBaseParser.PredicatedContext ctx)
     {
         var predicate = ctx.predicate();
 
@@ -119,42 +151,272 @@ public static partial class StreamingRowFilterAstEvaluator
             if (ctx.valueExpression() is SqlBaseParser.ValueExpressionDefaultContext def &&
                 def.primaryExpression() is SqlBaseParser.ParenthesizedExpressionContext paren)
             {
-                return EvaluateBoolean(paren.expression(), payload);
+                return CompileBoolean(paren.expression());
             }
 
-            var innerVal = ResolveValue(ctx.valueExpression(), payload);
-            return innerVal is true || (innerVal is string s && bool.TryParse(s, out var b) && b);
+            var (colName, staticVal) = InspectValueExpression(ctx.valueExpression());
+            if (staticVal is bool b) return _ => b;
+            if (colName != null)
+            {
+                return payload => TryGetPayloadValue(payload, colName, out var v) &&
+                                  (v is true || (v is string s && bool.TryParse(s, out var pb) && pb));
+            }
+            return null;
         }
 
-        var leftVal = ResolveValue(ctx.valueExpression(), payload);
+        var (leftCol, leftConst) = InspectValueExpression(ctx.valueExpression());
+
         return predicate switch
         {
             SqlBaseParser.ComparisonContext comp =>
-                EvaluateComparison(leftVal, comp.comparisonOperator(), ResolveValue(comp.right, payload)),
+                CompileComparison(leftCol, leftConst, comp),
 
             SqlBaseParser.InListContext inList =>
-                EvaluateInList(leftVal, inList, payload),
+                CompileInList(leftCol, inList),
 
             SqlBaseParser.NullPredicateContext nullPred =>
-                nullPred.NOT() != null ? leftVal != null : leftVal == null,
+                CompileNullPredicate(leftCol, nullPred),
 
             SqlBaseParser.LikeContext likeCtx =>
-                EvaluateLike(leftVal, likeCtx, payload),
+                CompileLike(leftCol, likeCtx),
 
             SqlBaseParser.BetweenContext betweenCtx =>
-                EvaluateBetween(leftVal, betweenCtx, payload),
+                CompileBetween(leftCol, betweenCtx),
 
-            _ => false
+            _ => null
         };
     }
 
-    private static bool EvaluateComparison(object? left, SqlBaseParser.ComparisonOperatorContext? op, object? right)
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileComparison(
+        string? leftCol, object? leftConst, SqlBaseParser.ComparisonContext comp)
     {
-        if (op == null) return false;
+        var op = comp.comparisonOperator()?.GetText()?.Trim();
+        if (string.IsNullOrEmpty(op)) return null;
 
-        string opText = op.GetText().Trim();
+        var (rightCol, rightConst) = InspectValueExpression(comp.right);
 
-        // Null comparison semantics: NULL = NULL is UNKNOWN (false in WHERE)
+        // Case 1: left is column, right is constant
+        if (leftCol != null && rightCol == null)
+        {
+            return payload =>
+            {
+                TryGetPayloadValue(payload, leftCol, out var val);
+                return EvaluateComparison(val, op, rightConst);
+            };
+        }
+
+        // Case 2: left is constant, right is column
+        if (leftConst != null && rightCol != null)
+        {
+            return payload =>
+            {
+                TryGetPayloadValue(payload, rightCol, out var val);
+                return EvaluateComparison(leftConst, op, val);
+            };
+        }
+
+        // Case 3: both columns
+        if (leftCol != null && rightCol != null)
+        {
+            return payload =>
+            {
+                TryGetPayloadValue(payload, leftCol, out var lVal);
+                TryGetPayloadValue(payload, rightCol, out var rVal);
+                return EvaluateComparison(lVal, op, rVal);
+            };
+        }
+
+        // Case 4: both constants
+        return _ => EvaluateComparison(leftConst, op, rightConst);
+    }
+
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileInList(
+        string? leftCol, SqlBaseParser.InListContext inList)
+    {
+        if (leftCol == null) return null;
+
+        bool isNot = inList.NOT() != null;
+        var expressions = inList.expression();
+        if (expressions == null || expressions.Length == 0) return _ => isNot;
+
+        var strSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var numSet = new HashSet<decimal>();
+
+        foreach (var expr in expressions)
+        {
+            var (_, constant) = InspectValueExpression(expr);
+            if (constant != null)
+            {
+                strSet.Add(constant.ToString() ?? string.Empty);
+                if (TryConvertToDecimal(constant, out decimal d))
+                {
+                    numSet.Add(d);
+                }
+            }
+        }
+
+        return payload =>
+        {
+            if (!TryGetPayloadValue(payload, leftCol, out var val) || val == null)
+            {
+                return false;
+            }
+
+            bool match = (TryConvertToDecimal(val, out decimal d) && numSet.Contains(d))
+                         || strSet.Contains(val.ToString() ?? string.Empty);
+
+            return isNot ? !match : match;
+        };
+    }
+
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileLike(
+        string? leftCol, SqlBaseParser.LikeContext likeCtx)
+    {
+        if (leftCol == null) return null;
+
+        bool isNot = likeCtx.NOT() != null;
+        var (_, patternObj) = InspectValueExpression(likeCtx.pattern);
+        string patternVal = patternObj?.ToString() ?? string.Empty;
+
+        var sb = new StringBuilder("^", patternVal.Length * 2 + 2);
+        for (int i = 0; i < patternVal.Length; i++)
+        {
+            char c = patternVal[i];
+            if (c == '%')
+            {
+                sb.Append(".*");
+            }
+            else if (c == '_')
+            {
+                sb.Append('.');
+            }
+            else
+            {
+                sb.Append(Regex.Escape(c.ToString()));
+            }
+        }
+        sb.Append('$');
+
+        var compiledRegex = new Regex(sb.ToString(), RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(200));
+
+        return payload =>
+        {
+            if (!TryGetPayloadValue(payload, leftCol, out var val) || val == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                bool isMatch = compiledRegex.IsMatch(val.ToString() ?? string.Empty);
+                return isNot ? !isMatch : isMatch;
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return false;
+            }
+        };
+    }
+
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileNullPredicate(
+        string? leftCol, SqlBaseParser.NullPredicateContext nullPred)
+    {
+        if (leftCol == null) return null;
+        bool isNot = nullPred.NOT() != null;
+
+        return payload =>
+        {
+            bool hasVal = TryGetPayloadValue(payload, leftCol, out var val) && val != null && val is not DBNull;
+            return isNot ? hasVal : !hasVal;
+        };
+    }
+
+    private static Func<IReadOnlyDictionary<string, object?>, bool>? CompileBetween(
+        string? leftCol, SqlBaseParser.BetweenContext betweenCtx)
+    {
+        if (leftCol == null) return null;
+        bool isNot = betweenCtx.NOT() != null;
+
+        var (_, lowConst) = InspectValueExpression(betweenCtx.lower);
+        var (_, upConst) = InspectValueExpression(betweenCtx.upper);
+
+        if (!TryConvertToDecimal(lowConst, out decimal lowNum) ||
+            !TryConvertToDecimal(upConst, out decimal upNum))
+        {
+            return null;
+        }
+
+        return payload =>
+        {
+            if (!TryGetPayloadValue(payload, leftCol, out var val) || val == null)
+            {
+                return false;
+            }
+
+            if (TryConvertToDecimal(val, out decimal actual))
+            {
+                bool inRange = actual >= lowNum && actual <= upNum;
+                return isNot ? !inRange : inRange;
+            }
+
+            return false;
+        };
+    }
+
+    private static (string? ColName, object? ConstantVal) InspectValueExpression(RuleContext? ctx)
+    {
+        if (ctx == null) return (null, null);
+
+        string text = ctx.GetText();
+
+        if (text.StartsWith('\'') && text.EndsWith('\'') && text.Length >= 2)
+        {
+            return (null, text[1..^1].Replace("''", "'"));
+        }
+
+        if (decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal num))
+        {
+            return (null, num);
+        }
+
+        if (bool.TryParse(text, out bool b))
+        {
+            return (null, b);
+        }
+
+        if (string.Equals(text, "NULL", StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, null);
+        }
+
+        string colName = SqlIdentifierHelper.NormalizeIdentifier(text);
+        return (colName, null);
+    }
+
+    private static bool TryGetPayloadValue(IReadOnlyDictionary<string, object?> payload, string colName, out object? val)
+    {
+        if (payload.TryGetValue(colName, out val))
+        {
+            return true;
+        }
+
+        int dotIdx = colName.LastIndexOf('.');
+        if (dotIdx >= 0 && dotIdx + 1 < colName.Length)
+        {
+            string simple = colName[(dotIdx + 1)..];
+            if (payload.TryGetValue(simple, out val))
+            {
+                return true;
+            }
+        }
+
+        val = null;
+        return false;
+    }
+
+    private static bool EvaluateComparison(object? left, string opText, object? right)
+    {
+        // Null comparison semantics
         if (left == null || right == null)
         {
             return opText is "!=" or "<>" && (left != null || right != null);
@@ -176,7 +438,7 @@ public static partial class StreamingRowFilterAstEvaluator
             };
         }
 
-        // String / default comparison
+        // String comparison
         string sLeft = left.ToString() ?? string.Empty;
         string sRight = right.ToString() ?? string.Empty;
         int strCmp = string.Compare(sLeft, sRight, StringComparison.OrdinalIgnoreCase);
@@ -191,147 +453,6 @@ public static partial class StreamingRowFilterAstEvaluator
             ">=" => strCmp >= 0,
             _ => false
         };
-    }
-
-    private static bool EvaluateInList(object? left, SqlBaseParser.InListContext inList, IReadOnlyDictionary<string, object?> payload)
-    {
-        if (left == null) return false;
-
-        bool hasMatch = false;
-        var expressions = inList.expression();
-        if (expressions != null)
-        {
-            foreach (var expr in expressions)
-            {
-                var val = ResolveValue(expr, payload);
-                if (EvaluateComparison(left, null, val) || string.Equals(left.ToString(), val?.ToString(), StringComparison.OrdinalIgnoreCase))
-                {
-                    hasMatch = true;
-                    break;
-                }
-            }
-        }
-
-        return inList.NOT() != null ? !hasMatch : hasMatch;
-    }
-
-    private static bool EvaluateLike(object? left, SqlBaseParser.LikeContext likeCtx, IReadOnlyDictionary<string, object?> payload)
-    {
-        if (left == null) return false;
-
-        var patternVal = ResolveValue(likeCtx.pattern, payload)?.ToString();
-        if (patternVal == null) return false;
-
-        var sb = new StringBuilder("^", patternVal.Length * 2 + 2);
-        for (int i = 0; i < patternVal.Length; i++)
-        {
-            char c = patternVal[i];
-            if (c == '%')
-            {
-                sb.Append(".*");
-            }
-            else if (c == '_')
-            {
-                sb.Append('.');
-            }
-            else
-            {
-                sb.Append(Regex.Escape(c.ToString()));
-            }
-        }
-        sb.Append('$');
-
-        bool isMatch = false;
-        try
-        {
-            isMatch = Regex.IsMatch(left.ToString() ?? string.Empty, sb.ToString(), RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(200));
-        }
-        catch (RegexMatchTimeoutException)
-        {
-            return false;
-        }
-
-        return likeCtx.NOT() != null ? !isMatch : isMatch;
-    }
-
-    private static bool EvaluateBetween(object? left, SqlBaseParser.BetweenContext betweenCtx, IReadOnlyDictionary<string, object?> payload)
-    {
-        if (left == null) return false;
-
-        var lowerVal = ResolveValue(betweenCtx.lower, payload);
-        var upperVal = ResolveValue(betweenCtx.upper, payload);
-
-        if (TryConvertToDecimal(left, out decimal valNum) &&
-            TryConvertToDecimal(lowerVal, out decimal lowNum) &&
-            TryConvertToDecimal(upperVal, out decimal upNum))
-        {
-            bool inRange = valNum >= lowNum && valNum <= upNum;
-            return betweenCtx.NOT() != null ? !inRange : inRange;
-        }
-
-        return false;
-    }
-
-    private static object? ResolveValue(RuleContext? ctx, IReadOnlyDictionary<string, object?> payload)
-    {
-        if (ctx == null) return null;
-
-        string text = ctx.GetText();
-
-        // Check if string literal
-        if (text.StartsWith('\'') && text.EndsWith('\'') && text.Length >= 2)
-        {
-            return text[1..^1].Replace("''", "'");
-        }
-
-        // Check if numeric literal
-        if (decimal.TryParse(text, NumberStyles.Any, CultureInfo.InvariantCulture, out decimal num))
-        {
-            return num;
-        }
-
-        // Check boolean literal
-        if (bool.TryParse(text, out bool b))
-        {
-            return b;
-        }
-
-        if (string.Equals(text, "NULL", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        // Identifier lookup: strip quotes if present ("col" or [col])
-        string colName = SqlIdentifierHelper.NormalizeIdentifier(text);
-        if (payload.TryGetValue(colName, out var payloadVal))
-        {
-            return payloadVal;
-        }
-
-        // If identifier has table prefix (e.g. c.email), strip prefix and lookup column
-        int dotIdx = colName.LastIndexOf('.');
-        if (dotIdx >= 0 && dotIdx + 1 < colName.Length)
-        {
-            string simpleCol = colName[(dotIdx + 1)..];
-            if (payload.TryGetValue(simpleCol, out var simpleVal))
-            {
-                return simpleVal;
-            }
-        }
-
-        return null;
-    }
-
-    private static bool EvaluateChildExpressions(RuleContext ctx, IReadOnlyDictionary<string, object?> payload)
-    {
-        for (int i = 0; i < ctx.ChildCount; i++)
-        {
-            if (ctx.GetChild(i) is RuleContext child)
-            {
-                if (EvaluateBoolean(child, payload)) return true;
-            }
-        }
-        return false;
     }
 
     private static bool TryConvertToDecimal(object? val, out decimal result)
