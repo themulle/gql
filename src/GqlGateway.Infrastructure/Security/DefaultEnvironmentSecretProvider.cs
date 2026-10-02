@@ -111,7 +111,7 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
         // placeholder (reference name as key) would be a publicly known HMAC key for that instance.
         if (isInstanceSpecificItsmRef && secretRef.StartsWith(ItsmWebhookSecretInstancePrefix, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException($"Sicherheitsfehler: Das instanzspezifische Secret '{secretRef}' ist nicht konfiguriert.");
+            throw new InvalidOperationException($"Sicherheitsfehler: Das instanzspezifische Secret ({DescribeReference(secretRef)}) ist nicht konfiguriert.");
         }
 
         // In Development, allow using the secret reference itself as dev key
@@ -121,7 +121,18 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
         }
 
         // Fail-fast in non-development if secret cannot be resolved from Key Vault
-        throw new InvalidOperationException($"Sicherheitsfehler: Das Secret '{secretRef}' konnte weder über Azure Key Vault / Konfiguration noch Umgebungsvariablen aufgelöst werden.");
+        throw new InvalidOperationException($"Sicherheitsfehler: Das Secret ({DescribeReference(secretRef)}) konnte weder über Azure Key Vault / Konfiguration noch Umgebungsvariablen aufgelöst werden.");
+    }
+
+    /// <summary>
+    /// SEC EX-16: Exception messages never contain the secret reference itself – a misconfigured value may be a raw
+    /// token and exception messages end up in logs. Only the length and a short SHA-256 prefix are reported so that
+    /// operators can correlate the reference with their configuration.
+    /// </summary>
+    private static string DescribeReference(string secretRef)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(secretRef));
+        return $"Referenz mit Länge {secretRef.Length}, SHA-256-Präfix {Convert.ToHexStringLower(hash)[..8]}";
     }
 
     private static bool IsInstanceSpecificReference(string secretRef)

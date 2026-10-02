@@ -8,13 +8,14 @@ using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.DataCatalog.Models;
-using GqlGateway.Application.DataCatalog.Services;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
-using GqlGateway.Infrastructure.DataCatalog;
+using GqlGateway.Application.OpenMetadata.Interfaces;
+using GqlGateway.Extensions.DataCatalog;
+using GqlGateway.Extensions.OpenMetadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -25,14 +26,19 @@ using Xunit;
 public sealed class DataCatalogConnectorTests
 {
     [Fact]
-    public async Task OpenMetadataClient_QueriesTables_AndMapsColumnsAndTags()
+    public async Task OpenMetadataCatalogAdapter_QueriesTables_AndMapsColumnsAndTags()
     {
+        // EXT-MOVE: OpenMetadata as data catalog is served by OpenMetadataCatalogAdapter on top of the hardened
+        // IOpenMetadataClient (the former core OpenMetadataDataCatalogClient was removed).
         var jsonResponse = """
         {
           "data": [
             {
-              "id": "asset-101",
+              "id": "6f1c3a52-3d43-4a3b-9b1e-6a1f0d3f5c11",
               "name": "customer_records",
+              "fullyQualifiedName": "sales.crm.public.customer_records",
+              "service": { "name": "sales" },
+              "databaseSchema": { "name": "public" },
               "columns": [
                 {
                   "name": "email",
@@ -50,7 +56,8 @@ public sealed class DataCatalogConnectorTests
                 }
               ]
             }
-          ]
+          ],
+          "paging": { "total": 1 }
         }
         """;
 
@@ -66,12 +73,15 @@ public sealed class DataCatalogConnectorTests
             }
         });
 
-        var client = new OpenMetadataDataCatalogClient(httpClient, options, NullLogger<OpenMetadataDataCatalogClient>.Instance);
+        var omClient = new OpenMetadataClient(httpClient, options, NullLogger<OpenMetadataClient>.Instance);
+        var client = new OpenMetadataCatalogAdapter(omClient, NullLogger<OpenMetadataCatalogAdapter>.Instance);
 
+        client.ProviderType.ShouldBe(DataCatalogProviderType.OpenMetadata);
         var tables = await client.GetTablesAsync();
 
         tables.Count.ShouldBe(1);
         var table = tables[0];
+        table.Identifier.ShouldBe(new TableIdentifier("sales", "public", "customer_records"));
         table.DisplayName.ShouldBe("customer_records");
         table.Columns.Count.ShouldBe(2);
         table.Columns[0].ColumnName.ShouldBe("email");
@@ -165,9 +175,10 @@ public sealed class DataCatalogConnectorTests
 
         services.AddSingleton(options);
         services.AddHttpClient();
-        services.AddTransient(sp => new OpenMetadataDataCatalogClient(sp.GetRequiredService<HttpClient>(), options, NullLogger<OpenMetadataDataCatalogClient>.Instance));
+        services.AddTransient(_ => new OpenMetadataCatalogAdapter(Substitute.For<IOpenMetadataClient>(), NullLogger<OpenMetadataCatalogAdapter>.Instance));
         services.AddTransient(sp => new PurviewDataCatalogClient(sp.GetRequiredService<HttpClient>(), options, NullLogger<PurviewDataCatalogClient>.Instance));
         services.AddTransient(sp => new CollibraDataCatalogClient(sp.GetRequiredService<HttpClient>(), options, NullLogger<CollibraDataCatalogClient>.Instance));
+        services.AddTransient(sp => new AlationCatalogClient(sp.GetRequiredService<HttpClient>(), options, NullLogger<AlationCatalogClient>.Instance));
 
         var sp = services.BuildServiceProvider();
         var factory = new DataCatalogClientFactory(sp, options);
@@ -175,9 +186,13 @@ public sealed class DataCatalogConnectorTests
         var activeClient = factory.GetActiveClient();
         activeClient.ShouldNotBeNull();
         activeClient.ProviderType.ShouldBe(DataCatalogProviderType.OpenMetadata);
+        activeClient.ShouldBeOfType<OpenMetadataCatalogAdapter>();
 
         var purview = factory.CreateClient(DataCatalogProviderType.MicrosoftPurview);
         purview.ProviderType.ShouldBe(DataCatalogProviderType.MicrosoftPurview);
+
+        var alation = factory.CreateClient(DataCatalogProviderType.Alation);
+        alation.ProviderType.ShouldBe(DataCatalogProviderType.Alation);
     }
 
     private sealed class MockHttpMessageHandler : HttpMessageHandler

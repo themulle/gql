@@ -159,22 +159,22 @@ public sealed class IntegrationGapATests
     // =========================================================================
 
     [Fact]
-    public void GAP04_OpenMetadataAutoCreateConsents_IsReportedAsWarn()
+    public void GAP04_OpenMetadataAutoCreateConsents_IsReportedAsDanger()
     {
         var options = new GatewayOptions { OpenMetadata = new OpenMetadataOptions { AutoCreateConsents = true } };
 
         options.HasAnySecurityBypassActive.ShouldBeTrue();
-        options.HasAnyDangerBypassActive.ShouldBeFalse();
-        options.GetActiveWarnings().ShouldContain(o => o.StartsWith("WARN:openmetadata_auto_create_consents", StringComparison.Ordinal));
+        options.HasAnyDangerBypassActive.ShouldBeTrue();
+        options.GetActiveDangerBypasses().ShouldContain(o => o.StartsWith("DANGER:openmetadata_auto_create_consents", StringComparison.Ordinal));
     }
 
     [Fact]
     public void GAP04_ProductionWarnings_AndRegularDml_DoNotAbortStartup()
     {
-        // WARN entries (OpenMetadata.AutoCreateConsents) and the regular option WebSql.AllowDml + DmlWriterRoles are allowed in Production.
+        // WARN entries (e.g. Itsm.LegacyGlobalWebhookSecret) and the regular option WebSql.AllowDml + DmlWriterRoles are allowed in Production.
         var options = new GatewayOptions
         {
-            OpenMetadata = new OpenMetadataOptions { AutoCreateConsents = true },
+            Itsm = new ItsmOptions { LegacyGlobalWebhookSecret = true },
             WebSql = new WebSqlOptions { AllowDml = true, DmlWriterRoles = ["WebSqlWriter"] },
             DataMasking = new DataMaskingOptions { HmacSecretKeyVaultRef = "vault://keys/prod-hmac" }
         };

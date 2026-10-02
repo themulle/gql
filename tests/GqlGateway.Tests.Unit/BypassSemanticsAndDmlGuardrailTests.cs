@@ -69,7 +69,6 @@ public sealed class BypassSemanticsAndDmlGuardrailTests
         "catalog_legacy_payload_only_signature" => new GatewayOptions { Catalog = new DataCatalogOptions { AllowLegacyPayloadOnlySignature = true }, DataMasking = ProdMasking() },
         "itsm_legacy_global_webhook_secret" => new GatewayOptions { Itsm = new ItsmOptions { LegacyGlobalWebhookSecret = true }, DataMasking = ProdMasking() },
         "allow_development_in_container" => new GatewayOptions { AllowDevelopmentInContainer = true, DataMasking = ProdMasking() },
-        "openmetadata_auto_create_consents" => new GatewayOptions { OpenMetadata = new OpenMetadataOptions { AutoCreateConsents = true }, DataMasking = ProdMasking() },
         "warn_allow_websql_dml" => new GatewayOptions { WebSql = new WebSqlOptions { warn_allow_dml = true }, DataMasking = ProdMasking() },
         _ => throw new ArgumentOutOfRangeException(nameof(name), name, "unknown switch")
     };
@@ -136,7 +135,6 @@ public sealed class BypassSemanticsAndDmlGuardrailTests
     [InlineData("catalog_legacy_payload_only_signature")]
     [InlineData("itsm_legacy_global_webhook_secret")]
     [InlineData("allow_development_in_container")]
-    [InlineData("openmetadata_auto_create_consents")]
     [InlineData("warn_allow_websql_dml")]
     public void SEM_WarnSwitches_AreWarn_AndStartInProduction(string name)
     {
@@ -161,7 +159,7 @@ public sealed class BypassSemanticsAndDmlGuardrailTests
     }
 
     [Fact]
-    public void SEM_AutoCreateConsents_IsWarn_AndStartsInProduction()
+    public void SEM_AutoCreateConsents_IsDanger_AndBlockedInProduction()
     {
         var options = new GatewayOptions
         {
@@ -169,8 +167,23 @@ public sealed class BypassSemanticsAndDmlGuardrailTests
             DataMasking = ProdMasking()
         };
 
-        options.GetActiveWarnings().ShouldHaveSingleItem().ShouldBe("WARN:openmetadata_auto_create_consents (OpenMetadata.AutoCreateConsents)");
-        Should.NotThrow(() =>
+        options.GetActiveDangerBypasses().ShouldHaveSingleItem().ShouldBe("DANGER:openmetadata_auto_create_consents (OpenMetadata.AutoCreateConsents)");
+        Should.Throw<ValidationException>(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, Env(Environments.Production), NoEnvironmentVariables));
+    }
+
+    [Fact]
+    public void SEM_DbtWebhookSignatureBypass_IsDanger_AndBlockedInProduction()
+    {
+        var options = new GatewayOptions
+        {
+            Dbt = new DbtOptions { danger_bypass_webhook_signature_validation = true },
+            DataMasking = ProdMasking()
+        };
+
+        options.IsWebhookSignatureBypassed.ShouldBeTrue();
+        options.GetActiveDangerBypasses().ShouldContain(b => b.StartsWith("DANGER:danger_bypass_webhook_signature_validation", StringComparison.Ordinal));
+        Should.Throw<ValidationException>(() =>
             GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, Env(Environments.Production), NoEnvironmentVariables));
     }
 
@@ -245,7 +258,7 @@ public sealed class BypassSemanticsAndDmlGuardrailTests
     [Fact]
     public async Task SEM_Health_WarnKeepsSecurityComponentHealthy_WithDegradedDescription()
     {
-        var options = WithWarnSwitch("openmetadata_auto_create_consents");
+        var options = WithWarnSwitch("itsm_legacy_global_webhook_secret");
 
         var report = await CheckHealthAsync(options, Environments.Production);
 
@@ -254,7 +267,7 @@ public sealed class BypassSemanticsAndDmlGuardrailTests
         component.IsHealthy.ShouldBeTrue();
         component.Description.ShouldNotBeNull();
         component.Description!.ShouldStartWith("degraded: ");
-        component.Description!.ShouldContain("WARN:openmetadata_auto_create_consents");
+        component.Description!.ShouldContain("WARN:itsm_legacy_global_webhook_secret");
     }
 
     [Fact]

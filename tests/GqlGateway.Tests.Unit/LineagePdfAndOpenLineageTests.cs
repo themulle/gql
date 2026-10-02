@@ -12,6 +12,7 @@ using GqlGateway.Application.Lineage;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
+using GqlGateway.Extensions.Lineage;
 using GqlGateway.Infrastructure.Lineage;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;

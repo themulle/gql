@@ -11,6 +11,7 @@ using GqlGateway.Api.Middleware;
 using GqlGateway.Api.Security;
 using GqlGateway.Application.Governance;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.Security;
 using GqlGateway.Application.Services;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;

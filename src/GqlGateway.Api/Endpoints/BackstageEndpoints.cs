@@ -4,6 +4,7 @@ using System;
 using System.Text;
 using System.Threading;
 using GqlGateway.Application.Integrations.Backstage;
+using GqlGateway.Extensions.Backstage;
 using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;

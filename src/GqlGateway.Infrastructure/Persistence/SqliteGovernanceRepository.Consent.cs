@@ -199,6 +199,141 @@ public partial class SqliteGovernanceRepository
         }
     }
 
+    /// <summary>
+    /// SEC E-05 / EX-02: Loads every active consent with the given consent_request_id (sync marker) regardless of
+    /// grantee, table or tenant, so that a reconcile can revoke consents of deleted grantees / filtered tables.
+    /// </summary>
+    public async Task<IReadOnlyList<Consent>> GetActiveConsentsByConsentRequestIdAsync(
+        Guid consentRequestId,
+        DateTimeOffset atTime,
+        CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var consents = new List<Consent>();
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = @"SELECT c.id, c.table_id, c.consent_request_id, c.effect, c.grantee_type,
+                                           c.grantee_sid, c.role_id, c.role_name, c.valid_from, c.valid_to,
+                                           c.is_revoked, t.source_name, t.schema_name, t.table_name,
+                                           c.tenant_id
+                                    FROM CONSENTS c
+                                    JOIN TABLES t ON c.table_id = t.id
+                                    WHERE c.is_revoked = 0 AND c.consent_request_id = @reqId";
+                cmd.Parameters.AddWithValue("@reqId", consentRequestId.ToString());
+
+                using var reader = await cmd.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    var validFrom = DateTimeOffset.Parse(reader.GetString(8), System.Globalization.CultureInfo.InvariantCulture);
+                    var validTo = DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture);
+
+                    // Not-yet-valid consents are included on purpose (they would become active later); expired ones are not.
+                    if (atTime >= validTo) continue;
+
+                    var granteeSidStr = reader.IsDBNull(5) ? null : reader.GetString(5);
+                    consents.Add(new Consent
+                    {
+                        Id = Guid.Parse(reader.GetString(0)),
+                        TableId = Guid.Parse(reader.GetString(1)),
+                        TableIdentifier = new TableIdentifier(reader.GetString(11), reader.GetString(12), reader.GetString(13)),
+                        ConsentRequestId = reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2)),
+                        Effect = Enum.Parse<ConsentEffect>(reader.GetString(3), true),
+                        GranteeType = Enum.Parse<GranteeType>(reader.GetString(4), true),
+                        GranteeSid = granteeSidStr != null ? new Sid(granteeSidStr) : (Sid?)null,
+                        RoleId = reader.IsDBNull(6) ? null : Guid.Parse(reader.GetString(6)),
+                        RoleName = reader.IsDBNull(7) ? null : reader.GetString(7),
+                        ValidFrom = validFrom,
+                        ValidTo = validTo,
+                        IsRevoked = reader.GetInt32(10) == 1,
+                        TenantId = reader.IsDBNull(14) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(14))
+                    });
+                }
+            }
+
+            return consents;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    /// <summary>
+    /// SEC E-05 / EX-02: Revokes a sync-owned consent (consent_request_id = marker) without data-owner check. Manual or
+    /// workflow consents never match the marker and therefore cannot be revoked through this path.
+    /// </summary>
+    public async Task<bool> RevokeSystemConsentAsync(Guid consentId, Guid consentRequestId, Sid revokedBySid, string reason, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            TableIdentifier? tableId = null;
+            TenantId tenantId = TenantId.LegacySingleTenant;
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = @"SELECT t.source_name, t.schema_name, t.table_name, c.tenant_id
+                                    FROM CONSENTS c
+                                    JOIN TABLES t ON c.table_id = t.id
+                                    WHERE c.id = @id AND c.consent_request_id = @reqId AND c.is_revoked = 0";
+                cmd.Parameters.AddWithValue("@id", consentId.ToString());
+                cmd.Parameters.AddWithValue("@reqId", consentRequestId.ToString());
+                using var reader = await cmd.ExecuteReaderAsync(ct);
+                if (await reader.ReadAsync(ct))
+                {
+                    tableId = new TableIdentifier(reader.GetString(0), reader.GetString(1), reader.GetString(2));
+                    tenantId = reader.IsDBNull(3) ? TenantId.LegacySingleTenant : new TenantId(reader.GetString(3));
+                }
+            }
+
+            if (!tableId.HasValue)
+            {
+                return false;
+            }
+
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = @"UPDATE CONSENTS
+                                    SET is_revoked = 1, revoked_by_sid = @by, revoked_at = @now, revoke_reason = @reason
+                                    WHERE id = @id AND consent_request_id = @reqId AND is_revoked = 0";
+                cmd.Parameters.AddWithValue("@id", consentId.ToString());
+                cmd.Parameters.AddWithValue("@reqId", consentRequestId.ToString());
+                cmd.Parameters.AddWithValue("@by", revokedBySid.Value);
+                cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString("O"));
+                cmd.Parameters.AddWithValue("@reason", reason);
+                if (await cmd.ExecuteNonQueryAsync(ct) != 1)
+                {
+                    return false;
+                }
+            }
+
+            await IncrementTableEpochInternalAsync(tableId.Value, ct);
+
+            await RecordAuditEventInternalAsync(new AuditLogEntry
+            {
+                TenantId = tenantId,
+                EventType = "CONSENT_REVOKED",
+                ActorSid = revokedBySid,
+                TargetTable = tableId.Value.ToString(),
+                Decision = "REVOKED",
+                TraceId = Guid.NewGuid().ToString("N"),
+                DetailsJson = JsonSerializer.Serialize(new
+                {
+                    ConsentId = consentId,
+                    Reason = reason,
+                    SystemRevocation = true
+                })
+            }, ct);
+
+            return true;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     private async Task<IReadOnlyList<ConsentColumnRule>> LoadColumnRulesAsync(Guid consentId, CancellationToken ct)
     {
         var rules = new List<ConsentColumnRule>();

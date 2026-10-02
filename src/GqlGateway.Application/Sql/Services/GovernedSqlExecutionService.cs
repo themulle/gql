@@ -33,6 +33,25 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
     /// </summary>
     internal const string InternalParameterPrefix = "__gql_";
 
+    /// <summary>
+    /// SEC P-05 / SQ-01: Second line of defense against backslash-escape lexer differentials on PostgreSQL sessions.
+    /// </summary>
+    internal const string PostgreSqlSessionInitializationSql = "SET standard_conforming_strings = on";
+
+    /// <summary>
+    /// SQ-01/02/10/11/13: Token checks applied already during the analysis step (dollar quoting is decided per dialect
+    /// in the rewrite step, see RlsOptions below).
+    /// </summary>
+    private static readonly SqlTokenSecurityOptions AnalysisTokenOptions = new()
+    {
+        RejectComments = true,
+        RejectBackslashInStrings = true,
+        RejectEscapedStringLiterals = true,
+        RejectNonAsciiIdentifiers = true,
+        RejectDotsInQuotedIdentifiers = true,
+        RejectTimeTravelQueries = true
+    };
+
     private readonly FastSqlEngine _sqlEngine = new();
     private readonly IOptions<GatewayOptions> _options;
     private readonly IPolicyEnforcementService? _policyEnforcement;
@@ -123,7 +142,7 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         SqlQueryMetadata metadata;
         try
         {
-            metadata = _sqlEngine.Analyze(rawSql.AsMemory());
+            metadata = _sqlEngine.Analyze(rawSql.AsMemory(), AnalysisTokenOptions, ct);
         }
         catch (WebSqlPolicyException)
         {
@@ -133,6 +152,11 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         {
             _logger?.LogWarning(secEx, "WebSQL statement rejected by SQL analyzer.");
             throw new WebSqlPolicyException("The SQL statement uses a construct that is not permitted by the WebSQL security policy.", secEx);
+        }
+        catch (OperationCanceledException timeoutEx) when (!ct.IsCancellationRequested && timeoutEx.InnerException is TimeoutException)
+        {
+            // SQ-08: parse time budget exceeded (ParseCanceledException with inner TimeoutException)
+            throw new WebSqlPolicyException("The SQL statement exceeded the parser time budget.", timeoutEx);
         }
         catch (OperationCanceledException parseEx) when (!ct.IsCancellationRequested)
         {
@@ -249,7 +273,11 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         var tablesWithMaskedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var internalParameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         var hmacKeyParameterNames = new Dictionary<string, string>(StringComparer.Ordinal);
-        DatabaseDialect? targetDatabaseDialect = null;
+
+        // SEC P-05: The SQL dialect comes from the data source configuration (the provider the connection factory will
+        // actually use). Without a configured connection (synthetic dev/test path) the catalog dialect of the first table
+        // is used. Every referenced table must have exactly this dialect.
+        DatabaseDialect? targetDatabaseDialect = ResolveConnectionDialect(dataSourceName);
 
         foreach (var target in metadata.ReferencedTables)
         {
@@ -273,7 +301,26 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 throw TableDenied(target);
             }
 
-            targetDatabaseDialect ??= tableMeta.Dialect;
+            // SEC P-05: Only dialects with a dedicated rewrite (PostgreSQL, SQL Server, SQLite) are supported (fail-closed).
+            if (!IsWebSqlSupportedDialect(tableMeta.Dialect))
+            {
+                _logger?.LogWarning("WebSQL rejected table {Table}: SQL dialect {Dialect} is not supported by WebSQL.", target.FullName, tableMeta.Dialect);
+                throw new WebSqlPolicyException("WebSQL only supports tables of PostgreSQL, SQL Server and SQLite data sources.");
+            }
+
+            if (targetDatabaseDialect == null)
+            {
+                targetDatabaseDialect = tableMeta.Dialect;
+            }
+            else if (targetDatabaseDialect.Value != tableMeta.Dialect)
+            {
+                _logger?.LogWarning(
+                    "WebSQL rejected table {Table}: catalog dialect {TableDialect} does not match the data source dialect {DataSourceDialect}.",
+                    target.FullName,
+                    tableMeta.Dialect,
+                    targetDatabaseDialect.Value);
+                throw TableDenied(target);
+            }
 
             // SEC C-03 / SQ-09: A catalog table bound to a specific data source must only be queried through that source.
             if (!string.IsNullOrWhiteSpace(tableMeta.Table.SourceName) &&
@@ -434,13 +481,29 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         // SEC C-03: Any table name the rewriter encounters that was not resolved above is filtered to the empty set (fail-closed).
         const string denyAllFilter = "1 = 0";
 
+        // SEC P-05: no fallback to ANSI for unknown dialects (fail-closed).
         TargetSqlDialect targetSqlDialect = targetDatabaseDialect switch
         {
             DatabaseDialect.PostgreSql => TargetSqlDialect.PostgreSql,
             DatabaseDialect.SqlServer => TargetSqlDialect.SqlServer,
             DatabaseDialect.Sqlite => TargetSqlDialect.Sqlite,
-            _ => TargetSqlDialect.Ansi
+            _ => throw new WebSqlPolicyException("WebSQL only supports tables of PostgreSQL, SQL Server and SQLite data sources.")
         };
+
+        // SQ-06 / SEC P-02: Function allowlist of the target dialect plus WebSql.AdditionalAllowedFunctions.
+        // Denylisted functions are never allowed (SqlFunctionAllowlists.Build and SqlFunctionPolicy enforce this).
+        IReadOnlySet<string> allowedFunctions = SqlFunctionAllowlists.Build(targetSqlDialect, webSqlOptions.AdditionalAllowedFunctions);
+        if (metadata.FunctionCalls is { Count: > 0 })
+        {
+            var allowlistPolicy = new RlsOptions { EnforceFunctionPolicy = true, AllowedFunctions = allowedFunctions };
+            foreach (var functionName in metadata.FunctionCalls)
+            {
+                if (!SqlFunctionPolicy.IsFunctionAllowed(functionName, allowlistPolicy))
+                {
+                    throw new WebSqlPolicyException($"Function '{functionName}' is not permitted in WebSQL.");
+                }
+            }
+        }
 
         var policyProvider = new DefaultRlsPolicyProvider(
             defaultFilter: denyAllFilter,
@@ -467,7 +530,12 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             RejectComments = true,
             RejectBackslashInStrings = true,
             RejectEscapedStringLiterals = true,
-            RejectDollarQuoting = (targetSqlDialect == TargetSqlDialect.SqlServer),
+            // SQ-02: dollar quoting only matches the backend lexer on PostgreSQL (SQL Server/SQLite lex '$' differently).
+            RejectDollarQuoting = targetSqlDialect != TargetSqlDialect.PostgreSql,
+            // SQ-10/SQ-11/SQ-13 (SEC P-06): set explicitly, independent of library defaults
+            RejectNonAsciiIdentifiers = true,
+            RejectDotsInQuotedIdentifiers = true,
+            RejectTimeTravelQueries = true,
             // SQ-03 & SQ-07: Guardrails for DML
             RejectConsentFilteredInsert = true,
             RejectWholeRowReferencesInDml = true,
@@ -478,6 +546,7 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             RequireTenantColumnInInsert = true,
             // SEC C-01/H-14/H-15: Function denylist, no table functions / inline functions, no masked columns in DML
             EnforceFunctionPolicy = true,
+            AllowedFunctions = allowedFunctions,
             AllowInlineFunctionDefinitions = false,
             RejectMaskedColumnsInDml = true,
             // DML guardrail: UPDATE/DELETE without WHERE or with a trivially true WHERE are rejected (original statement).
@@ -491,7 +560,7 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         string securedSql;
         try
         {
-            securedSql = _sqlEngine.RewriteRls(rawSql.AsMemory(), rlsOptions);
+            securedSql = _sqlEngine.RewriteRls(rawSql.AsMemory(), rlsOptions, ct);
         }
         catch (WebSqlPolicyException)
         {
@@ -507,6 +576,10 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         {
             _logger?.LogWarning(secEx, "WebSQL statement rejected by RLS rewriter.");
             throw new WebSqlPolicyException("The SQL statement violates the WebSQL row-level security policy.", secEx);
+        }
+        catch (OperationCanceledException timeoutEx) when (!ct.IsCancellationRequested && timeoutEx.InnerException is TimeoutException)
+        {
+            throw new WebSqlPolicyException("The SQL statement exceeded the parser time budget.", timeoutEx);
         }
         catch (OperationCanceledException parseEx) when (!ct.IsCancellationRequested)
         {
@@ -619,6 +692,20 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
 
         // Real Database Execution
         await using var connection = await _connectionFactory.CreateOpenConnectionAsync(connOptions, ct).ConfigureAwait(false);
+
+        // SEC P-05 / SQ-01: PostgreSQL sessions are forced to standard-conforming strings (backslash is a literal character),
+        // matching the gateway lexer even if the server or role default was changed.
+        string? sessionInitializationSql = TryMapProviderToDialect(connOptions.Provider, out var connectionDialect)
+            ? GetSessionInitializationSql(connectionDialect)
+            : null;
+        if (sessionInitializationSql != null)
+        {
+            await using var initCommand = connection.CreateCommand();
+            initCommand.CommandText = sessionInitializationSql;
+            initCommand.CommandTimeout = Math.Max(1, _options.Value.WebSql.ExecutionTimeoutSeconds);
+            await initCommand.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
         await using var command = connection.CreateCommand();
         command.CommandText = securedSql;
         command.CommandTimeout = Math.Max(1, _options.Value.WebSql.ExecutionTimeoutSeconds);
@@ -945,6 +1032,65 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             target[name] = value;
         }
     }
+
+    /// <summary>
+    /// SEC P-05: Dialect of the configured connection for <paramref name="dataSourceName"/>, or null when no connection
+    /// is configured (synthetic dev/test path). Unknown providers are rejected (fail-closed).
+    /// </summary>
+    private DatabaseDialect? ResolveConnectionDialect(string dataSourceName)
+    {
+        var connections = _options.Value.DataSources?.Connections;
+        DataSourceConnectionOptions? connOptions = null;
+        connections?.TryGetValue(dataSourceName, out connOptions);
+        if (connOptions == null || string.IsNullOrWhiteSpace(connOptions.ConnectionString))
+        {
+            return null;
+        }
+
+        if (!TryMapProviderToDialect(connOptions.Provider, out var dialect))
+        {
+            _logger?.LogWarning("WebSQL rejected data source {DataSource}: provider is not supported by WebSQL.", dataSourceName);
+            throw new WebSqlPolicyException("The data source uses a database provider that is not supported by WebSQL (supported: PostgreSQL, SQL Server, SQLite).");
+        }
+
+        return dialect;
+    }
+
+    /// <summary>
+    /// SEC P-05: Maps DataSourceConnectionOptions.Provider to a dialect, using the same provider names as the SQL
+    /// connection factory. Returns false for unknown providers.
+    /// </summary>
+    internal static bool TryMapProviderToDialect(string? provider, out DatabaseDialect dialect)
+    {
+        switch (provider?.Trim().ToLowerInvariant() ?? "sqlite")
+        {
+            case "sqlite":
+            case "sqlite3":
+                dialect = DatabaseDialect.Sqlite;
+                return true;
+            case "sqlserver":
+            case "mssql":
+            case "microsoft sql server":
+                dialect = DatabaseDialect.SqlServer;
+                return true;
+            case "postgres":
+            case "postgresql":
+            case "npgsql":
+                dialect = DatabaseDialect.PostgreSql;
+                return true;
+            default:
+                dialect = default;
+                return false;
+        }
+    }
+
+    /// <summary>SEC P-05: Dialects with a dedicated, tested WebSQL rewrite.</summary>
+    internal static bool IsWebSqlSupportedDialect(DatabaseDialect dialect) =>
+        dialect is DatabaseDialect.PostgreSql or DatabaseDialect.SqlServer or DatabaseDialect.Sqlite;
+
+    /// <summary>SEC P-05 / SQ-01: Session initialization statement executed before every WebSQL statement (null = none).</summary>
+    internal static string? GetSessionInitializationSql(DatabaseDialect dialect) =>
+        dialect == DatabaseDialect.PostgreSql ? PostgreSqlSessionInitializationSql : null;
 
     // SEC M-10: Identical message for "unknown table" and "access denied" (no catalog enumeration oracle, no policy details)
     private static WebSqlPolicyException TableDenied(TableAccessTarget target) =>

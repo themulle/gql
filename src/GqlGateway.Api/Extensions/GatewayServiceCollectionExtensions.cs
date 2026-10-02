@@ -7,6 +7,7 @@ using GqlGateway.Api.Hosting;
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
+using GqlGateway.Application.Security;
 using GqlGateway.Application.Services;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Options;
@@ -18,8 +19,6 @@ using GqlGateway.Infrastructure.Health;
 using GqlGateway.Infrastructure.Idempotency;
 using GqlGateway.Infrastructure.Messaging;
 using GqlGateway.Extensions;
-using GqlGateway.Extensions.OpenMetadata;
-using GqlGateway.Extensions.Itsm;
 using GqlGateway.Infrastructure.Persistence;
 using GqlGateway.Infrastructure.RateLimiting;
 using GqlGateway.Infrastructure.Security;
@@ -34,7 +33,6 @@ using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Application.Dbt.Services;
 using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.DataCatalog.Services;
-using GqlGateway.Infrastructure.DataCatalog;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Application.Mcp.Services;
 using GqlGateway.Application.ResourceGroups;
@@ -54,7 +52,6 @@ using GqlGateway.Application.Streaming.Services;
 using GqlGateway.Infrastructure.Streaming;
 using GqlGateway.GraphQL.Subscriptions;
 using GqlGateway.Infrastructure.Cdn;
-using GqlGateway.Infrastructure.OpenJev;
 using GqlGateway.Application.SchemaRegistry;
 using GqlGateway.Application.Extensibility;
 using GqlGateway.Application.Extensibility.Interceptors;
@@ -273,14 +270,12 @@ public static class GatewayServiceCollectionExtensions
             sp.GetRequiredService<IParameterBudgetProvider>()));
         services.AddSingleton<ISqlFilterProvider>(new SqlFilterProvider(gatewayOptions.GraphQL.MaxInClauseBatchSize));
 
-        // Data Catalog Services & Clients (P1)
-        services.AddTransient<SsrfProtectionHandler>();
-        services.AddHttpClient<IAuditWormExportService, AuditWormExportService>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<PurviewDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<CollibraDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<OpenMetadataDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.TryAddSingleton<IDataCatalogClientFactory, DataCatalogClientFactory>();
-        services.TryAddScoped<IDataCatalogSyncService, DataCatalogSyncService>();
+        // Outbound SSRF protection (HIGH-03 / SEC-02) & OpenAPI ingestion (P1).
+        // Data catalog clients, factory and sync are registered by AddGatewayExtensions (GqlGateway.Extensions/DataCatalog).
+        services.TryAddTransient<SsrfProtectionHandler>();
+        // SEC E-03: hardened primary handler (no redirects, connect-time IP check); allowlist only if "AuditWorm" is listed
+        // in Egress.TrustedIntegrations (SEC E-02).
+        services.AddHttpClient<IAuditWormExportService, AuditWormExportService>().AddSecureOutboundHandlers(EgressIntegrations.AuditWorm);
         services.AddSingleton<IOpenApiIngestionService, OpenApiIngestionService>();
 
         // SQL Connection Factory & Health Checks
@@ -389,13 +384,9 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ISchemaSunsettingService, SchemaSunsettingService>();
         services.AddSingleton<IDifferentialPrivacyEngine, DifferentialPrivacyEngine>();
 
-        // ITSM Dispatcher, Outbound REST Clients (ServiceNow & Jira) & Inbound Webhooks
-        services.AddHttpClient<ServiceNowTableApiClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<JiraCloudRestClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.TryAddEnumerable(ServiceDescriptor.Scoped<IItsmWorkflowClient, ServiceNowTableApiClient>());
-        services.TryAddEnumerable(ServiceDescriptor.Scoped<IItsmWorkflowClient, JiraCloudRestClient>());
+        // ITSM orchestration (dispatcher, recertification, outbox workers). The outbound REST clients (ServiceNow & Jira)
+        // and the inbound webhook handler are registered by AddGatewayExtensions (GqlGateway.Extensions/Itsm).
         services.AddScoped<ItsmWorkflowDispatcher>();
-        services.AddScoped<IItsmWebhookHandler, ItsmWebhookHandler>();
         services.AddScoped<IConsentRecertificationService, ConsentRecertificationWorkflowService>();
         if (gatewayOptions.Itsm.Enabled)
         {
@@ -404,22 +395,13 @@ public static class GatewayServiceCollectionExtensions
         }
 
 
-        // Lineage Graph Store, Impact Analyzer & External Lineage / GDPR Exporters
+        // Lineage Graph Store, Impact Analyzer & GDPR Exporter. The external OpenLineage export client is registered by
+        // AddGatewayExtensions (GqlGateway.Extensions/Lineage).
         services.AddSingleton<ILineageGraphStore, LineageGraphStore>();
         services.AddScoped<ILineageImpactAnalyzerService, LineageImpactAnalyzerService>();
         services.AddSingleton<IGdprAuditReportExporter, GdprAuditReportPdfExporter>();
-        services.AddHttpClient<OpenLineageClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddScoped<IOpenLineageClient, OpenLineageClient>();
 
-
-        // AI Assisted Governance (OpenJEV & Triage)
-        services.AddHttpClient("OpenJev").AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddSingleton<IOpenJevClient>(sp =>
-        {
-            var factory = sp.GetRequiredService<IHttpClientFactory>();
-            var logger = sp.GetRequiredService<ILogger<OpenJevClient>>();
-            return new OpenJevClient(logger, factory.CreateClient("OpenJev"));
-        });
+        // AI Assisted Governance (Triage). The OpenJEV client is registered by AddGatewayExtensions (GqlGateway.Extensions/Lineage).
         services.AddScoped<IJustificationTriageService, JustificationTriageService>();
 
         // Standardisiertes Connector-SPI (F-ARCH-10 nach Trino-Muster)
@@ -507,50 +489,15 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();
         services.AddHostedService<TrafficDrainHostedService>();
 
-        // Foreign System Extensions (ServiceNow, Jira, OpenMetadata, Multi-Catalog)
+        // Connectors to foreign systems (GqlGateway.Extensions): ITSM (ServiceNow, Jira), OpenMetadata, data catalogs
+        // (Purview, Collibra, OpenMetadata, Alation), dbt, OData, Iceberg lakehouse, OpenLineage/OpenJEV, Backstage and
+        // CDC sources (MSSQL Change Tracking, Debezium). Single registration point – see ExtensionsServiceCollectionExtensions.
         services.AddGatewayExtensions(gatewayOptions);
-        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.MicrosoftPurviewCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.CollibraCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.AlationCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.Itsm.ServiceNowClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.Itsm.JiraClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.OpenMetadata.OpenMetadataClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
 
         // Realtime Event Subscriptions & In-Stream RLS (P5)
         services.AddSingleton<ICdcEventChannel, InMemoryCdcEventChannel>();
         services.AddSingleton<ICdcEventIngestionService, CdcEventIngestionService>();
         services.AddScoped<IStreamRlsPolicyEnforcer, StreamRlsPolicyEnforcer>();
-
-        // Native MSSQL Change Tracking Ingestion Provider (F-CDC-02)
-        services.AddSingleton<GqlGateway.Application.Streaming.Interfaces.IMssqlWatermarkStore, GqlGateway.Infrastructure.Streaming.InMemoryMssqlWatermarkStore>();
-        services.AddSingleton<GqlGateway.Application.Streaming.Interfaces.IMssqlChangeTrackingPoller, GqlGateway.Infrastructure.Streaming.MssqlChangeTrackingPoller>();
-        if (gatewayOptions.MssqlChangeTracking.Enabled)
-        {
-            services.AddHostedService<GqlGateway.Infrastructure.Streaming.MssqlChangeTrackingHostedService>();
-        }
-
-        // Modern Lakehouse Apache Iceberg Connector (P4 / ADR-015)
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.LocalStorageProvider>();
-        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider))
-            .AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider))
-            .AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddSingleton(sp => new GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider(
-            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
-            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
-            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider>>()));
-        services.AddSingleton(sp => new GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider(
-            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
-            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
-            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider>>()));
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.CompositeLakehouseStorageProvider>();
-
-
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.ILakehouseStorageProvider>(sp => sp.GetRequiredService<GqlGateway.Extensions.Lakehouse.Services.CompositeLakehouseStorageProvider>());
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.IIcebergMetadataReader, GqlGateway.Extensions.Lakehouse.Services.IcebergMetadataReader>();
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.IIcebergPartitionPruner, GqlGateway.Extensions.Lakehouse.Services.IcebergPartitionPruner>();
-        services.AddScoped<GqlGateway.Extensions.Lakehouse.Interfaces.ILakehouseDataSourceExecutor, GqlGateway.Extensions.Lakehouse.Services.LakehouseDataSourceExecutor>();
-        services.AddScoped<IDataSourceExecutor, GqlGateway.Extensions.Lakehouse.Services.LakehouseDataSourceExecutor>();
 
         // Explicit CORS policy configuration
         services.AddCors(options =>
@@ -604,9 +551,6 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ISchemaLinter, SchemaLinter>();
         services.AddSingleton<ISchemaRegistryRepository, InMemorySchemaRegistryRepository>();
         services.AddSingleton<ISchemaRegistryService, SchemaRegistryService>();
-
-        // Backstage.io Integration
-        services.AddSingleton<GqlGateway.Application.Integrations.Backstage.IBackstageCatalogExportService, GqlGateway.Application.Integrations.Backstage.BackstageCatalogExportService>();
 
         return services;
     }
@@ -805,8 +749,8 @@ public static class GatewayServiceCollectionExtensions
 
         // SEC M-16: Singleton, damit registrierte API-Keys und der Key-Cache über Requests hinweg bestehen.
         services.AddSingleton<IClientTierResolver, ClientTierResolver>();
-        services.AddHttpClient<CloudflareCdnPurgeService>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<FastlyCdnPurgeService>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        services.AddHttpClient<CloudflareCdnPurgeService>().AddSecureOutboundHandlers(EgressIntegrations.Cdn);
+        services.AddHttpClient<FastlyCdnPurgeService>().AddSecureOutboundHandlers(EgressIntegrations.Cdn);
         services.AddTransient<ICdnCachePurgeService, CloudflareCdnPurgeService>();
 
         services.AddFusionFederationServices(gatewayOptions);
@@ -884,6 +828,15 @@ public static class GatewayServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(getEnvironmentVariable);
         ValidateObjectRecursively(options);
+
+        // SEC E-01: the egress allowlist is validated in every environment; invalid or too broad entries abort the start.
+        var egressErrors = EgressAllowlist.Validate(options.Egress);
+        if (egressErrors.Count > 0)
+        {
+            throw new ValidationException(
+                "Konfigurationsfehler Egress-Allowlist (Gateway:Egress): IPv4-Netze mindestens /8, IPv6 mindestens /32, keine Überlappung mit " +
+                "Loopback/Link-Local/Metadaten/CGNAT/Multicast/IPv4-mapped-Bereichen:\n  - " + string.Join("\n  - ", egressErrors));
+        }
 
         // SEC C-04: Development disables most protections. Inside a container this is almost always an
         // accidentally shipped image default, so it requires an explicit opt-in.
@@ -1110,31 +1063,5 @@ public static class GatewayServiceCollectionExtensions
                 }
             }
         }
-    }
-}
-
-/// <summary>
-/// DelegatingHandler enforcing strict SSRF validation with asynchronous DNS resolution
-/// across all outbound HTTP requests made by ITSM, Catalog, Lineage, and CDN purge clients (HIGH-03 / SEC-02).
-/// </summary>
-public sealed class SsrfProtectionHandler : DelegatingHandler
-{
-    private readonly IHostEnvironment? _environment;
-
-    public SsrfProtectionHandler(IHostEnvironment? environment = null)
-    {
-        _environment = environment;
-    }
-
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-    {
-        if (request.RequestUri != null)
-        {
-            await DeclarativeHttpDataSourceExecutor.ValidateDestinationUrlAsync(
-                request.RequestUri,
-                _environment?.IsDevelopment() ?? false,
-                cancellationToken).ConfigureAwait(false);
-        }
-        return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 }

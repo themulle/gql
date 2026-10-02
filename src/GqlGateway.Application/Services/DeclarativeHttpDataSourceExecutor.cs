@@ -456,6 +456,11 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
 
         if (!isDev)
         {
+            if (!string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new SecurityException($"Insecure HTTP scheme '{uri.Scheme}' not permitted for outbound data sources in non-development environments.");
+            }
+
             IPAddress[] addresses;
             if (directIp != null)
             {
@@ -479,11 +484,6 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
                 {
                     throw new SecurityException($"Outbound access to private/loopback/restricted address '{ip}' is strictly forbidden.");
                 }
-            }
-
-            if (!string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new SecurityException($"Insecure HTTP scheme '{uri.Scheme}' not permitted for outbound data sources in non-development environments.");
             }
         }
     }

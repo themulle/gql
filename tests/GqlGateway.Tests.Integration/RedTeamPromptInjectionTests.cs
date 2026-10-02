@@ -7,7 +7,7 @@ using GqlGateway.Application.Governance;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
-using GqlGateway.Infrastructure.OpenJev;
+using GqlGateway.Extensions.Lineage;
 using GqlGateway.Infrastructure.Persistence.Migrations;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;

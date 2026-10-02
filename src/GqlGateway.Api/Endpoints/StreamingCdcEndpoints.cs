@@ -5,7 +5,7 @@ using System.Security.Claims;
 using System.Threading.Tasks;
 using GqlGateway.Api.Extensions;
 using GqlGateway.Application.Streaming.Interfaces;
-using GqlGateway.Infrastructure.Streaming;
+using GqlGateway.Extensions.Cdc;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;

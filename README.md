@@ -201,6 +201,42 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 └────────────────────────────────┘             └───────────────────────────────┘
 ```
 
+### Architektur: Kern vs. Extensions
+
+Der Kern (`src/*`) enthält Schnittstellen, Orchestrierung und Governance-Logik (Consent, RLS, Masking, Ratchet, Outbox, Stream-Backbone). **Alle Anbindungen an Fremdsysteme** liegen in `gql_extensions/src/GqlGateway.Extensions` (ein Ordner je Anbindung) und werden genau einmal über `services.AddGatewayExtensions(gatewayOptions)` in `AddGatewayInfrastructure` eingebunden:
+
+| Anbindung | Extensions-Ordner | Im Kern verbleibend | Hintergrunddienst aktiv bei |
+|---|---|---|---|
+| Datenkataloge (Purview, Collibra, Alation, OpenMetadata) | `DataCatalog/` | Schnittstellen, `CatalogGovernanceRatchet`, OpenAPI-Ingestion | `Gateway:Catalog:Enabled` |
+| ITSM (ServiceNow, Jira, Webhooks) | `Itsm/` | `ItsmWorkflowDispatcher`, Rezertifizierung, Outbox-Worker | `Gateway:Itsm:Enabled` (Kern-Worker) |
+| OpenMetadata Policy-Sync | `OpenMetadata/` | Schnittstellen | `Gateway:OpenMetadata:Enabled` |
+| Lineage-Export (OpenLineage, OpenJEV) | `Lineage/` | `LineageGraphStore`, Impact-Analyse | – |
+| Backstage-Export | `Backstage/` | `IBackstageCatalogExportService`, Endpunkte | – (Endpunkte: `Gateway:Backstage:Enabled`) |
+| CDC-Quellen (MSSQL Change Tracking, Debezium) | `Cdc/` | `InMemoryCdcEventChannel`, Stream-RLS | `Gateway:MssqlChangeTracking:Enabled` |
+| dbt, OData, Iceberg-Lakehouse | `Dbt/`, `OData/`, `Lakehouse/` | Endpunkte/Executor-Pipeline | – |
+
+Abhängigkeitsrichtung: Extensions → Application/Domain; Api → Extensions. Domain/Application/Infrastructure/GraphQL referenzieren die Extensions nicht und enthalten keine Fremdsystem-Clients (Architekturtests `CoreLayers_ShouldNotHaveDependencyOnExtensions`, `CoreLayers_ShouldNotContainForeignSystemClients`). Der gemeinsame `SsrfProtectionHandler` liegt in `GqlGateway.Application.Security`.
+
+**Interne Ziele (On-Premises-Anbindungen):** Alle HttpClients der Extensions laufen durch den `SsrfProtectionHandler`, der private, Loopback- und Metadaten-Adressen standardmäßig blockiert und außerhalb von Development HTTPS verlangt. Für Jira, ServiceNow, OpenMetadata, OpenLineage o. ä. im Firmennetz werden die Ziele explizit freigegeben:
+
+```json
+"Gateway": {
+  "Egress": {
+    "TrustedInternalHosts": [ "jira.corp.local", "servicenow.corp.local" ],
+    "TrustedInternalNetworks": [ "10.20.0.0/16" ]
+  }
+}
+```
+
+Freigegebene Ziele sind nur von der Prüfung auf private Adressen ausgenommen. Metadaten-Endpunkte sowie Loopback- und Link-Local-Adressen bleiben gesperrt, und HTTPS bleibt außerhalb von Development Pflicht.
+
+Ergänzungen (Nachprüfung E-01 bis E-04):
+
+- Die Allowlist gilt nur für die Integrationen in `Egress:TrustedIntegrations` (nicht gesetzt = `Itsm`, `Catalog`, `OpenMetadata`, `Lineage`; zusätzlich erlaubt: `AuditWorm`, `Cdn`). `Lakehouse` kann die Allowlist nie nutzen, weil seine Ziel-URLs aus Iceberg-Manifesten stammen.
+- Die Einträge werden beim Start in jeder Umgebung geprüft: ungültige CIDRs, IPv4-Netze größer als /8, IPv6-Netze größer als /32 und Netze, die 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 100.64.0.0/10, Multicast/Broadcast, `::`, `::1`, fe80::/10, `::ffff:0:0/96` oder fd00:ec2::/32 berühren, brechen den Start ab. ULA-Netze (fc00::/7) einzelner Standorte bleiben freigebbar. Eine aktive Allowlist erscheint als `WARN:` in der Bypass-Liste.
+- Auch für freigegebene Ziele gesperrt: 0.0.0.0/8 und `::`, 100.64.0.0/10, Multicast, Broadcast, IPv4-mapped-Adressen (werden auf IPv4 normalisiert) und die Metadaten-IPs 169.254.169.254, 169.254.170.2, 100.100.100.200, fd00:ec2::254 und 168.63.129.16. Löst ein freigegebener Hostname nicht auf, wird der Aufruf abgelehnt.
+- Alle Integrations-Clients folgen keinen Redirects mehr: eine 3xx-Antwort gilt als Fehler. Die Verbindung wird nur zu einer geprüften IP aufgebaut (Prüfung beim Verbindungsaufbau, Schutz gegen DNS-Rebinding). Verbindungen zum System-Proxy (`HTTPS_PROXY`) sind davon ausgenommen.
+
 ### Projects
 
 | Project | Target | Description |
@@ -210,11 +246,11 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 | [`GqlGateway.Infrastructure`](src/GqlGateway.Infrastructure) | `net10.0` | Persistence (`SqliteGovernanceRepository`, `SqlConnectionFactory`), Caching (`ConsentCacheService`), Multi-Instance Messaging (`RedisEventBus`), Rate Limiting (`RedisRateLimiterService`), Security Handlers (`ForwardAuthAuthenticationHandler`, `BasicAuthenticationHandler`) |
 | [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 16.6.7 GraphQL engine, dynamic schemas, Subscriptions, Fusion Router (`FusionGatewayExtensions`), MCP Server, queries & mutations |
 | [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Host, Basic Auth Login (`/api/auth/login`), ForwardAuth header security, rate limiting, anti-CSRF, health probes, ITSM webhooks, MCP endpoints |
-| [`GqlGateway.Extensions`](/root/gql_extensions/src/GqlGateway.Extensions) | `net10.0` | Apache Iceberg Lakehouse connector, Enterprise Data Catalogs (Purview, Collibra, Alation, OpenMetadata), dbt manifest ingestion, ITSM handlers, OData |
+| [`GqlGateway.Extensions`](/root/gql_extensions/src/GqlGateway.Extensions) | `net10.0` | All connectors to foreign systems: Data Catalogs (Purview, Collibra, Alation, OpenMetadata), ITSM (ServiceNow, Jira, webhooks), OpenMetadata sync, dbt, OData, Iceberg Lakehouse, OpenLineage/OpenJEV, Backstage export, CDC sources (MSSQL Change Tracking, Debezium) |
 | [`TrinoSqlEngine`](/root/gql_sqlparser) | `net10.0` | High-performance ANTLR4 SQL Parser, AST Rewriter, WebSQL engine, and parameter extractor (857 parser tests) |
 | [`GqlGateway.Benchmarks`](benchmarks/GqlGateway.Benchmarks) | `net10.0` | BenchmarkDotNet suites for throughput, cache hit/miss, and masking allocations |
 | [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 1,180 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
-| [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | 5 NetArchTest rules enforcing Clean Architecture dependency directions |
+| [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | 8 NetArchTest/reflection rules enforcing Clean Architecture dependency directions (incl. Kern vs. Extensions) |
 | [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 144 End-to-end integration tests using `WebApplicationFactory<Program>` |
 | [`GqlGateway.Extensions.Tests`](/root/gql_extensions/tests/GqlGateway.Extensions.Tests) | `net10.0` | 75 Unit & Integration tests for Iceberg Lakehouse, Data Catalogs, dbt, ITSM, and OData |
 
@@ -247,7 +283,7 @@ Currently passes **2,261 / 2,261 tests (100% green)** across all test suites:
 - **1,180 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Declarative SQL-to-API Execution, Casbin ABAC Hot-Reload, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure, MCP Guardrails, Differential Privacy)
 - **144 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Declarative SQL Endpoints & OpenAPI 3.0 Generation, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
 - **75 Extensions Tests** (Apache Iceberg v2 Lakehouse connector & partition pruning, Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion & contract validation, ServiceNow/Jira webhooks, OData)
-- **5 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application)
+- **8 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application and the Kern-vs-Extensions boundary)
 
 ### 3. Run Gateway via Docker Container (Fastest / Getting Started)
 

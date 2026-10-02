@@ -19,7 +19,7 @@ using GqlGateway.Application.SchemaRegistry;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
-using GqlGateway.Infrastructure.Itsm;
+using GqlGateway.Extensions.Itsm;
 using GqlGateway.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging.Abstractions;

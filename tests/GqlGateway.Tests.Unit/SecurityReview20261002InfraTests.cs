@@ -705,7 +705,9 @@ public sealed class SecurityReview20261002InfraTests : IDisposable
         var handler = new RecordingHandler(responder);
         var factory = Substitute.For<IHttpClientFactory>();
         factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(handler));
-        return (new DeclarativeHttpDataSourceExecutor(factory, NullLogger<DeclarativeHttpDataSourceExecutor>.Instance), handler);
+        var env = Substitute.For<IHostEnvironment>();
+        env.EnvironmentName.Returns("Development");
+        return (new DeclarativeHttpDataSourceExecutor(factory, NullLogger<DeclarativeHttpDataSourceExecutor>.Instance, environment: env), handler);
     }
 
     private static DataSourceExecutionContext HttpContext(

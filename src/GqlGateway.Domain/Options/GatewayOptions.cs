@@ -33,6 +33,7 @@ public sealed class GatewayOptions
     [Required] public SystemMetricsOptions SystemMetrics { get; init; } = new();
     [Required] public GoldenQueryOptions GoldenQueries { get; init; } = new();
     [Required] public ParquetEgressOptions ParquetEgress { get; init; } = new();
+    [Required] public OutboundEgressOptions Egress { get; init; } = new();
     [Required] public HitLStepUpOptions HitLStepUp { get; init; } = new();
     [Required] public SingleQueryPushdownOptions SingleQueryPushdown { get; init; } = new();
     [Required] public WebSqlOptions WebSql { get; init; } = new();
@@ -77,7 +78,7 @@ public sealed class GatewayOptions
     public bool AreQueryLimitsRelaxed => Insecure.warn_relaxed_query_limits || GraphQL.warn_relaxed_query_limits;
     public bool IsIntrospectionForced => Insecure.warn_enable_introspection || GraphQL.warn_enable_introspection || IsQuickstartProfile;
     public bool IsAutoApproveEnabled => Insecure.warn_auto_approve_access_requests || GovernanceDb.warn_auto_approve_access_requests || IsQuickstartProfile;
-    public bool IsWebhookSignatureBypassed => Insecure.danger_bypass_webhook_signature_validation || Insecure.danger_allow_anonymous_webhooks || Itsm.danger_bypass_webhook_signature_validation || OpenMetadata.danger_bypass_webhook_signature_validation;
+    public bool IsWebhookSignatureBypassed => Insecure.danger_bypass_webhook_signature_validation || Insecure.danger_allow_anonymous_webhooks || Itsm.danger_bypass_webhook_signature_validation || OpenMetadata.danger_bypass_webhook_signature_validation || Dbt.danger_bypass_webhook_signature_validation;
     public bool AreUntrustedCertificatesAllowed => Insecure.danger_allow_untrusted_certificates || Insecure.danger_allow_insecure_transport || Itsm.danger_allow_untrusted_certificates || OpenMetadata.danger_allow_untrusted_certificates;
     public bool IsWebhookTimestampToleranceIgnored => Insecure.warn_ignore_webhook_timestamp_tolerance || Itsm.warn_ignore_webhook_timestamp_tolerance || OpenMetadata.warn_ignore_webhook_timestamp_tolerance;
     public bool IsWebhookTenantFallbackAllowed => Insecure.warn_fallback_default_tenant_for_webhooks || Itsm.warn_fallback_default_tenant_for_webhooks;
@@ -107,6 +108,11 @@ public sealed class GatewayOptions
 
     // SEC H-19: Consents created automatically from OpenMetadata policies bypass the approval workflow (reported as WARN).
     public bool IsOpenMetadataAutoCreateConsentsEnabled => OpenMetadata.AutoCreateConsents;
+
+    // SEC E-01: an active egress allowlist exempts internal targets from the private-address SSRF check (reported as WARN).
+    public bool IsEgressAllowlistActive =>
+        Egress.TrustedInternalHosts.Any(h => !string.IsNullOrWhiteSpace(h)) ||
+        Egress.TrustedInternalNetworks.Any(n => !string.IsNullOrWhiteSpace(n));
 
     /// <summary>
     /// True when any DANGER or WARN entry is active (see <see cref="GetAllActiveBypasses"/>). Used for developer-facing
@@ -179,6 +185,9 @@ public sealed class GatewayOptions
         if (IsRateLimitingDisabled) list.Add("DANGER:warn_disable_rate_limiting");
         if (AreUnsignedS3RequestsAllowed) list.Add("DANGER:warn_allow_unsigned_s3_requests");
         if (IsWebhookTimestampToleranceIgnored) list.Add("DANGER:warn_ignore_webhook_timestamp_tolerance");
+        if (IsOpenMetadataAutoCreateConsentsEnabled) list.Add("DANGER:openmetadata_auto_create_consents (OpenMetadata.AutoCreateConsents)");
+        // SQ-15: DML without an affected-rows limit (WebSql.MaxAffectedRows <= 0 means unlimited)
+        if (IsWebSqlDmlAllowed && WebSql.MaxAffectedRows <= 0) list.Add(DangerPrefix + "websql_unlimited_affected_rows (WebSql.MaxAffectedRows = 0 with DML enabled)");
 
         // --- WARN ---
         if (IsAllCorsAllowed) list.Add("WARN:warn_allow_all_cors_origins");
@@ -188,8 +197,8 @@ public sealed class GatewayOptions
         if (IsLegacyCatalogPayloadOnlySignatureAllowed) list.Add("WARN:catalog_legacy_payload_only_signature (Catalog.AllowLegacyPayloadOnlySignature)");
         if (IsLegacyGlobalItsmWebhookSecretAllowed) list.Add("WARN:itsm_legacy_global_webhook_secret (Itsm.LegacyGlobalWebhookSecret)");
         if (AllowDevelopmentInContainer) list.Add("WARN:allow_development_in_container (AllowDevelopmentInContainer)");
-        if (IsOpenMetadataAutoCreateConsentsEnabled) list.Add("WARN:openmetadata_auto_create_consents (OpenMetadata.AutoCreateConsents)");
         if (IsLegacyWebSqlDmlSwitchActive) list.Add("WARN:warn_allow_websql_dml (legacy alias, use WebSql.AllowDml)");
+        if (IsEgressAllowlistActive) list.Add("WARN:egress_trusted_internal_allowlist (Egress.TrustedInternalHosts / Egress.TrustedInternalNetworks)");
         return list;
     }
 }
@@ -673,6 +682,12 @@ public sealed class OpenMetadataOptions
     public Dictionary<string, string> UserToUserSidMap { get; init; } = new();
 
     /// <summary>
+    /// EX-01: Explicit allowlist/mapping of OpenMetadata role names to Gateway roles.
+    /// Only roles present in this map are converted into gateway role consents.
+    /// </summary>
+    public Dictionary<string, string> RoleToGatewayRoleMap { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// SEC H-19: Wenn true, legt der OpenMetadata-Sync Allow-Consents aus OM-Policies (nur ViewAll/ViewSampleData,
     /// ohne Condition) automatisch an. Standard: false – Vorschläge werden nur protokolliert.
     /// </summary>
@@ -680,6 +695,19 @@ public sealed class OpenMetadataOptions
     public bool danger_bypass_webhook_signature_validation { get; init; } = false;
     public bool warn_ignore_webhook_timestamp_tolerance { get; init; } = false;
     public bool danger_allow_untrusted_certificates { get; init; } = false;
+
+    /// <summary>
+    /// SEC E-09 / EX-06: Explizite Zuordnung "service.database" (OpenMetadata) → Gateway-Domain. Ist die Map gesetzt,
+    /// werden Tabellen ohne Eintrag abgelehnt. Leer: Domain = Service-Name (bisheriges Verhalten); Tabellen mit gleicher
+    /// service.schema.table aus verschiedenen Datenbanken werden dann abgelehnt statt sich gegenseitig zu überschreiben.
+    /// </summary>
+    public Dictionary<string, string> ServiceDatabaseToDomainMap { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// SEC E-09 / EX-06: Neu aus OpenMetadata (Sync, Webhook, Katalog-Provider OpenMetadata) angelegte Tabellen sind
+    /// aktiv. Standard: false – neue Tabellen werden inaktiv angelegt, bis ein Gateway-Admin sie freigibt.
+    /// </summary>
+    public bool ActivateNewTables { get; init; } = false;
 }
 
 public sealed class SqlDataSourceOptions
@@ -756,6 +784,18 @@ public sealed class AlationOptions
     public string BaseUrl { get; init; } = string.Empty;
     public string ApiToken { get; init; } = string.Empty;
     public int CustomFieldIdPii { get; init; } = 1001;
+
+    /// <summary>
+    /// SEC E-08: Explizite Zuordnung Alation-Datenquelle (<c>ds_id</c>, numerisch) → Gateway-Domain.
+    /// Tabellen nicht gemappter Datenquellen werden verworfen (keine Geister-Tabellen).
+    /// </summary>
+    public Dictionary<string, string> DataSourceToDomainMap { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// SEC E-08: Nur in Development: <see cref="ApiToken"/> darf ein Klartext-Token sein, wenn er nicht über den
+    /// Secret-Provider aufgelöst werden kann. Standard: false (fail-closed in allen Umgebungen).
+    /// </summary>
+    public bool AllowPlaintextApiTokenInDevelopment { get; init; } = false;
 }
 
 public sealed class DataCatalogOptions
@@ -1055,6 +1095,13 @@ public sealed class WebSqlOptions
     public long MaxAffectedRows { get; init; } = 1000;
 
     /// <summary>
+    /// SQ-06 / SEC P-02: Additional SQL function names (unqualified, case-insensitive) permitted in WebSQL on top of the
+    /// curated allowlist of the target dialect (TrinoSqlEngine.SqlFunctionAllowlists). Names on the built-in function
+    /// denylist are never permitted, even if listed here.
+    /// </summary>
+    public List<string> AdditionalAllowedFunctions { get; init; } = [];
+
+    /// <summary>
     /// Legacy alias for <see cref="AllowDml"/> (reported as WARN with the hint to use WebSql.AllowDml).
     /// </summary>
     public bool warn_allow_dml { get; init; } = false;
@@ -1085,3 +1132,30 @@ public sealed class MssqlChangeTrackingOptions
     public List<string> TrackedTables { get; init; } = [];
 }
 
+/// <summary>
+/// Outbound egress allowlist for integrations (ITSM, catalogs, OpenMetadata, lineage, lakehouse) that run inside the
+/// corporate network. The SSRF guard blocks private/loopback targets by default; explicitly trusted internal hosts or
+/// networks are exempt from the private-address check. Cloud metadata endpoints and link-local addresses stay blocked,
+/// and HTTPS remains mandatory outside Development.
+/// </summary>
+public sealed class OutboundEgressOptions
+{
+    /// <summary>Exact host names (case-insensitive, without port), e.g. "jira.corp.local".</summary>
+    public List<string> TrustedInternalHosts { get; init; } = [];
+
+    /// <summary>CIDR networks, e.g. "10.20.0.0/16". Resolved addresses inside these networks are permitted.</summary>
+    public List<string> TrustedInternalNetworks { get; init; } = [];
+
+    /// <summary>
+    /// SEC E-02: integrations that may use the trusted hosts/networks above. Null (not configured) = default
+    /// <c>Itsm, Catalog, OpenMetadata, Lineage</c>. Allowed names: Itsm, Catalog, OpenMetadata, Lineage, AuditWorm, Cdn.
+    /// Lakehouse can never use the allowlist (its target URLs come from Iceberg manifests, i.e. producer data).
+    /// Nullable on purpose: the configuration binder appends to pre-filled lists, so a non-empty default could not be narrowed.
+    /// </summary>
+    public List<string>? TrustedIntegrations { get; init; }
+
+    private static readonly string[] DefaultTrustedIntegrations = ["Itsm", "Catalog", "OpenMetadata", "Lineage"];
+
+    /// <summary>Configured <see cref="TrustedIntegrations"/> or the default list.</summary>
+    public IReadOnlyList<string> GetEffectiveTrustedIntegrations() => TrustedIntegrations ?? (IReadOnlyList<string>)DefaultTrustedIntegrations;
+}

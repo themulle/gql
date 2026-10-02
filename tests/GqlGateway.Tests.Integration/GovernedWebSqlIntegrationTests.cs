@@ -353,7 +353,20 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
             new Claim("tenant_id", "tenant_test")
         }, "TestAuth"));
 
-        await RegisterTableAsync("orders", "id", "total", "email", "ssn", "tenant_id");
+        // SEC P-05: all tables of one WebSQL statement must share the data source dialect (here: SQLite).
+        await tableRepo.UpsertTableMetadataAsync(new TableMetadata
+        {
+            Table = new Table { Id = Guid.NewGuid(), DisplayName = "orders", TableName = "orders", SourceType = "SQLite" },
+            Identifier = new TableIdentifier("default", "public", "orders"),
+            Columns = new List<TableColumn>
+            {
+                new() { ColumnName = "id", DataType = "varchar" },
+                new() { ColumnName = "total", DataType = "varchar" },
+                new() { ColumnName = "email", DataType = "varchar" },
+                new() { ColumnName = "ssn", DataType = "varchar" },
+                new() { ColumnName = "tenant_id", DataType = "varchar" }
+            }
+        });
         string validJoinQuery = "SELECT u.id, o.id FROM secure_users u JOIN orders o ON u.email = o.email";
 
         string secured = await sqlService.RewriteSqlAsync(validJoinQuery, user, new TenantId("tenant_test"));
