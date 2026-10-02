@@ -40,3 +40,5 @@
 | **F-AI-07** | Dynamic Semantic Schema Pruning & Just-in-Time MCP Tools | [f-ai-07-dynamic-semantic-schema-pruning.md](file:///root/lis-git/gql/gql/docs/features/f-ai-07-dynamic-semantic-schema-pruning.md) |
 | **F-CDC-03** | Zero-Kafka PostgreSQL CDC via Logical Streaming Replication | [f-cdc-03-zero-kafka-postgresql-cdc.md](file:///root/lis-git/gql/gql/docs/features/f-cdc-03-zero-kafka-postgresql-cdc.md) |
 | **F-OPS-01** | AST-Aware Production Traffic Shadowing & Dark Replay | [f-ops-01-traffic-shadowing-dark-replay.md](file:///root/lis-git/gql/gql/docs/features/f-ops-01-traffic-shadowing-dark-replay.md) |
+| **F-AI-08** | FOCUS-konformes FinOps Accounting für Token & Compute | [f-ai-08-focus-finops-accounting.md](file:///root/lis-git/gql/gql/docs/features/f-ai-08-focus-finops-accounting.md) |
+| **F-GOV-08** | Dynamic Schema Contracts & Tag-basierte Projektion (`@tag`) | [f-gov-08-schema-contracts-tag-projection.md](file:///root/lis-git/gql/gql/docs/features/f-gov-08-schema-contracts-tag-projection.md) |
