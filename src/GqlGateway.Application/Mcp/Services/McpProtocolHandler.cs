@@ -147,9 +147,9 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         {
             toolItems.Add($$"""
             {
-              "name": "{{t.Name}}",
+              "name": "{{EscapeJson(t.Name)}}",
               "description": "{{EscapeJson(t.Description)}}",
-              "inputSchema": {{t.InputJsonSchema}}
+              "inputSchema": {{SafeRawJson(t.InputJsonSchema)}}
             }
             """);
         }
@@ -191,7 +191,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         var request = new McpToolCallRequest(toolName, argsJson, session.SessionId, id?.ToString());
         var result = await _guardrailService.ExecuteToolWithGuardrailAsync(request, session, cancellationToken).ConfigureAwait(false);
 
-        if (!result.IsSuccess)
+        // SEC M-17: Structured executor error results must be flagged as tool errors (isError:true).
+        if (!result.IsSuccess || AiDataGuardrailService.TryGetExecutorError(result.ContentJson, out _))
         {
             return $$"""
             {
@@ -201,7 +202,7 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
                 "content": [
                   {
                     "type": "text",
-                    "text": "{{EscapeJson(result.ErrorMessage ?? "Tool execution failed")}}"
+                    "text": "{{EscapeJson(result.ErrorMessage ?? (result.IsSuccess ? result.ContentJson : null) ?? "Tool execution failed")}}"
                   }
                 ],
                 "isError": true
@@ -255,6 +256,27 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
             string str => $"\"{EscapeJson(str)}\"",
             _ => "null"
         };
+    }
+
+    /// <summary>
+    /// Low (JSON injection): only embed well-formed JSON documents verbatim; anything else becomes an empty schema.
+    /// </summary>
+    private static string SafeRawJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return "{}";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.GetRawText();
+        }
+        catch (JsonException)
+        {
+            return "{}";
+        }
     }
 
     private static string EscapeJson(string? text)
@@ -316,10 +338,10 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         {
             items.Add($$"""
             {
-              "uri": "{{r.Uri}}",
-              "name": "{{r.Name}}",
+              "uri": "{{EscapeJson(r.Uri)}}",
+              "name": "{{EscapeJson(r.Name)}}",
               "description": "{{EscapeJson(r.Description)}}",
-              "mimeType": "{{r.MimeType}}"
+              "mimeType": "{{EscapeJson(r.MimeType)}}"
             }
             """);
         }
@@ -366,8 +388,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
           "result": {
             "contents": [
               {
-                "uri": "{{target.Uri}}",
-                "mimeType": "{{target.MimeType}}",
+                "uri": "{{EscapeJson(target.Uri)}}",
+                "mimeType": "{{EscapeJson(target.MimeType)}}",
                 "text": "{{EscapeJson(target.Text)}}"
               }
             ]

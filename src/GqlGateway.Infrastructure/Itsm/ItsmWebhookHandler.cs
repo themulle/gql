@@ -1,6 +1,7 @@
 namespace GqlGateway.Infrastructure.Itsm;
 
 using System;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -20,6 +21,81 @@ public sealed class ItsmStatusChangeDto
     public string Action { get; set; } = "APPROVE"; // "APPROVE", "REJECT"
     public string? Reason { get; set; }
     public string System { get; set; } = "ITSM";
+
+    /// <summary>SEC H-06: Event/delivery id from the signed payload (replay protection).</summary>
+    public string? EventId { get; set; }
+
+    /// <summary>SEC H-06: Approver as reported by the ITSM system (audit actor).</summary>
+    public string? Approver { get; set; }
+}
+
+/// <summary>
+/// SEC H-06: In-memory replay cache for ITSM webhook deliveries (event id and signature), TTL-bound.
+/// Covers the full +/- 5 minute timestamp tolerance window plus margin.
+/// </summary>
+public sealed class ItsmWebhookReplayCache
+{
+    internal static readonly TimeSpan Window = TimeSpan.FromMinutes(15);
+    private const int PruneThreshold = 10_000;
+
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _seen = new(StringComparer.Ordinal);
+
+    /// <summary>Process-wide default instance (the webhook handler itself is scoped).</summary>
+    public static ItsmWebhookReplayCache Shared { get; } = new();
+
+    internal int Count => _seen.Count;
+
+    /// <summary>Registers a delivery key. Returns false if the key was already seen within the window (replay).</summary>
+    public bool TryRegister(string key, DateTimeOffset now)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+
+        if (_seen.Count >= PruneThreshold)
+        {
+            Prune(now);
+        }
+
+        var expiresAt = now + Window;
+        while (true)
+        {
+            if (_seen.TryAdd(key, expiresAt))
+            {
+                return true;
+            }
+
+            if (_seen.TryGetValue(key, out var existing))
+            {
+                if (existing > now)
+                {
+                    return false;
+                }
+
+                if (_seen.TryUpdate(key, expiresAt, existing))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    public void Remove(string key)
+    {
+        if (!string.IsNullOrWhiteSpace(key))
+        {
+            _seen.TryRemove(key, out _);
+        }
+    }
+
+    internal void Prune(DateTimeOffset now)
+    {
+        foreach (var kvp in _seen)
+        {
+            if (kvp.Value <= now)
+            {
+                _seen.TryRemove(kvp.Key, out _);
+            }
+        }
+    }
 }
 
 public sealed class ItsmWebhookHandler(
@@ -27,10 +103,12 @@ public sealed class ItsmWebhookHandler(
     IConsentApprovalRepository governanceRepo,
     IOptions<GatewayOptions> options,
     ILogger<ItsmWebhookHandler> logger,
-    IEventBus? eventBus = null) : IItsmWebhookHandler
+    IEventBus? eventBus = null,
+    ItsmWebhookReplayCache? replayCache = null) : IItsmWebhookHandler
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private const string GlobalWebhookSecretRef = "itsm:webhook-secret";
     private readonly ItsmOptions _itsmOptions = options.Value.Itsm;
+    private readonly ItsmWebhookReplayCache _replayCache = replayCache ?? ItsmWebhookReplayCache.Shared;
 
     public Task<bool> HandleStatusChangeAsync(
         string rawPayload,
@@ -75,17 +153,32 @@ public sealed class ItsmWebhookHandler(
             }
         }
 
-        // 2. Secret-Bezug & Signaturvergleich (umgehbar via danger_bypass_webhook_signature_validation)
+        // 2. Payload parsen (unterstützt kanonisches DTO, natives ServiceNow- und natives Jira-Format).
+        // SEC H-06: Die Instanz-ID stammt ausschließlich aus dem (anschließend signaturgeprüften) Payload.
+        var payload = ParsePayload(rawPayload, logger);
+        if (payload == null || string.IsNullOrWhiteSpace(payload.TicketId))
+        {
+            logger.LogWarning("Webhook abgelehnt: TicketId konnte nicht ermittelt werden.");
+            return false;
+        }
+
+        var instanceId = ResolveInstanceId(payload.InstanceId, headerInstanceId, bypassSignature);
+        if (instanceId == null)
+        {
+            return false;
+        }
+
+        payload.InstanceId = instanceId;
+
+        // 3. Secret-Bezug & Signaturvergleich (umgehbar via danger_bypass_webhook_signature_validation)
+        string? normalizedSignature = null;
         if (!bypassSignature)
         {
-            byte[] secretKey;
-            try
+            // SEC H-06: Secret pro Instanz; das globale Secret nur bei explizitem LegacyGlobalWebhookSecret.
+            var secretKey = ResolveWebhookSecret(instanceId);
+            if (secretKey == null)
             {
-                secretKey = secretProvider.GetSecretBytes("itsm:webhook-secret");
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex, "Fehler beim Laden des Webhook-Secrets 'itsm:webhook-secret'.");
+                logger.LogError("Webhook abgelehnt: Für ITSM-Instanz '{InstanceId}' ist kein eigenes Webhook-Secret (itsm:webhook-secret:<instanceId>) konfiguriert.", instanceId);
                 return false;
             }
 
@@ -125,45 +218,107 @@ public sealed class ItsmWebhookHandler(
                 logger.LogWarning("Webhook abgelehnt: Ungültige HMAC-SHA256-Signatur.");
                 return false;
             }
+
+            normalizedSignature = Convert.ToHexString(providedHash);
         }
         else
         {
             logger.LogWarning("[INSECURE GETTING STARTED] Bypassing ITSM webhook HMAC-SHA256 signature verification.");
         }
 
-        // 4. Payload parsen (unterstützt kanonisches DTO, natives ServiceNow- und natives Jira-Format)
-        var payload = ParsePayload(rawPayload, headerInstanceId, logger);
-        if (payload == null || string.IsNullOrWhiteSpace(payload.TicketId))
+        // 4. SEC H-06: Replay-Schutz über Event-/Delivery-ID und Signatur (TTL-Cache). Wiederholte Zustellungen
+        // werden idempotent quittiert, ohne erneut eine Statusänderung auszulösen.
+        var now = DateTimeOffset.UtcNow;
+        var replayKeys = new List<string>(2);
+        if (!string.IsNullOrWhiteSpace(payload.EventId))
         {
-            logger.LogWarning("Webhook abgelehnt: TicketId konnte nicht ermittelt werden.");
-            return false;
+            replayKeys.Add($"evt:{instanceId}:{payload.EventId}");
         }
 
-        var request = await governanceRepo.GetConsentRequestByTicketIdAsync(payload.TicketId, ct).ConfigureAwait(false);
-        if (request == null)
+        if (normalizedSignature != null)
         {
-            logger.LogWarning("Webhook verworfen: Unbekannte TicketId '{TicketId}'", payload.TicketId);
-            return false;
+            replayKeys.Add($"sig:{instanceId}:{normalizedSignature}");
         }
 
-        // 5. Strikte Tenant-Bindungsprüfung (umgehbar via warn_fallback_default_tenant_for_webhooks)
-        var expectedTenant = _itsmOptions.GetTenantForInstance(payload.InstanceId);
-        if (expectedTenant == null || request.TenantId != expectedTenant.Value)
+        var registeredKeys = new List<string>(replayKeys.Count);
+        foreach (var key in replayKeys)
         {
-            if (options.Value.IsWebhookTenantFallbackAllowed)
+            if (!_replayCache.TryRegister(key, now))
+            {
+                foreach (var registered in registeredKeys)
+                {
+                    _replayCache.Remove(registered);
+                }
+
+                logger.LogWarning("Webhook-Replay erkannt (Instanz '{InstanceId}', Ticket '{TicketId}'). Zustellung wird ohne Wirkung quittiert.", instanceId, payload.TicketId);
+                return true;
+            }
+
+            registeredKeys.Add(key);
+        }
+
+        var processed = false;
+        try
+        {
+            processed = await ProcessStatusChangeAsync(payload, instanceId, ct).ConfigureAwait(false);
+            return processed;
+        }
+        finally
+        {
+            if (!processed)
+            {
+                // Only deliveries that actually took effect are remembered; failed ones may be retried.
+                foreach (var registered in registeredKeys)
+                {
+                    _replayCache.Remove(registered);
+                }
+            }
+        }
+    }
+
+    private async Task<bool> ProcessStatusChangeAsync(ItsmStatusChangeDto payload, string instanceId, CancellationToken ct)
+    {
+        // 5. Strikte Tenant-Bindung (umgehbar via warn_fallback_default_tenant_for_webhooks).
+        // SEC H-06: Ticket-Lookup erfolgt mit Tenant-Filter (WHERE itsm_ticket_id = @t AND tenant_id = @tenant).
+        var expectedTenant = _itsmOptions.GetTenantForInstance(instanceId);
+        ConsentRequest? request;
+        if (expectedTenant != null)
+        {
+            request = await governanceRepo.GetConsentRequestByTicketIdAsync(payload.TicketId, expectedTenant.Value, ct).ConfigureAwait(false);
+            if (request == null && options.Value.IsWebhookTenantFallbackAllowed)
+            {
+                request = await governanceRepo.GetConsentRequestByTicketIdAsync(payload.TicketId, ct).ConfigureAwait(false);
+                if (request != null)
+                {
+                    logger.LogWarning(
+                        "[INSECURE GETTING STARTED] Bypassing cross-tenant mismatch for ticket {TicketId}. Request tenant: {ReqTenant}, callback instance: {InstanceId}",
+                        payload.TicketId, request.TenantId, instanceId);
+                }
+            }
+        }
+        else if (options.Value.IsWebhookTenantFallbackAllowed)
+        {
+            request = await governanceRepo.GetConsentRequestByTicketIdAsync(payload.TicketId, ct).ConfigureAwait(false);
+            if (request != null)
             {
                 logger.LogWarning(
-                    "[INSECURE GETTING STARTED] Bypassing cross-tenant mismatch for ticket {TicketId}. Request tenant: {ReqTenant}, callback instance: {InstanceId}",
-                    payload.TicketId, request.TenantId, payload.InstanceId);
+                    "[INSECURE GETTING STARTED] Bypassing tenant binding for unmapped ITSM instance {InstanceId} (ticket {TicketId}, request tenant {ReqTenant}).",
+                    instanceId, payload.TicketId, request.TenantId);
             }
-            else
-            {
-                GatewayDiagnostics.CrossTenantMismatchCounter.Add(1);
-                logger.LogError(
-                    "CROSS_TENANT_WEBHOOK_MISMATCH: Ticket {TicketId} gehört zu Tenant {ReqTenant}, Callback kam von {CbTenant}",
-                    payload.TicketId, request.TenantId, expectedTenant?.Value ?? "UNKNOWN_INSTANCE");
-                return false; // Streng verweigern!
-            }
+        }
+        else
+        {
+            GatewayDiagnostics.CrossTenantMismatchCounter.Add(1);
+            logger.LogError(
+                "CROSS_TENANT_WEBHOOK_MISMATCH: Callback für Ticket {TicketId} kam von nicht zugeordneter Instanz {InstanceId}.",
+                payload.TicketId, instanceId);
+            return false; // Streng verweigern!
+        }
+
+        if (request == null)
+        {
+            logger.LogWarning("Webhook verworfen: Unbekannte TicketId '{TicketId}' für Instanz '{InstanceId}'.", payload.TicketId, instanceId);
+            return false;
         }
 
         // 6. Idempotente Bearbeitung (nur PENDING_EXTERNAL_APPROVAL darf bearbeitet werden)
@@ -173,12 +328,15 @@ public sealed class ItsmWebhookHandler(
             return true;
         }
 
+        // SEC H-06: Audit-Actor ist die ITSM-Instanz bzw. der dort gemeldete Genehmiger, nicht der Antragsteller.
+        var actor = BuildActorSid(payload, instanceId);
+
         if (string.Equals(payload.Action, "REJECT", StringComparison.OrdinalIgnoreCase))
         {
             logger.LogInformation("Consent Request {RequestId} via ITSM Ticket {TicketId} ({System}) abgelehnt.", request.Id, payload.TicketId, payload.System);
             await governanceRepo.RejectConsentRequestAsync(
                 request.Id,
-                new Sid($"ITSM_{payload.System.ToUpperInvariant()}"),
+                actor,
                 payload.Reason ?? $"Rejected via {payload.System} webhook",
                 ct).ConfigureAwait(false);
             return true;
@@ -187,7 +345,7 @@ public sealed class ItsmWebhookHandler(
         if (string.Equals(payload.Action, "APPROVE", StringComparison.OrdinalIgnoreCase))
         {
             logger.LogInformation("Consent Request {RequestId} via ITSM Ticket {TicketId} ({System}) genehmigt. Aktiviere Consent...", request.Id, payload.TicketId, payload.System);
-            await governanceRepo.ActivateConsentAsync(request.Id, ct).ConfigureAwait(false);
+            await governanceRepo.ActivateConsentAsync(request.Id, actor, ct).ConfigureAwait(false);
 
             if (eventBus != null)
             {
@@ -201,7 +359,117 @@ public sealed class ItsmWebhookHandler(
         return false;
     }
 
-    private static ItsmStatusChangeDto? ParsePayload(string rawPayload, string? headerInstanceId, ILogger logger)
+    /// <summary>
+    /// SEC H-06: The instance comes from the signed payload only. An (unsigned) header instance must match it.
+    /// Only in signature-bypass mode (insecure getting started) the header is accepted as fallback.
+    /// </summary>
+    private string? ResolveInstanceId(string? payloadInstanceId, string? headerInstanceId, bool bypassSignature)
+    {
+        var fromPayload = string.IsNullOrWhiteSpace(payloadInstanceId) ? null : payloadInstanceId.Trim();
+        var fromHeader = string.IsNullOrWhiteSpace(headerInstanceId) ? null : headerInstanceId.Trim();
+
+        if (fromPayload != null && fromHeader != null &&
+            !string.Equals(fromPayload, fromHeader, StringComparison.OrdinalIgnoreCase))
+        {
+            GatewayDiagnostics.CrossTenantMismatchCounter.Add(1);
+            logger.LogWarning("Webhook abgelehnt: Instanz-Header '{HeaderInstance}' widerspricht der signierten Payload-Instanz '{PayloadInstance}'.", fromHeader, fromPayload);
+            return null;
+        }
+
+        if (fromPayload != null)
+        {
+            return fromPayload;
+        }
+
+        if (bypassSignature && fromHeader != null)
+        {
+            return fromHeader;
+        }
+
+        logger.LogWarning("Webhook abgelehnt: Die signierte Payload enthält keine ITSM-Instanz-ID.");
+        return null;
+    }
+
+    /// <summary>
+    /// SEC H-06: Resolves the per-instance webhook secret. Values that are only aliases of the global secret
+    /// or the development placeholder (secret reference used as key) are not accepted as instance secret.
+    /// </summary>
+    internal byte[]? ResolveWebhookSecret(string instanceId)
+    {
+        var instanceRef = $"{GlobalWebhookSecretRef}:{instanceId}";
+        var instanceSecret = TryGetSecret(instanceRef);
+        var globalSecret = TryGetSecret(GlobalWebhookSecretRef);
+
+        if (instanceSecret is { Length: > 0 } &&
+            !IsPlaceholder(instanceSecret, instanceRef) &&
+            (globalSecret == null || !CryptographicOperations.FixedTimeEquals(instanceSecret, globalSecret)))
+        {
+            return instanceSecret;
+        }
+
+        if (_itsmOptions.LegacyGlobalWebhookSecret && globalSecret is { Length: > 0 } && !IsPlaceholder(globalSecret, GlobalWebhookSecretRef))
+        {
+            logger.LogWarning("ITSM webhook for instance '{InstanceId}' verified with the legacy global secret (Itsm:LegacyGlobalWebhookSecret=true).", instanceId);
+            return globalSecret;
+        }
+
+        return null;
+    }
+
+    private byte[]? TryGetSecret(string secretRef)
+    {
+        try
+        {
+            var bytes = secretProvider.GetSecretBytes(secretRef);
+            return bytes is { Length: > 0 } ? bytes : null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Webhook-Secret '{SecretRef}' konnte nicht geladen werden.", secretRef);
+            return null;
+        }
+    }
+
+    private static bool IsPlaceholder(byte[] secret, string secretRef)
+        => CryptographicOperations.FixedTimeEquals(secret, Encoding.UTF8.GetBytes(secretRef));
+
+    private static Sid BuildActorSid(ItsmStatusChangeDto payload, string instanceId)
+    {
+        var system = $"ITSM_{payload.System.ToUpperInvariant()}";
+        return string.IsNullOrWhiteSpace(payload.Approver)
+            ? new Sid($"{system}:{instanceId}")
+            : new Sid($"{system}:{instanceId}:{payload.Approver.Trim()}");
+    }
+
+    private static string? TryGetStringProperty(JsonElement element, params string[] names)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var name in names)
+        {
+            if (element.TryGetProperty(name, out var prop))
+            {
+                var value = prop.ValueKind switch
+                {
+                    JsonValueKind.String => prop.GetString(),
+                    JsonValueKind.Number => prop.GetRawText(),
+                    _ => null
+                };
+
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    return value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static ItsmStatusChangeDto? ParsePayload(string rawPayload, ILogger logger)
     {
         try
         {
@@ -209,7 +477,7 @@ public sealed class ItsmWebhookHandler(
             var root = doc.RootElement;
 
             string ticketId = string.Empty;
-            string instanceId = headerInstanceId ?? string.Empty;
+            string instanceId = string.Empty;
             string action = "REJECT";
             string? reason = null;
             string detectedSystem = "ITSM";
@@ -370,13 +638,22 @@ public sealed class ItsmWebhookHandler(
                 return null;
             }
 
+            var eventId = TryGetStringProperty(root, "EventId", "eventId", "event_id", "DeliveryId", "deliveryId", "delivery_id");
+            var approver = TryGetStringProperty(root, "Approver", "approver", "ApprovedBy", "approvedBy", "approved_by", "sys_updated_by");
+            if (approver == null && root.TryGetProperty("user", out var userProp))
+            {
+                approver = TryGetStringProperty(userProp, "accountId", "name", "emailAddress", "displayName");
+            }
+
             return new ItsmStatusChangeDto
             {
                 TicketId = ticketId,
                 InstanceId = instanceId,
                 Action = action,
                 Reason = reason,
-                System = detectedSystem
+                System = detectedSystem,
+                EventId = eventId,
+                Approver = approver
             };
         }
         catch (JsonException ex)

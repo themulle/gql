@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Diagnostics;
+using GqlGateway.Domain.Exceptions;
 using GqlGateway.Domain.Model;
 using Microsoft.Extensions.Logging;
 
@@ -55,14 +56,22 @@ public sealed class LineageImpactAnalyzerService : ILineageImpactAnalyzerService
         var sw = Stopwatch.StartNew();
         using var activity = GatewayDiagnostics.Source.StartActivity("Lineage.Traverse");
 
+        ArgumentNullException.ThrowIfNull(callerContext);
+
         var consent = await _consentRepo.GetConsentByIdAsync(consentId, ct).ConfigureAwait(false);
         // BOLA / Cross-tenant protection: reject if consent belongs to a different tenant
-        if (consent == null || 
-            (consent.TenantId != tenant && 
-             consent.TenantId != TenantId.LegacySingleTenant && 
+        // SEC M-15: Keine Ausnahme mehr für LegacySingleTenant-Consents (waren mandantenübergreifend sichtbar).
+        if (consent == null ||
+            (consent.TenantId != tenant &&
              !callerContext.IsClusterAdmin))
         {
             throw new KeyNotFoundException($"Consent mit ID '{consentId}' nicht gefunden.");
+        }
+
+        // SEC M-15: Nur Owner/Delegierte der Tabelle, GovernanceAdmin und PrivacyAdmin dürfen die Auswirkungsanalyse sehen.
+        if (!await IsAuthorizedForAccessAnalysisAsync(consent.TableIdentifier, callerContext, ct).ConfigureAwait(false))
+        {
+            throw new GatewayForbiddenException("Auswirkungsanalysen erfordern Data-Owner-, GovernanceAdmin- oder PrivacyAdmin-Rechte.");
         }
 
         var rootTableId = consent.TableIdentifier.ToString();
@@ -225,6 +234,11 @@ public sealed class LineageImpactAnalyzerService : ILineageImpactAnalyzerService
             }
         }
 
+        // SEC M-15: Das Zugriffsprotokoll (Actor-SIDs, Zugriffszahlen, Zeiträume) sehen nur Owner/Delegierte,
+        // GovernanceAdmin und PrivacyAdmin. Andere Aufrufer erhalten nur aggregierte Kennzahlen.
+        bool canViewRuntimeConsumers = callerContext != null &&
+            await IsAuthorizedForAccessAnalysisAsync(table, callerContext, ct).ConfigureAwait(false);
+
         // 2. Operational Runtime Consumers from Audit Logs
         var runtimeConsumers = new List<RuntimeConsumerSummary>();
         DateTimeOffset? lastAccessedAt = null;
@@ -289,6 +303,9 @@ public sealed class LineageImpactAnalyzerService : ILineageImpactAnalyzerService
         bool hasExternalServices = downstreamConsumers.Any(d => d.Type == LineageNodeType.ExternalService);
         int activeReadersCount = runtimeConsumers.Count;
         int totalAuditReads = runtimeConsumers.Sum(r => r.QueryCount);
+        IReadOnlyList<RuntimeConsumerSummary> visibleRuntimeConsumers = canViewRuntimeConsumers
+            ? runtimeConsumers
+            : Array.Empty<RuntimeConsumerSummary>();
 
         string breakingChangeRisk = "LOW";
         if ((hasDashboards || hasPipelines) && (activeReadersCount >= 3 || totalAuditReads >= 50))
@@ -342,8 +359,30 @@ public sealed class LineageImpactAnalyzerService : ILineageImpactAnalyzerService
             activeReadersCount,
             lastAccessedAt,
             downstreamConsumers,
-            runtimeConsumers,
+            visibleRuntimeConsumers,
             mitigations);
+    }
+
+    /// <summary>
+    /// SEC M-15: Zugriffs- und Auswirkungsanalysen sind auf Data Owner/Delegierte der Tabelle,
+    /// GovernanceAdmin und PrivacyAdmin beschränkt.
+    /// </summary>
+    private async Task<bool> IsAuthorizedForAccessAnalysisAsync(TableIdentifier table, CallerSecurityContext callerContext, CancellationToken ct)
+    {
+        if (callerContext.IsGovernanceAdmin ||
+            callerContext.Roles.Any(r =>
+                string.Equals(r, "GovernanceAdmin", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(r, "PrivacyAdmin", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(callerContext.UserSid.Value))
+        {
+            return false;
+        }
+
+        return await _ownershipRepo.IsAuthorizedApproverForTableAsync(table, callerContext.UserSid, ct).ConfigureAwait(false);
     }
 
     public async Task<GdprDisclosureReport> GetGdprDataDisclosureReportAsync(

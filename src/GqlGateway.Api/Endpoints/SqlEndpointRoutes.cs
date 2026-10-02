@@ -34,6 +34,11 @@ public static class SqlEndpointRoutes
         {
             openApiEndpoint.RequireAuthorization();
         }
+        else
+        {
+            // SEC M-03: explicit opt-out of the authenticated-user fallback policy (OpenSchema docs only)
+            openApiEndpoint.AllowAnonymous();
+        }
 
         group.MapGet("/{name}", HandleGetEndpoint)
              .WithName("ExecuteSqlEndpointGet")

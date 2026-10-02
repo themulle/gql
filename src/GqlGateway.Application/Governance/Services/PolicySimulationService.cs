@@ -9,6 +9,7 @@ using Casbin;
 using Casbin.Model;
 using GqlGateway.Application.Governance.Interfaces;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -50,13 +51,22 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
 
     public async Task<PolicySimulationResult> SimulateAsync(
         PolicySimulationRequest request,
+        TenantId effectiveTenant,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.DraftPolicyCsv, nameof(request.DraftPolicyCsv));
 
+        // SEC H-05: The tenant scope is enforced by the caller (derived from the authenticated principal).
+        // request.Tenant is untrusted client input and is never used to widen the audit-log query;
+        // a null tenant (= all tenants) can no longer reach the repository.
+        if (string.IsNullOrWhiteSpace(effectiveTenant.Value))
+        {
+            throw new ArgumentException("Security validation error: an effective tenant must be supplied for policy simulation.", nameof(effectiveTenant));
+        }
+
         var limit = request.Limit <= 0 ? 500 : Math.Min(request.Limit, 10000);
-        var tenantStr = request.Tenant?.Value ?? "default";
+        var tenantStr = effectiveTenant.Value;
 
         var enforcer = CreateSimulationEnforcer(request.DraftPolicyCsv, tenantStr);
 
@@ -65,7 +75,7 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
             actorSid: null,
             since: request.Since,
             limit: limit,
-            tenantId: request.Tenant,
+            tenantId: effectiveTenant,
             ct: cancellationToken
         ).ConfigureAwait(false);
 

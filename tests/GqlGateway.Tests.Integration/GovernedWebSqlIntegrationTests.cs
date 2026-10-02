@@ -37,9 +37,29 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
         });
     }
 
+    // SEC C-03: WebSQL rejects tables without catalog metadata, so every table used by these tests is registered first.
+    private async Task RegisterTableAsync(string tableName, params string[] columns)
+    {
+        using var scope = _factory.Services.CreateScope();
+        var tableRepo = scope.ServiceProvider.GetRequiredService<ITableMetadataRepository>();
+        var cols = new List<TableColumn>();
+        foreach (var c in columns)
+        {
+            cols.Add(new TableColumn { ColumnName = c, DataType = "varchar" });
+        }
+
+        await tableRepo.UpsertTableMetadataAsync(new TableMetadata
+        {
+            Table = new Table { Id = Guid.NewGuid(), DisplayName = tableName, TableName = tableName },
+            Identifier = new TableIdentifier("default", "public", tableName),
+            Columns = cols
+        });
+    }
+
     [Fact]
     public async Task WebSql_SelectQuery_StreamsJsonRowsSuccessfully()
     {
+        await RegisterTableAsync("customers", "id", "name", "email", "active", "tenant_id");
         var client = _factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Tenant-Id", "tenant_alpha");
 
@@ -106,6 +126,7 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
             new Claim("tenant_id", "tenant_123")
         }, "TestAuth"));
 
+        await RegisterTableAsync("orders", "id", "total", "email", "ssn", "tenant_id");
         string rawSql = "SELECT * FROM orders WHERE total > 100 LIMIT 5000";
         string secured = await sqlService.RewriteSqlAsync(rawSql, user, new TenantId("tenant_123"));
 
@@ -167,6 +188,8 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
             new Claim("tenant_id", "tenant_evil")
         }, "TestAuth"));
 
+        await RegisterTableAsync("accounts", "id", "balance", "tenant_id");
+
         // Attacker attempts to shadow physical table 'accounts' inside CTE to query external rows
         string attackSql = @"
             WITH accounts AS (
@@ -183,6 +206,7 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
     [Fact]
     public async Task WebSql_ArrayFormatQuery_StreamsCompactJsonArrays()
     {
+        await RegisterTableAsync("users", "id", "name", "tenant_id");
         var client = _factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-Tenant-Id", "tenant_gamma");
 
@@ -244,6 +268,7 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
             new Claim("tenant_id", "tenant_test")
         }, "TestAuth"));
 
+        await RegisterTableAsync("orders", "id", "total", "email", "ssn", "tenant_id");
         string attackQuery = "SELECT c.id, o.id FROM crm_customers c JOIN orders o ON c.email = o.email";
 
         var ex = await Should.ThrowAsync<System.Security.SecurityException>(async () =>
@@ -286,6 +311,7 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
         }, "TestAuth"));
 
         // ANSI-89 comma join syntax: FROM a, b WHERE a.col = b.col
+        await RegisterTableAsync("orders", "id", "total", "email", "ssn", "tenant_id");
         string commaJoinQuery = "SELECT c.id, o.id FROM crm_customers c, orders o WHERE c.email = o.email";
 
         var ex = await Should.ThrowAsync<System.Security.SecurityException>(async () =>
@@ -327,12 +353,15 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
             new Claim("tenant_id", "tenant_test")
         }, "TestAuth"));
 
+        await RegisterTableAsync("orders", "id", "total", "email", "ssn", "tenant_id");
         string validJoinQuery = "SELECT u.id, o.id FROM secure_users u JOIN orders o ON u.email = o.email";
 
         string secured = await sqlService.RewriteSqlAsync(validJoinQuery, user, new TenantId("tenant_test"));
 
         secured.ShouldContain("gateway_hmac_sha256");
-        secured.ShouldContain("DEV_INSECURE_TEST_KEY_ONLY");
+        // SEC H-13: The HMAC key (and the secret reference name) is bound as a parameter, never embedded in SQL text
+        secured.ShouldNotContain("DEV_INSECURE_TEST_KEY_ONLY");
+        secured.ShouldContain("@__gql_mk0");
     }
 
     [Fact]
@@ -362,6 +391,7 @@ public class GovernedWebSqlIntegrationTests : IClassFixture<WebApplicationFactor
             new Claim("tenant_id", "tenant_test")
         }, "TestAuth"));
 
+        await RegisterTableAsync("payroll", "id", "ssn", "tenant_id");
         string joinQuery = "SELECT e.id, p.id FROM hr_employees e JOIN payroll p ON e.ssn = p.ssn";
 
         var ex = await Should.ThrowAsync<System.Security.SecurityException>(async () =>

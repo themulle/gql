@@ -65,13 +65,14 @@ public class TableDownstreamConsumersAndGdprTests
             ct: Arg.Any<CancellationToken>())
             .Returns(fakeLogs);
 
+        // SEC M-15: Runtime-Consumer (Zugriffsprotokoll) nur für Owner/Delegierte, GovernanceAdmin und PrivacyAdmin.
         var adminContext = new CallerSecurityContext(
             new Sid("S-1-5-21-ADMIN"),
             [],
-            ["ClusterAdmin"],
+            ["GovernanceAdmin"],
             new TenantId("tenant-1"),
-            IsGovernanceAdmin: false,
-            IsClusterAdmin: true);
+            IsGovernanceAdmin: true,
+            IsClusterAdmin: false);
 
         var report = await _sut.GetTableConsumersAsync(table, timeWindowDays: 30, callerContext: adminContext);
 

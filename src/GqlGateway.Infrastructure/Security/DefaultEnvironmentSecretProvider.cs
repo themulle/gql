@@ -55,7 +55,13 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
         candidates.Add(secretRef.Replace("-", ":"));
 
         // 3. Strictly bounded well-known aliases (exact or prefix match only, preventing accidental cross-secret collisions)
-        if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) ||
+        // SEC H-06: Instance-specific ITSM references ("itsm:<name>:<instance>", e.g. itsm:webhook-secret:{instanceId})
+        // never fall back to the global well-known secret; otherwise every instance would share the global key.
+        if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) && IsInstanceSpecificReference(secretRef))
+        {
+            _logger?.LogDebug("Secret reference '{SecretRef}' is instance-specific; no global alias fallback is applied.", secretRef);
+        }
+        else if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(secretRef, "itsm-webhook-secret", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(secretRef, "ITSM_WEBHOOK_SECRET", StringComparison.OrdinalIgnoreCase))
         {
@@ -106,5 +112,11 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
 
         // Fail-fast in non-development if secret cannot be resolved from Key Vault
         throw new InvalidOperationException($"Sicherheitsfehler: Das Secret '{secretRef}' konnte weder über Azure Key Vault / Konfiguration noch Umgebungsvariablen aufgelöst werden.");
+    }
+
+    private static bool IsInstanceSpecificReference(string secretRef)
+    {
+        var segments = secretRef.Split(':');
+        return segments.Length >= 3 && segments.All(segment => segment.Length > 0);
     }
 }

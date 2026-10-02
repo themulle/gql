@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Domain.Common;
+using GqlGateway.Domain.Exceptions;
 using GqlGateway.Domain.Model;
 using HotChocolate.Execution;
 using Microsoft.Extensions.Logging;
@@ -125,26 +126,26 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
                 var simResult = await _querySimulator.SimulateQueryAsync(queryString, tool.TargetTable, cancellationToken).ConfigureAwait(false);
                 return JsonSerializer.Serialize(simResult, CamelCaseJsonOptions);
             }
-            return """{"isAllowed":true,"estimatedRowCount":10,"estimatedResponseTokens":40}""";
+
+            // SEC M-17: Ohne Simulator keine erfundene Freigabe ("isAllowed":true) zurückgeben.
+            return CreateErrorResult(sessionContext.TenantId, tool.Name, McpErrorCodes.NotAvailable, "Query simulator is not available.");
         }
 
         // Fast-path / Specialized execution for registered tables if operation is standard table query
         if (tool.Name.Equals("query_customers", StringComparison.OrdinalIgnoreCase) ||
             tool.Name.Equals("query_invoices", StringComparison.OrdinalIgnoreCase))
         {
-            var fallbackResult = await TryExecuteTableFastPathAsync(tool.Name, principal, sessionContext, variables, cancellationToken).ConfigureAwait(false);
-            if (fallbackResult != null)
+            var fastPathResult = await TryExecuteTableFastPathAsync(tool.Name, principal, sessionContext, variables, cancellationToken).ConfigureAwait(false);
+            if (fastPathResult != null)
             {
-                if (_provenanceEnricher != null && tool.TargetTable.HasValue)
-                {
-                    var prov = await _provenanceEnricher.CreateProvenanceAsync(tool.TargetTable.Value, cancellationToken).ConfigureAwait(false);
-                    fallbackResult = _provenanceEnricher.EnrichPayloadWithProvenance(fallbackResult, prov);
-                }
-                return fallbackResult;
+                return await EnrichWithProvenanceAsync(tool, fastPathResult, cancellationToken).ConfigureAwait(false);
             }
         }
 
         // Standard GraphQL execution via HotChocolate IRequestExecutor
+        // Hinweis (SEC M-17): Die Resolver lesen den Principal derzeit aus IHttpContextAccessor (HTTP-Aufrufer der MCP-Session),
+        // nicht aus dem GlobalState "ClaimsPrincipal". Die hier aufgebaute MCP-Identität wirkt daher nur für Komponenten,
+        // die den GlobalState auswerten; Resolver-Umstellung ist als Folgearbeit dokumentiert.
         if (!string.IsNullOrWhiteSpace(tool.TargetGraphQLOperation))
         {
             try
@@ -181,29 +182,73 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
                     var json = FormatOperationResult(op);
                     if (op.Errors is null || op.Errors.Count == 0)
                     {
-                        if (_provenanceEnricher != null && tool.TargetTable.HasValue)
-                        {
-                            var prov = await _provenanceEnricher.CreateProvenanceAsync(tool.TargetTable.Value, cancellationToken).ConfigureAwait(false);
-                            json = _provenanceEnricher.EnrichPayloadWithProvenance(json, prov);
-                        }
-                        return json;
+                        return await EnrichWithProvenanceAsync(tool, json, cancellationToken).ConfigureAwait(false);
                     }
+
+                    // SEC M-17: GraphQL-Fehler (bereits durch den Error-Filter maskiert) strukturiert an den Agenten durchreichen.
+                    _logger.LogWarning("GraphQL execution returned {ErrorCount} error(s) for MCP tool '{ToolName}'.", op.Errors.Count, tool.Name);
+                    return CreateErrorResult(sessionContext.TenantId, tool.Name, McpErrorCodes.ExecutionFailed, "GraphQL execution returned errors.", json);
                 }
-                _logger.LogDebug("GraphQL execution returned errors for tool '{ToolName}'. Falling back to default tool data.", tool.Name);
+
+                return CreateErrorResult(sessionContext.TenantId, tool.Name, McpErrorCodes.ExecutionFailed, "Unsupported GraphQL execution result.");
+            }
+            catch (GatewayForbiddenException ex)
+            {
+                _logger.LogWarning(ex, "MCP tool '{ToolName}' was denied by governance policy.", tool.Name);
+                return CreateErrorResult(sessionContext.TenantId, tool.Name, McpErrorCodes.Forbidden, "Access denied by data governance policy.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "HotChocolate execution not applicable for tool '{ToolName}'. Falling back to default tool data.", tool.Name);
+                _logger.LogWarning(ex, "GraphQL execution failed for MCP tool '{ToolName}'.", tool.Name);
+                return CreateErrorResult(sessionContext.TenantId, tool.Name, McpErrorCodes.ExecutionFailed, "Tool execution failed.");
             }
         }
 
-        var defaultResponse = GenerateDefaultToolResponse(tool, sessionContext.TenantId);
+        // SEC M-17: Kein Mock-/Beispieldaten-Fallback im Produktionspfad.
+        _logger.LogWarning("MCP tool '{ToolName}' has no executable target operation.", tool.Name);
+        return CreateErrorResult(sessionContext.TenantId, tool.Name, McpErrorCodes.NotAvailable, "Tool has no executable target operation.");
+    }
+
+    private async Task<string> EnrichWithProvenanceAsync(McpToolDefinition tool, string json, CancellationToken cancellationToken)
+    {
         if (_provenanceEnricher != null && tool.TargetTable.HasValue)
         {
             var prov = await _provenanceEnricher.CreateProvenanceAsync(tool.TargetTable.Value, cancellationToken).ConfigureAwait(false);
-            defaultResponse = _provenanceEnricher.EnrichPayloadWithProvenance(defaultResponse, prov);
+            return _provenanceEnricher.EnrichPayloadWithProvenance(json, prov);
         }
-        return defaultResponse;
+
+        return json;
+    }
+
+    /// <summary>
+    /// SEC M-17: Strukturiertes Fehler-Ergebnis für MCP-Tool-Aufrufe (Deny, Ausführungsfehler, nicht verfügbar).
+    /// </summary>
+    internal static string CreateErrorResult(string tenantId, string toolName, string code, string message, string? graphQLResultJson = null)
+    {
+        JsonElement? graphQL = null;
+        if (!string.IsNullOrWhiteSpace(graphQLResultJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(graphQLResultJson);
+                graphQL = doc.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                graphQL = null;
+            }
+        }
+
+        return JsonSerializer.Serialize(new McpToolErrorPayload(
+            tenantId,
+            toolName,
+            IsError: true,
+            new McpToolError(code, message),
+            graphQL), CamelCaseJsonOptions);
     }
 
     private async Task<string?> TryExecuteTableFastPathAsync(
@@ -213,13 +258,13 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
         Dictionary<string, object?> variables,
         CancellationToken cancellationToken)
     {
+        string domain = "finance";
+        string schema = "dbo";
+        string table = toolName.Equals("query_customers", StringComparison.OrdinalIgnoreCase) ? "customers" : "invoices";
+        var tableId = new TableIdentifier(domain, schema, table);
+
         try
         {
-            string domain = "finance";
-            string schema = "dbo";
-            string table = toolName.Equals("query_customers", StringComparison.OrdinalIgnoreCase) ? "customers" : "invoices";
-
-            var tableId = new TableIdentifier(domain, schema, table);
             int first = variables.TryGetValue("limit", out var limObj) && limObj is int l ? l : 50;
 
             var (rows, decision) = await _gatewayExecutionService.ExecuteTableQueryAsync(
@@ -235,12 +280,7 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
             if (!decision.IsAllowed)
             {
                 _logger.LogWarning("Access to table '{Table}' for MCP tool was denied by governance engine.", tableId);
-                return JsonSerializer.Serialize(new
-                {
-                    tenantId = sessionContext.TenantId,
-                    error = "Access denied by data governance policy.",
-                    decision = string.Join("; ", decision.DeniedReasons)
-                });
+                return CreateErrorResult(sessionContext.TenantId, toolName, McpErrorCodes.Forbidden, "Access denied by data governance policy.");
             }
 
             return JsonSerializer.Serialize(new
@@ -250,10 +290,25 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
                 items = rows
             });
         }
+        catch (GatewayForbiddenException ex)
+        {
+            // SEC M-17: Verweigerungen nicht verschlucken, sondern als strukturiertes Fehler-Ergebnis melden.
+            _logger.LogWarning(ex, "Access to table '{Table}' for MCP tool '{ToolName}' was denied.", tableId, toolName);
+            return CreateErrorResult(sessionContext.TenantId, toolName, McpErrorCodes.Forbidden, "Access denied by data governance policy.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TableNotFoundException ex)
+        {
+            _logger.LogDebug(ex, "Fast-path table not found for '{ToolName}'. Falling back to GraphQL operation.", toolName);
+            return null;
+        }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Fast-path execution not available or table not found for '{ToolName}'. Falling back to schema.", toolName);
-            return null;
+            _logger.LogWarning(ex, "Fast-path execution failed for MCP tool '{ToolName}'.", toolName);
+            return CreateErrorResult(sessionContext.TenantId, toolName, McpErrorCodes.ExecutionFailed, "Tool execution failed.");
         }
     }
 
@@ -269,82 +324,6 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
         _ => el.GetRawText()
     };
 
-    private static string GenerateDefaultToolResponse(McpToolDefinition tool, string tenantId)
-    {
-        var safeTenant = new TenantId(tenantId).Value;
-        var encodedTenant = System.Text.Encodings.Web.JavaScriptEncoder.Default.Encode(safeTenant);
-
-        return tool.Name.ToLowerInvariant() switch
-        {
-            "query_customers" => $$"""
-            {
-              "tenantId": "{{encodedTenant}}",
-              "customers": [
-                {
-                  "id": "CUST-1001",
-                  "name": "Erika Mustermann",
-                  "email": "erika.mustermann@acme-corp.com",
-                  "iban": "DE89 3704 0044 0532 0130 00",
-                  "healthCondition": "Diabetes Type 2",
-                  "tier": "Enterprise"
-                },
-                {
-                  "id": "CUST-1002",
-                  "name": "Max Mustermann",
-                  "email": "max.mustermann@partner.org",
-                  "iban": "DE12 5001 0517 0648 4898 90",
-                  "tier": "Standard"
-                }
-              ]
-            }
-            """,
-
-            "query_invoices" => $$"""
-            {
-              "tenantId": "{{encodedTenant}}",
-              "invoices": [
-                {
-                  "invoiceId": "INV-2026-001",
-                  "amount": 14500.00,
-                  "currency": "EUR",
-                  "status": "PAID"
-                },
-                {
-                  "invoiceId": "INV-2026-002",
-                  "amount": 3200.50,
-                  "currency": "EUR",
-                  "status": "PENDING"
-                }
-              ]
-            }
-            """,
-
-            "query_data_catalog" => $$"""
-            {
-              "tenantId": "{{encodedTenant}}",
-              "assets": [
-                {
-                  "tableName": "customers",
-                  "classification": "CONFIDENTIAL",
-                  "sensitivity": "HIGH",
-                  "owner": "data-steward-sales@company.com",
-                  "tags": ["PII", "GDPR.Article9", "Financial"]
-                }
-              ]
-            }
-            """,
-
-            _ => $$"""
-            {
-              "tenantId": "{{encodedTenant}}",
-              "tool": "{{tool.Name}}",
-              "status": "COMPLETED",
-              "data": { "operation": "{{tool.TargetGraphQLOperation}}" }
-            }
-            """
-        };
-    }
-
     private static string FormatOperationResult(OperationResult op)
     {
         var writer = new System.Buffers.ArrayBufferWriter<byte>();
@@ -352,3 +331,22 @@ public sealed class GatewayMcpQueryExecutor : IMcpQueryExecutor
         return System.Text.Encoding.UTF8.GetString(writer.WrittenSpan);
     }
 }
+
+/// <summary>
+/// SEC M-17: Fehlercodes für strukturierte MCP-Tool-Fehlerergebnisse.
+/// </summary>
+public static class McpErrorCodes
+{
+    public const string Forbidden = "FORBIDDEN";
+    public const string ExecutionFailed = "EXECUTION_FAILED";
+    public const string NotAvailable = "NOT_AVAILABLE";
+}
+
+internal sealed record McpToolError(string Code, string Message);
+
+internal sealed record McpToolErrorPayload(
+    string TenantId,
+    string Tool,
+    bool IsError,
+    McpToolError Error,
+    JsonElement? GraphQL);

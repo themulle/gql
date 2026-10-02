@@ -1,7 +1,10 @@
 namespace GqlGateway.Application.Mcp.Services;
 
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using GqlGateway.Application.Mcp.Interfaces;
 using Microsoft.Extensions.Logging;
@@ -59,33 +62,57 @@ public sealed partial class SemanticPromptGuardrail(ILogger<SemanticPromptGuardr
             return PromptGuardrailEvaluation.Allow();
         }
 
+        // SEC M-29: evaluate the DECODED argument values (JSON escapes such as \u0069gnore resolved), NFKC-normalised
+        // and stripped of zero-width / bidi control characters. The raw text is checked as well. This guard remains
+        // a heuristic, not a security boundary.
+        var candidates = new List<string>(2) { NormalizeForInspection(argumentsJson) };
+        var decoded = ExtractDecodedText(argumentsJson);
+        if (decoded != null)
+        {
+            candidates.Add(decoded);
+        }
+
+        foreach (var candidate in candidates)
+        {
+            var evaluation = EvaluateText(toolName, candidate);
+            if (!evaluation.IsAllowed)
+            {
+                return evaluation;
+            }
+        }
+
+        return PromptGuardrailEvaluation.Allow();
+    }
+
+    private PromptGuardrailEvaluation EvaluateText(string toolName, string text)
+    {
         // Direct Text Checks
-        if (DirectInstructionOverrideRegex().IsMatch(argumentsJson))
+        if (DirectInstructionOverrideRegex().IsMatch(text))
         {
             _logger?.LogWarning("Prompt injection detected in tool '{ToolName}': Direct instruction override attempt.", toolName);
             return PromptGuardrailEvaluation.Deny("DirectInstructionOverride", "Prompt contains prohibited direct instruction override or system prompt exfiltration attempt.");
         }
 
-        if (JailbreakPersonaRegex().IsMatch(argumentsJson))
+        if (JailbreakPersonaRegex().IsMatch(text))
         {
             _logger?.LogWarning("Jailbreak attempt detected in tool '{ToolName}': Known persona or adversarial roleplay.", toolName);
             return PromptGuardrailEvaluation.Deny("JailbreakPersona", "Prompt contains adversarial jailbreak or persona-coercion pattern (e.g. DAN / Developer Mode).");
         }
 
-        if (InstructionDelimiterRegex().IsMatch(argumentsJson))
+        if (InstructionDelimiterRegex().IsMatch(text))
         {
             _logger?.LogWarning("Delimiter injection detected in tool '{ToolName}': Adversarial prompt boundary markers.", toolName);
             return PromptGuardrailEvaluation.Deny("InstructionDelimiterEscape", "Prompt contains adversarial prompt boundary markers or synthetic delimiter tokens.");
         }
 
-        if (ExfiltrationCoercionRegex().IsMatch(argumentsJson))
+        if (ExfiltrationCoercionRegex().IsMatch(text))
         {
             _logger?.LogWarning("Coercive exfiltration pattern detected in tool '{ToolName}'.", toolName);
             return PromptGuardrailEvaluation.Deny("PrivilegeCoercion", "Prompt contains malicious privilege elevation or exfiltration instruction.");
         }
 
         // Check for Base64 obfuscated injections
-        var base64Evaluation = CheckBase64Payloads(argumentsJson);
+        var base64Evaluation = CheckBase64Payloads(text);
         if (!base64Evaluation.IsAllowed)
         {
             _logger?.LogWarning("Obfuscated base64 prompt injection detected in tool '{ToolName}': {Reason}", toolName, base64Evaluation.Reason);
@@ -94,6 +121,87 @@ public sealed partial class SemanticPromptGuardrail(ILogger<SemanticPromptGuardr
 
         return PromptGuardrailEvaluation.Allow();
     }
+
+    /// <summary>
+    /// Decodes the JSON arguments and concatenates all property names and string values (recursively),
+    /// each normalised via <see cref="NormalizeForInspection"/>. Returns null if the input is not JSON.
+    /// </summary>
+    internal static string? ExtractDecodedText(string argumentsJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(argumentsJson);
+            var sb = new StringBuilder();
+            AppendStrings(doc.RootElement, sb);
+            return sb.ToString();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static void AppendStrings(JsonElement element, StringBuilder sb)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.String:
+                sb.Append(NormalizeForInspection(element.GetString() ?? string.Empty)).Append('\n');
+                break;
+            case JsonValueKind.Object:
+                foreach (var prop in element.EnumerateObject())
+                {
+                    sb.Append(NormalizeForInspection(prop.Name)).Append('\n');
+                    AppendStrings(prop.Value, sb);
+                }
+                break;
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    AppendStrings(item, sb);
+                }
+                break;
+        }
+    }
+
+    /// <summary>NFKC normalisation plus removal of zero-width, bidi-control and other invisible format characters.</summary>
+    internal static string NormalizeForInspection(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        string normalized;
+        try
+        {
+            normalized = value.Normalize(NormalizationForm.FormKC);
+        }
+        catch (ArgumentException)
+        {
+            // Invalid surrogate sequences cannot be normalised; inspect the raw value.
+            normalized = value;
+        }
+
+        var sb = new StringBuilder(normalized.Length);
+        foreach (var c in normalized)
+        {
+            if (IsInvisibleControl(c))
+            {
+                continue;
+            }
+            sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
+    private static bool IsInvisibleControl(char c) =>
+        c is '\u00AD' or '\u034F' or '\u061C' or '\u115F' or '\u1160' or '\u17B4' or '\u17B5' or '\u180E' or '\u3164' or '\uFEFF' or '\uFFA0'
+        || (c >= '\u200B' && c <= '\u200F')
+        || (c >= '\u202A' && c <= '\u202E')
+        || (c >= '\u2060' && c <= '\u206F')
+        || (c >= '\uFE00' && c <= '\uFE0F')
+        || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format;
 
     private static PromptGuardrailEvaluation CheckBase64Payloads(string text)
     {

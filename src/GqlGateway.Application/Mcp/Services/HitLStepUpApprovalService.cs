@@ -27,9 +27,13 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
         public readonly object Lock = new();
         public HitLApprovalTicket Ticket { get; set; }
         public TaskCompletionSource<HitLApprovalResult> Tcs { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public DateTimeOffset? CompletedAt { get; set; }
 
         public TicketEntry(HitLApprovalTicket ticket) => Ticket = ticket;
     }
+
+    // SEC C-05 / M-09: Finished (approved/rejected/expired) tickets are kept only for a short audit/replay window and then purged.
+    internal static readonly TimeSpan CompletedTicketRetention = TimeSpan.FromMinutes(15);
 
     public HitLStepUpApprovalService(
         IOptions<GatewayOptions> options,
@@ -49,6 +53,8 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
         string? justification = null,
         CancellationToken ct = default)
     {
+        PurgeStaleTickets(DateTimeOffset.UtcNow);
+
         var approvalId = $"hitl-{Guid.NewGuid():N}";
         var timeoutSeconds = Math.Max(1, _options.Value.HitLStepUp.ApprovalTimeoutSeconds);
         var createdAt = DateTimeOffset.UtcNow;
@@ -157,23 +163,65 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
             entry.Tcs.TrySetResult(cancelledResult);
             return cancelledResult;
         }
+        finally
+        {
+            // SEC M-09: Mark the ticket as finished so it is purged after the retention window (no unbounded growth).
+            lock (entry.Lock)
+            {
+                entry.CompletedAt ??= DateTimeOffset.UtcNow;
+            }
+        }
     }
 
+    /// <summary>
+    /// SEC M-09: Removes finished tickets after <see cref="CompletedTicketRetention"/> and pending tickets whose
+    /// expiry lies further back than the retention window (e.g. orphaned by a crashed request).
+    /// </summary>
+    internal int PurgeStaleTickets(DateTimeOffset now)
+    {
+        var removed = 0;
+        foreach (var kvp in _tickets)
+        {
+            var entry = kvp.Value;
+            bool stale;
+            lock (entry.Lock)
+            {
+                stale = (entry.CompletedAt.HasValue && now - entry.CompletedAt.Value > CompletedTicketRetention) ||
+                        now - entry.Ticket.ExpiresAt > CompletedTicketRetention;
+            }
+
+            if (stale && _tickets.TryRemove(kvp.Key, out _))
+            {
+                removed++;
+            }
+        }
+
+        return removed;
+    }
+
+    internal int TicketCount => _tickets.Count;
+
     public HitLApprovalResult ApproveStepUpRequest(string approvalId, string approverSid)
+    {
+        if (string.IsNullOrWhiteSpace(approverSid))
+            throw new ArgumentException("Approver SID cannot be null or whitespace.", nameof(approverSid));
+
+        return ApproveStepUpRequest(approvalId, new HitLApproverContext(approverSid, new[] { approverSid }, TenantId: null, IsCrossTenantAdmin: true));
+    }
+
+    public HitLApprovalResult ApproveStepUpRequest(string approvalId, HitLApproverContext approver)
     {
         if (string.IsNullOrWhiteSpace(approvalId))
             throw new ArgumentException("Approval ID cannot be null or whitespace.", nameof(approvalId));
 
-        if (string.IsNullOrWhiteSpace(approverSid))
-            throw new ArgumentException("Approver SID cannot be null or whitespace.", nameof(approverSid));
+        ArgumentNullException.ThrowIfNull(approver);
 
-        if (!_tickets.TryGetValue(approvalId, out var entry))
+        if (string.IsNullOrWhiteSpace(approver.ApproverSid))
+            throw new ArgumentException("Approver SID cannot be null or whitespace.", nameof(approver));
+
+        if (!TryGetEntryForApprover(approvalId, approver, out var entry))
         {
-            return new HitLApprovalResult(
-                false,
-                new HitLApprovalTicket(approvalId, "Unknown", "Unknown", "Unknown", TableIdentifier.Parse("public.unknown"), null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, HitLApprovalStatus.Rejected),
-                "Approval ticket not found."
-            );
+            return NotFoundResult(approvalId);
         }
 
         lock (entry.Lock)
@@ -188,12 +236,12 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
                 );
             }
 
-            // VULN-04: Self-Approval Bypass prevention (Four-Eyes invariant)
-            if (_options.Value.HitLStepUp.RequireDifferentApprover &&
-                string.Equals(approverSid, entry.Ticket.RequesterSid, StringComparison.OrdinalIgnoreCase))
+            // VULN-04 / SEC C-05: Self-Approval Bypass prevention (Four-Eyes invariant).
+            // Every identifier of the approver is compared, so oid/sub/upn/PrimarySid variants of the same user are caught.
+            if (_options.Value.HitLStepUp.RequireDifferentApprover && IsSameIdentity(entry.Ticket.RequesterSid, approver))
             {
                 _logger.LogWarning("Four-Eyes security violation: Requester '{RequesterSid}' attempted self-approval on ticket '{ApprovalId}'.",
-                    approverSid, approvalId);
+                    entry.Ticket.RequesterSid, approvalId);
 
                 return new HitLApprovalResult(
                     false,
@@ -205,29 +253,37 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
             entry.Ticket = entry.Ticket with
             {
                 Status = HitLApprovalStatus.Approved,
-                ApproverSid = approverSid
+                ApproverSid = approver.ApproverSid
             };
+            entry.CompletedAt = DateTimeOffset.UtcNow;
 
             var approvedResult = new HitLApprovalResult(true, entry.Ticket, "Approval granted.");
             entry.Tcs.TrySetResult(approvedResult);
 
-            _logger.LogInformation("HitL ticket '{ApprovalId}' approved by '{ApproverSid}'.", approvalId, approverSid);
+            _logger.LogInformation("HitL ticket '{ApprovalId}' approved by '{ApproverSid}'.", approvalId, approver.ApproverSid);
             return approvedResult;
         }
     }
 
     public HitLApprovalResult RejectStepUpRequest(string approvalId, string approverSid, string? reason = null)
     {
+        IReadOnlyCollection<string> identifiers = string.IsNullOrWhiteSpace(approverSid) ? Array.Empty<string>() : new[] { approverSid };
+        return RejectStepUpRequest(
+            approvalId,
+            new HitLApproverContext(approverSid, identifiers, TenantId: null, IsCrossTenantAdmin: true),
+            reason);
+    }
+
+    public HitLApprovalResult RejectStepUpRequest(string approvalId, HitLApproverContext approver, string? reason = null)
+    {
         if (string.IsNullOrWhiteSpace(approvalId))
             throw new ArgumentException("Approval ID cannot be null or whitespace.", nameof(approvalId));
 
-        if (!_tickets.TryGetValue(approvalId, out var entry))
+        ArgumentNullException.ThrowIfNull(approver);
+
+        if (!TryGetEntryForApprover(approvalId, approver, out var entry))
         {
-            return new HitLApprovalResult(
-                false,
-                new HitLApprovalTicket(approvalId, "Unknown", "Unknown", "Unknown", TableIdentifier.Parse("public.unknown"), null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, HitLApprovalStatus.Rejected),
-                "Approval ticket not found."
-            );
+            return NotFoundResult(approvalId);
         }
 
         lock (entry.Lock)
@@ -244,17 +300,76 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
             entry.Ticket = entry.Ticket with
             {
                 Status = HitLApprovalStatus.Rejected,
-                ApproverSid = approverSid,
+                ApproverSid = approver.ApproverSid,
                 RejectionReason = reason ?? "Rejected by data steward."
             };
+            entry.CompletedAt = DateTimeOffset.UtcNow;
 
             var rejectedResult = new HitLApprovalResult(false, entry.Ticket, entry.Ticket.RejectionReason);
             entry.Tcs.TrySetResult(rejectedResult);
 
             _logger.LogInformation("HitL ticket '{ApprovalId}' rejected by '{ApproverSid}'. Reason: {Reason}",
-                approvalId, approverSid, entry.Ticket.RejectionReason);
+                approvalId, approver.ApproverSid, entry.Ticket.RejectionReason);
             return rejectedResult;
         }
+    }
+
+    /// <summary>
+    /// SEC C-05: Tickets of foreign tenants are reported as "not found" (no existence oracle) unless the approver is a cross-tenant admin.
+    /// </summary>
+    private bool TryGetEntryForApprover(string approvalId, HitLApproverContext approver, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out TicketEntry? entry)
+    {
+        PurgeStaleTickets(DateTimeOffset.UtcNow);
+
+        if (!_tickets.TryGetValue(approvalId, out entry))
+        {
+            return false;
+        }
+
+        if (!approver.IsCrossTenantAdmin &&
+            !string.Equals(entry.Ticket.TenantId, approver.TenantId, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning("Cross-tenant HitL decision blocked: approver '{ApproverSid}' (tenant '{ApproverTenant}') attempted to act on ticket '{ApprovalId}' of another tenant.",
+                approver.ApproverSid, approver.TenantId ?? "none", approvalId);
+            entry = null;
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static bool IsSameIdentity(string requesterSid, HitLApproverContext approver)
+    {
+        if (string.IsNullOrWhiteSpace(requesterSid))
+        {
+            return false;
+        }
+
+        var requester = requesterSid.Trim();
+        if (!string.IsNullOrWhiteSpace(approver.ApproverSid) &&
+            string.Equals(requester, approver.ApproverSid.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        foreach (var id in approver.Identifiers)
+        {
+            if (!string.IsNullOrWhiteSpace(id) && string.Equals(requester, id.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static HitLApprovalResult NotFoundResult(string approvalId)
+    {
+        return new HitLApprovalResult(
+            false,
+            new HitLApprovalTicket(approvalId, "Unknown", "Unknown", "Unknown", TableIdentifier.Parse("public.unknown"), null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, HitLApprovalStatus.Rejected),
+            "Approval ticket not found."
+        );
     }
 
     public HitLApprovalTicket? GetTicket(string approvalId)
@@ -264,6 +379,8 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
 
     public IReadOnlyList<HitLApprovalTicket> GetPendingTickets(string? tenantId = null)
     {
+        PurgeStaleTickets(DateTimeOffset.UtcNow);
+
         var query = _tickets.Values.Select(e => e.Ticket).Where(t => t.Status == HitLApprovalStatus.Pending);
         if (!string.IsNullOrWhiteSpace(tenantId))
         {

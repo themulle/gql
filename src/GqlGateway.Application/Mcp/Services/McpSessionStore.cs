@@ -20,8 +20,12 @@ public sealed class McpSessionStore : IMcpSessionStore
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    private const int MaxAllowedSessions = 10000;
+    internal const int MaxAllowedSessions = 10000;
+
+    // SEC M-09: A single principal can no longer exhaust the global session pool.
+    internal const int MaxSessionsPerPrincipal = 20;
     private static readonly TimeSpan DefaultSessionTtl = TimeSpan.FromHours(1);
+    private readonly object _createLock = new();
 
     public McpSessionContext CreateSession(string servicePrincipalId, string tenantId)
         => CreateSession(servicePrincipalId, tenantId, null, null, null);
@@ -40,36 +44,43 @@ public sealed class McpSessionStore : IMcpSessionStore
         var validatedTenant = new GqlGateway.Domain.Common.TenantId(tenantId);
 
         var now = DateTimeOffset.UtcNow;
+        var ownerKey = GetOwnerKey(servicePrincipalId, userSid);
+        McpSessionContext session;
+        string sessionId;
 
-        // Cleanup expired sessions if store is getting large (L-2)
-        if (_sessions.Count >= MaxAllowedSessions)
+        lock (_createLock)
         {
-            foreach (var kvp in _sessions)
+            // Cleanup expired sessions if store is getting large (L-2)
+            if (_sessions.Count >= MaxAllowedSessions)
             {
-                if (now - kvp.Value.LastActiveAt > DefaultSessionTtl)
+                PurgeExpired(now);
+
+                if (_sessions.Count >= MaxAllowedSessions)
                 {
-                    RemoveSession(kvp.Key);
+                    _logger.LogWarning("Maximum active MCP sessions limit ({Max}) reached. Rejecting session creation.", MaxAllowedSessions);
+                    throw new McpSessionLimitExceededException($"Maximum active MCP sessions limit ({MaxAllowedSessions}) reached. Please retry later.");
                 }
             }
 
-            if (_sessions.Count >= MaxAllowedSessions)
+            // SEC M-09: Per-principal limit (expired sessions of this principal are purged first).
+            if (CountActiveSessionsForOwner(ownerKey, now) >= MaxSessionsPerPrincipal)
             {
-                _logger.LogWarning("Maximum active MCP sessions limit ({Max}) reached. Rejecting session creation.", MaxAllowedSessions);
-                throw new InvalidOperationException($"Maximum active MCP sessions limit ({MaxAllowedSessions}) reached. Please retry later.");
+                _logger.LogWarning("MCP session limit per principal ({Max}) reached for {PrincipalId}. Rejecting session creation.", MaxSessionsPerPrincipal, ownerKey);
+                throw new McpSessionLimitExceededException($"Maximum active MCP sessions per principal ({MaxSessionsPerPrincipal}) reached. Close unused sessions or retry later.");
             }
-        }
 
-        var sessionId = Guid.NewGuid().ToString("N");
-        var session = new McpSessionContext(
-            sessionId,
-            servicePrincipalId,
-            validatedTenant.Value,
-            now,
-            now,
-            userSid,
-            roles,
-            groupSids);
-        _sessions[sessionId] = session;
+            sessionId = Guid.NewGuid().ToString("N");
+            session = new McpSessionContext(
+                sessionId,
+                servicePrincipalId,
+                validatedTenant.Value,
+                now,
+                now,
+                userSid,
+                roles,
+                groupSids);
+            _sessions[sessionId] = session;
+        }
 
         _logger.LogInformation("Created new MCP session {SessionId} for principal {PrincipalId} (UserSid: {UserSid}) in tenant {TenantId}.",
             sessionId, servicePrincipalId, userSid ?? "none", validatedTenant.Value);
@@ -93,6 +104,64 @@ public sealed class McpSessionStore : IMcpSessionStore
         var updated = session with { LastActiveAt = now };
         _sessions[sessionId] = updated;
         return updated;
+    }
+
+    public McpSessionContext? RefreshPrincipalContext(string sessionId, IReadOnlyList<string> roles, IReadOnlyList<string> groupSids)
+    {
+        ArgumentNullException.ThrowIfNull(roles);
+        ArgumentNullException.ThrowIfNull(groupSids);
+
+        if (string.IsNullOrWhiteSpace(sessionId)) return null;
+
+        while (_sessions.TryGetValue(sessionId, out var current))
+        {
+            var updated = current with { Roles = roles, GroupSids = groupSids };
+            if (_sessions.TryUpdate(sessionId, updated, current))
+            {
+                return updated;
+            }
+        }
+
+        return null;
+    }
+
+    internal int Count => _sessions.Count;
+
+    private static string GetOwnerKey(string servicePrincipalId, string? userSid)
+        => string.IsNullOrWhiteSpace(userSid) ? $"sp:{servicePrincipalId}" : $"user:{userSid}";
+
+    private int CountActiveSessionsForOwner(string ownerKey, DateTimeOffset now)
+    {
+        var count = 0;
+        foreach (var kvp in _sessions)
+        {
+            var s = kvp.Value;
+            if (!string.Equals(GetOwnerKey(s.ServicePrincipalId, s.UserSid), ownerKey, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (now - s.LastActiveAt > DefaultSessionTtl)
+            {
+                RemoveSession(kvp.Key);
+                continue;
+            }
+
+            count++;
+        }
+
+        return count;
+    }
+
+    private void PurgeExpired(DateTimeOffset now)
+    {
+        foreach (var kvp in _sessions)
+        {
+            if (now - kvp.Value.LastActiveAt > DefaultSessionTtl)
+            {
+                RemoveSession(kvp.Key);
+            }
+        }
     }
 
     public bool RemoveSession(string sessionId)

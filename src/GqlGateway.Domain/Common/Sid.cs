@@ -38,6 +38,60 @@ public static class ClaimsPrincipalExtensions
         return string.IsNullOrWhiteSpace(sidStr) ? (Sid?)null : new Sid(sidStr);
     }
 
+    private static readonly string[] UserIdentifierClaimTypes =
+    [
+        System.Security.Claims.ClaimTypes.PrimarySid,
+        "objectSid",
+        "onprem_sid",
+        "primarysid",
+        "http://schemas.microsoft.com/ws/2008/06/identity/claims/primarysid",
+        "oid",
+        "http://schemas.microsoft.com/identity/claims/objectidentifier",
+        System.Security.Claims.ClaimTypes.NameIdentifier,
+        "sub",
+        System.Security.Claims.ClaimTypes.Upn,
+        "upn",
+        "preferred_username",
+        System.Security.Claims.ClaimTypes.Name,
+        "name"
+    ];
+
+    /// <summary>
+    /// SEC C-05: Returns every user-bound identifier of the principal (SIDs, oid, sub, upn, NameIdentifier, name).
+    /// Used for Four-Eyes checks: if any identifier of an approver equals the requester identity, the approval is a self-approval.
+    /// Application identifiers (appid, client_id, azp) are deliberately excluded because they are shared by all users of a client.
+    /// </summary>
+    public static HashSet<string> GetUserIdentifiers(this System.Security.Claims.ClaimsPrincipal? principal)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (principal == null) return result;
+
+        var primary = principal.GetUserSid();
+        if (primary.HasValue && !string.IsNullOrWhiteSpace(primary.Value.Value))
+        {
+            result.Add(primary.Value.Value);
+        }
+
+        foreach (var claimType in UserIdentifierClaimTypes)
+        {
+            foreach (var claim in principal.FindAll(claimType))
+            {
+                if (!string.IsNullOrWhiteSpace(claim.Value))
+                {
+                    result.Add(claim.Value.Trim());
+                }
+            }
+        }
+
+        var identityName = principal.Identity?.Name;
+        if (!string.IsNullOrWhiteSpace(identityName))
+        {
+            result.Add(identityName.Trim());
+        }
+
+        return result;
+    }
+
     public static HashSet<Sid> GetGroupSids(this System.Security.Claims.ClaimsPrincipal? principal)
     {
         if (principal == null) return [];

@@ -64,6 +64,9 @@ public sealed class PreAuthIpRateLimitingMiddleware
             ip = context.Connection.RemoteIpAddress.ToString();
         }
 
+        // SEC M-08: Aggregate IPv6 clients to /64 so address rotation within a prefix does not yield fresh buckets.
+        ip = GqlGateway.Infrastructure.RateLimiting.ClientIpRateLimitKey.Normalize(ip);
+
         var result = await _rateLimiter.CheckPreAuthIpAsync(ip, _options, context.RequestAborted);
 
         if (!result.Allowed)

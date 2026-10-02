@@ -4,6 +4,7 @@ using System;
 using System.Security.Claims;
 using System.Threading.Tasks;
 using GqlGateway.Application.Caching.Services;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
@@ -57,15 +58,14 @@ public sealed class ClientTierResolverSecurityTests
     }
 
     [Fact]
-    public async Task ResolveAsync_DifferentApiKeys_ProduceUniqueDeterministicSubjectIds()
+    public async Task ResolveAsync_DifferentUnregisteredApiKeys_FallBackToSameIpBucket()
     {
+        // SEC M-16: Unbekannte API-Keys werden ignoriert; frueher erzeugte jeder zufaellige Key einen eigenen Bucket.
         var context1 = await _resolver.ResolveAsync(null, "key-alpha", "127.0.0.1");
         var context2 = await _resolver.ResolveAsync(null, "key-beta", "127.0.0.1");
-        var context1Again = await _resolver.ResolveAsync(null, "key-alpha", "127.0.0.1");
 
-        context1.SubjectId.ShouldNotBe(context2.SubjectId);
-        context1.SubjectId.ShouldBe(context1Again.SubjectId);
-        context1.SubjectId.ShouldStartWith("key_");
+        context1.SubjectId.ShouldBe(context2.SubjectId);
+        context1.SubjectId.ShouldBe("anon_127.0.0.1");
     }
 
     [Fact]
@@ -90,6 +90,7 @@ public sealed class ClientTierResolverSecurityTests
         var context = await _resolver.ResolveAsync(principal, null, "127.0.0.1");
 
         context.Tier.ShouldBe(ClientTier.Enterprise);
-        context.SubjectId.ShouldBe("user-42");
+        // SEC M-16: Subjekt = Tenant + Benutzer-SID
+        context.SubjectId.ShouldBe($"user:{TenantId.LegacySingleTenant.Value}:user-42");
     }
 }

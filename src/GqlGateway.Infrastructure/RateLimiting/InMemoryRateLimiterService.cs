@@ -37,6 +37,14 @@ public sealed class InMemoryRateLimiterService : IRateLimiterService
 
     private readonly CancellationToken _stoppingToken;
 
+    // SEC M-08: Upper bound per map. When reached, the stalest entries are evicted (LRU-like) instead of
+    // rejecting every new client with 429.
+    public const int MaxEntries = 25000;
+    public const int EvictionBatchSize = MaxEntries / 10;
+    private int _isEvictingIp;
+    private int _isEvictingBuckets;
+    private int _isEvictingCost;
+
     public InMemoryRateLimiterService(IHostApplicationLifetime? lifetime = null)
     {
         _stoppingToken = lifetime?.ApplicationStopping ?? CancellationToken.None;
@@ -81,11 +89,13 @@ public sealed class InMemoryRateLimiterService : IRateLimiterService
             }, _stoppingToken);
         }
 
+        ip = ClientIpRateLimitKey.Normalize(ip);
+
         if (!_ipCounters.TryGetValue(ip, out var counter))
         {
-            if (Volatile.Read(ref _ipCount) >= 25000)
+            if (Volatile.Read(ref _ipCount) >= MaxEntries)
             {
-                return Task.FromResult(new RateLimitResult(false, 60));
+                EvictOldest(_ipCounters, c => { lock (c.Lock) { return c.WindowStartTimestamp; } }, ref _ipCount, ref _isEvictingIp);
             }
 
             var newCounter = new IpCounter();
@@ -165,9 +175,9 @@ public sealed class InMemoryRateLimiterService : IRateLimiterService
 
         if (!_buckets.TryGetValue(sid, out var bucket))
         {
-            if (Volatile.Read(ref _bucketCount) >= 25000)
+            if (Volatile.Read(ref _bucketCount) >= MaxEntries)
             {
-                return Task.FromResult(new RateLimitResult(false, 60));
+                EvictOldest(_buckets, b => { lock (b.Lock) { return b.LastRefillTimestamp; } }, ref _bucketCount, ref _isEvictingBuckets);
             }
 
             var newBucket = new TokenBucket
@@ -210,6 +220,47 @@ public sealed class InMemoryRateLimiterService : IRateLimiterService
         }
 
         return Task.FromResult(new RateLimitResult(!limitExceeded, waitSeconds));
+    }
+
+    /// <summary>Number of tracked pre-auth IP keys (for diagnostics/tests).</summary>
+    public int TrackedIpCount => Volatile.Read(ref _ipCount);
+
+    private static void EvictOldest<T>(
+        ConcurrentDictionary<string, T> map,
+        Func<T, long> timestampSelector,
+        ref int count,
+        ref int evictionFlag)
+        where T : class
+    {
+        if (Interlocked.CompareExchange(ref evictionFlag, 1, 0) != 0)
+        {
+            // Another thread is already evicting; admit the new client rather than blocking it.
+            return;
+        }
+
+        try
+        {
+            var snapshot = new List<KeyValuePair<string, long>>(map.Count);
+            foreach (var kvp in map)
+            {
+                snapshot.Add(new KeyValuePair<string, long>(kvp.Key, timestampSelector(kvp.Value)));
+            }
+
+            snapshot.Sort(static (a, b) => a.Value.CompareTo(b.Value));
+
+            var toRemove = Math.Min(EvictionBatchSize, snapshot.Count);
+            for (var i = 0; i < toRemove; i++)
+            {
+                if (map.TryRemove(snapshot[i].Key, out _))
+                {
+                    Interlocked.Decrement(ref count);
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref evictionFlag, 0);
+        }
     }
 
     private readonly ConcurrentDictionary<string, TokenBucket> _costBuckets = new(StringComparer.OrdinalIgnoreCase);
@@ -260,7 +311,7 @@ public sealed class InMemoryRateLimiterService : IRateLimiterService
         {
             if (Volatile.Read(ref _costBucketCount) >= MaxCostBuckets)
             {
-                return Task.FromResult(new CostQuotaResult(false, 0, 60));
+                EvictOldest(_costBuckets, b => { lock (b.Lock) { return b.LastRefillTimestamp; } }, ref _costBucketCount, ref _isEvictingCost);
             }
 
             bucket = _costBuckets.GetOrAdd(key, _ =>

@@ -17,6 +17,9 @@ public sealed class GatewayExtensibilityMiddleware
 
     private const long MaxExtensibilityBufferBytes = 16 * 1024 * 1024; // 16 MB limit to prevent LOH DoS / OOM
 
+    /// <summary>Ingress item carrying the connection-derived client IP (SEC M-06).</summary>
+    public const string ClientIpItemKey = "GatewayClientIp";
+
     public GatewayExtensibilityMiddleware(
         RequestDelegate _next,
         IExtensibilityPipeline pipeline,
@@ -27,6 +30,22 @@ public sealed class GatewayExtensibilityMiddleware
         _pipeline = pipeline;
         _options = options.Value;
         _logger = logger;
+    }
+
+    internal static bool IsStreamingRequest(HttpContext context)
+    {
+        if (context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpUpgradeFeature>()?.IsUpgradableRequest == true ||
+            context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpExtendedConnectFeature>()?.IsExtendedConnect == true ||
+            context.Request.Headers.Upgrade.ToString().Contains("websocket", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var accept = context.Request.Headers.Accept.ToString();
+        return accept.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) ||
+               accept.Contains("multipart/mixed", StringComparison.OrdinalIgnoreCase) ||
+               accept.Contains("application/x-ndjson", StringComparison.OrdinalIgnoreCase) ||
+               accept.Contains("application/graphql-response+jsonl", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -63,6 +82,10 @@ public sealed class GatewayExtensibilityMiddleware
             Query = context.Request.QueryString.Value
         };
 
+        // SEC M-06: Client IP from the connection (already resolved by UseForwardedHeaders against KnownProxies),
+        // never from a raw client-controlled X-Forwarded-For header.
+        ingressContext.Items[ClientIpItemKey] = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
         // 1. Ingress phase
         var ingressResult = await _pipeline.ProcessIngressAsync(ingressContext, context.RequestAborted);
         if (ingressResult.Decision != IngressDecision.Continue)
@@ -95,10 +118,17 @@ public sealed class GatewayExtensibilityMiddleware
             context.Items[k] = v;
         }
 
-        // 2. Execution phase with response interception for Egress
+        // SEC M-04: Streaming requests (WebSocket upgrade, SSE, multipart/@defer) are never buffered.
+        if (IsStreamingRequest(context))
+        {
+            await _next(context);
+            return;
+        }
+
+        // 2. Execution phase with bounded response interception for Egress
         var originalBodyStream = context.Response.Body;
-        await using var memoryStream = new MemoryStream();
-        context.Response.Body = memoryStream;
+        await using var boundedStream = new BoundedResponseBufferStream(originalBodyStream, MaxExtensibilityBufferBytes, context.Response);
+        context.Response.Body = boundedStream;
 
         var sw = Stopwatch.StartNew();
         try
@@ -108,21 +138,18 @@ public sealed class GatewayExtensibilityMiddleware
         finally
         {
             sw.Stop();
+            context.Response.Body = originalBodyStream;
         }
 
-        // Buffer limit protection: Prevent unbounded buffering for massive payloads
-        if (memoryStream.Length > MaxExtensibilityBufferBytes)
+        // Buffer limit protection: the response was streamed through without egress transformation.
+        if (boundedStream.IsPassThrough)
         {
-            _logger.LogWarning("Response body size ({Size} bytes) exceeded extensibility buffering limit of {Limit} bytes. Streaming directly without egress transformation.",
-                memoryStream.Length, MaxExtensibilityBufferBytes);
-            context.Response.Body = originalBodyStream;
-            memoryStream.Position = 0;
-            await memoryStream.CopyToAsync(originalBodyStream, context.RequestAborted);
+            _logger.LogWarning("Response was streamed without egress transformation ({Reason}); extensibility buffering limit is {Limit} bytes.",
+                boundedStream.PassThroughReason, MaxExtensibilityBufferBytes);
             return;
         }
 
-        memoryStream.Position = 0;
-        var responseBytes = memoryStream.ToArray();
+        var responseBytes = boundedStream.GetBufferedBytes();
 
         // 3. Egress phase
         var egressContext = new EgressContext
@@ -150,7 +177,6 @@ public sealed class GatewayExtensibilityMiddleware
             finalBytes = System.Text.Encoding.UTF8.GetBytes(egressResult.MutatedResponseText);
         }
 
-        context.Response.Body = originalBodyStream;
         if (finalBytes.Length > 0 && !context.Response.HasStarted)
         {
             context.Response.ContentLength = finalBytes.Length;

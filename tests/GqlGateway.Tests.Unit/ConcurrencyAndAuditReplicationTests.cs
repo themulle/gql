@@ -36,7 +36,8 @@ public class ConcurrencyAndAuditReplicationTests : IDisposable
     public void Dispose()
     {
         _repository.Dispose();
-        foreach (var file in _tempFiles)
+        // SEC H-17: file databases get an external audit chain anchor next to them.
+        foreach (var file in _tempFiles.SelectMany(f => new[] { f, f + ".audit-anchor.json" }).ToList())
         {
             if (File.Exists(file))
             {

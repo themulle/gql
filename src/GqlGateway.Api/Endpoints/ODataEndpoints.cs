@@ -67,6 +67,11 @@ public static class ODataEndpoints
             {
                 builder.RequireAuthorization();
             }
+            else
+            {
+                // SEC M-03: explicit opt-out of the authenticated-user fallback policy (OpenSchema docs only)
+                builder.AllowAnonymous();
+            }
             return builder;
         }
 
@@ -199,7 +204,7 @@ public static class ODataEndpoints
             var nonce = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
             context.Response.Headers.ContentSecurityPolicy = $"default-src 'self'; script-src 'self' 'nonce-{nonce}' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
             return Results.Content(GetSwaggerUiHtml(nonce), "text/html;charset=utf-8");
-        });
+        }).AllowAnonymous(); // SEC M-03: handler performs its own (OpenSchema/Dev/authenticated) check
 
         app.MapGet("/docs", (HttpContext context, IWebHostEnvironment env) =>
         {
@@ -210,7 +215,7 @@ public static class ODataEndpoints
             var nonce = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
             context.Response.Headers.ContentSecurityPolicy = $"default-src 'self'; script-src 'self' 'nonce-{nonce}' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://unpkg.com; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';";
             return Results.Content(GetSwaggerUiHtml(nonce), "text/html;charset=utf-8");
-        });
+        }).AllowAnonymous(); // SEC M-03: handler performs its own (OpenSchema/Dev/authenticated) check
 
         app.MapGet("/odata/v4/{domain}/{schema}/{tableName}", async (
             string domain,

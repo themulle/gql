@@ -45,6 +45,13 @@ public sealed class CdnCacheTagMiddleware
             return;
         }
 
+        // SEC (Niedrig): Fehlerantworten und Nicht-Standard-Ergebnisse (Streams/Batches) niemals public cachen.
+        if (context.Result is not OperationResult opResult || (opResult.Errors is not null && opResult.Errors.Count > 0))
+        {
+            SetPrivateNoStore(httpContext);
+            return;
+        }
+
         // Zero-Trust Gate: Check if user-specific RLS or PII masking was applied
         bool isPersonalOrRestricted =
             httpContext.Items.ContainsKey("RlsApplied") ||
@@ -68,7 +75,8 @@ public sealed class CdnCacheTagMiddleware
             httpContext.Response.Headers["Cache-Control"] = "public, s-maxage=300, stale-while-revalidate=60";
             httpContext.Response.Headers["Cache-Tag"] = string.Join(", ", allTags);
             httpContext.Response.Headers["Surrogate-Key"] = string.Join(" ", allTags);
-            httpContext.Response.Headers["Vary"] = "Accept-Encoding, Origin";
+            // SEC (Niedrig): Katalog-Ergebnisse hängen vom X-Domain-Scope-Header ab.
+            httpContext.Response.Headers["Vary"] = "Accept-Encoding, Origin, X-Domain-Scope";
         }
     }
 

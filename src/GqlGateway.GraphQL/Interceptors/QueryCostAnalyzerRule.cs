@@ -13,17 +13,26 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
     private readonly int _defaultListMultiplier;
     private readonly int _maxResponseRows;
     private readonly Action? _onQueryTooComplex;
+    private readonly int _maxRootFields;
+    private readonly int _payloadRowMultiplier;
+
+    // SEC M-13: Default-Seitengröße, die Resolver mit `first`-Argument (z.B. Query.GetTableAsync) ohne explizites Argument verwenden.
+    internal const int DefaultPayloadPageSize = 50;
 
     public QueryCostAnalyzerRule(
         int maxAllowedCost = 250,
         int defaultListMultiplier = 10,
         int maxResponseRows = 1000,
-        Action? onQueryTooComplex = null)
+        Action? onQueryTooComplex = null,
+        int maxRootFields = 10,
+        int payloadRowMultiplier = 1)
     {
         _maxAllowedCost = maxAllowedCost;
         _defaultListMultiplier = defaultListMultiplier;
         _maxResponseRows = maxResponseRows;
         _onQueryTooComplex = onQueryTooComplex;
+        _maxRootFields = maxRootFields > 0 ? maxRootFields : int.MaxValue;
+        _payloadRowMultiplier = Math.Max(1, payloadRowMultiplier);
     }
 
     public bool IsCacheable => true;
@@ -37,6 +46,20 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
 
     public void Validate(DocumentValidatorContext context, DocumentNode document)
     {
+        // SEC M-13: Harte Obergrenze für Root-Felder/Aliase pro Operation (Alias-Amplifikation).
+        int maxRootFieldCount = CountMaxRootFields(document, _maxRootFields);
+        if (maxRootFieldCount > _maxRootFields)
+        {
+            _onQueryTooComplex?.Invoke();
+            context.ReportError(
+                ErrorBuilder.New()
+                    .SetMessage($"Die Abfrage überschreitet die maximale Anzahl von {_maxRootFields} Root-Feldern bzw. Aliasen pro Operation.")
+                    .SetCode("QUERY_TOO_COMPLEX")
+                    .SetExtension("maxRootFields", _maxRootFields)
+                    .Build());
+            return;
+        }
+
         int totalCost = ComputeCost(document, context.Schema);
         if (totalCost > _maxAllowedCost)
         {
@@ -50,6 +73,75 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                     .Build());
         }
     }
+
+    /// <summary>
+    /// SEC M-13: Liefert die größte Anzahl an Root-Feldern (inkl. Aliase, aufgelöst über Inline-Fragmente und
+    /// Fragment-Spreads) über alle Operationen des Dokuments. Bricht ab, sobald <paramref name="stopAfter"/> überschritten ist.
+    /// </summary>
+    public static int CountMaxRootFields(DocumentNode document, int stopAfter = int.MaxValue)
+    {
+        var fragments = new Dictionary<string, FragmentDefinitionNode>(StringComparer.Ordinal);
+        foreach (var fragment in document.Definitions.OfType<FragmentDefinitionNode>())
+        {
+            fragments.TryAdd(fragment.Name.Value, fragment);
+        }
+
+        int max = 0;
+        foreach (var operation in document.Definitions.OfType<OperationDefinitionNode>())
+        {
+            int count = 0;
+            CountRootFields(operation.SelectionSet, fragments, new HashSet<string>(StringComparer.Ordinal), ref count, stopAfter);
+            max = Math.Max(max, count);
+            if (max > stopAfter)
+            {
+                break;
+            }
+        }
+
+        return max;
+    }
+
+    private static void CountRootFields(
+        SelectionSetNode selectionSet,
+        IReadOnlyDictionary<string, FragmentDefinitionNode> fragments,
+        HashSet<string> activeFragments,
+        ref int count,
+        int stopAfter)
+    {
+        foreach (var selection in selectionSet.Selections)
+        {
+            if (count > stopAfter)
+            {
+                return;
+            }
+
+            switch (selection)
+            {
+                case FieldNode field:
+                    if (!field.Name.Value.StartsWith("__", StringComparison.Ordinal))
+                    {
+                        count++;
+                    }
+                    break;
+                case InlineFragmentNode inline:
+                    CountRootFields(inline.SelectionSet, fragments, activeFragments, ref count, stopAfter);
+                    break;
+                case FragmentSpreadNode spread:
+                    if (fragments.TryGetValue(spread.Name.Value, out var fragDef) && activeFragments.Add(fragDef.Name.Value))
+                    {
+                        CountRootFields(fragDef.SelectionSet, fragments, activeFragments, ref count, stopAfter);
+                        activeFragments.Remove(fragDef.Name.Value);
+                    }
+                    break;
+            }
+        }
+    }
+
+    private static bool IsRowLimitArgument(string name) =>
+        string.Equals(name, "first", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(name, "last", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(name, "limit", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(name, "take", StringComparison.OrdinalIgnoreCase);
 
     private static int SafeAdd(int a, int b) => (int)Math.Min((long)int.MaxValue, (long)a + b);
 
@@ -141,48 +233,53 @@ public sealed class QueryCostAnalyzerRule : IDocumentValidatorRule
                 }
                 else
                 {
-                    isList = field.Arguments.Any(a =>
-                        string.Equals(a.Name.Value, "first", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(a.Name.Value, "last", StringComparison.OrdinalIgnoreCase));
+                    isList = field.Arguments.Any(a => IsRowLimitArgument(a.Name.Value));
                 }
 
-                bool acceptsPagination = fieldDef?.Arguments.Any(a =>
-                    string.Equals(a.Name, "first", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(a.Name, "last", StringComparison.OrdinalIgnoreCase)) ?? false;
+                // SEC M-13: Pagination wird unabhängig vom Rückgabetyp erkannt (auch Objekt-Payloads wie TableRecordPayload).
+                bool acceptsPagination = fieldDef != null
+                    ? fieldDef.Arguments.Any(a => IsRowLimitArgument(a.Name))
+                    : field.Arguments.Any(a => IsRowLimitArgument(a.Name.Value));
 
-                if (isList && acceptsPagination)
+                if (acceptsPagination)
                 {
                     int requestedLimit = -1;
+                    bool limitIsVariable = false;
                     foreach (var arg in field.Arguments)
                     {
-                        if (string.Equals(arg.Name.Value, "first", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(arg.Name.Value, "last", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(arg.Name.Value, "limit", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(arg.Name.Value, "take", StringComparison.OrdinalIgnoreCase))
+                        if (IsRowLimitArgument(arg.Name.Value))
                         {
                             if (arg.Value is IntValueNode intVal && int.TryParse(intVal.Value, out var parsed))
                             {
                                 requestedLimit = parsed;
                                 break;
                             }
+
+                            limitIsVariable = true;
                         }
                     }
 
                     int effectiveRows;
-                    if (string.Equals(field.Name.Value, "catalog", StringComparison.OrdinalIgnoreCase))
+                    if (requestedLimit > 0)
                     {
-                        effectiveRows = requestedLimit > 0
-                            ? Math.Min(requestedLimit, _maxResponseRows)
-                            : 10;
+                        effectiveRows = Math.Min(requestedLimit, _maxResponseRows);
+                    }
+                    else if (string.Equals(field.Name.Value, "catalog", StringComparison.OrdinalIgnoreCase))
+                    {
+                        effectiveRows = 10;
+                    }
+                    else if (!isList && !limitIsVariable)
+                    {
+                        effectiveRows = Math.Min(DefaultPayloadPageSize, _maxResponseRows);
                     }
                     else
                     {
-                        effectiveRows = requestedLimit > 0
-                            ? Math.Min(requestedLimit, _maxResponseRows)
-                            : _maxResponseRows;
+                        // Variablen oder fehlende Limits an Listen: Worst-Case annehmen.
+                        effectiveRows = _maxResponseRows;
                     }
 
-                    cost = SafeAdd(cost, SafeAdd(0, (int)Math.Min((long)int.MaxValue, (long)_defaultListMultiplier * effectiveRows)));
+                    int multiplier = isList ? _defaultListMultiplier : _payloadRowMultiplier;
+                    cost = SafeAdd(cost, (int)Math.Min((long)int.MaxValue, (long)multiplier * effectiveRows));
 
                     if (field.SelectionSet != null)
                     {

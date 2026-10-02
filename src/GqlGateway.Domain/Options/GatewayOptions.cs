@@ -54,6 +54,18 @@ public sealed class GatewayOptions
     /// </summary>
     public bool OpenSchema { get; init; } = false;
 
+    /// <summary>
+    /// SEC C-04: Explicit opt-in to run the Development environment inside a container
+    /// (DOTNET_RUNNING_IN_CONTAINER=true). Alternatively set the environment variable GQL_ALLOW_DEV_IN_CONTAINER=true.
+    /// Without opt-in, startup is aborted, because Development disables most protections.
+    /// </summary>
+    public bool AllowDevelopmentInContainer { get; init; } = false;
+
+    /// <summary>
+    /// SEC M-01: Kestrel request/connection limits.
+    /// </summary>
+    [Required] public HostingLimitsOptions Hosting { get; init; } = new();
+
     // Convenience accessors combining global 'Insecure' section and domain-specific options
     public bool IsOpenSchemaAllowed => OpenSchema || Catalog.OpenSchema || IsQuickstartProfile;
     public bool IsAnonymousAccessAllowed => Insecure.danger_allow_anonymous_access || Authentication.danger_allow_anonymous_access;
@@ -77,6 +89,16 @@ public sealed class GatewayOptions
     public bool IsWebSqlDmlAllowed => WebSql.AllowDml || WebSql.warn_allow_dml || Insecure.warn_allow_websql_dml;
     public bool IsWebSqlGovernanceBypassed => WebSql.danger_bypass_sql_governance || Insecure.danger_bypass_websql_governance;
 
+    /// <summary>
+    /// SEC H-02: OpenSchema (global or Catalog) opens catalog/OpenAPI documentation routes to anonymous callers
+    /// and is therefore treated as a DANGER bypass (blocked outside Development).
+    /// </summary>
+    public bool IsOpenSchemaExplicitlyEnabled => OpenSchema || Catalog.OpenSchema;
+
+    // SEC H-06 / M-34 / C-04: Legacy and container opt-ins weaken protections and are reported like the other bypasses.
+    public bool IsLegacyGlobalItsmWebhookSecretAllowed => Itsm.LegacyGlobalWebhookSecret;
+    public bool IsLegacyCatalogPayloadOnlySignatureAllowed => Catalog.AllowLegacyPayloadOnlySignature;
+
     public bool HasAnySecurityBypassActive =>
         IsAnonymousAccessAllowed ||
         IsConsentBypassed ||
@@ -95,7 +117,13 @@ public sealed class GatewayOptions
         IsMcpAuthBypassed ||
         IsMcpUnmaskedAllowed ||
         IsLakehouseAuthBypassed ||
-        AreUnsignedS3RequestsAllowed;
+        AreUnsignedS3RequestsAllowed ||
+        IsOpenSchemaExplicitlyEnabled ||
+        IsWebSqlGovernanceBypassed ||
+        IsWebSqlDmlAllowed ||
+        IsLegacyGlobalItsmWebhookSecretAllowed ||
+        IsLegacyCatalogPayloadOnlySignatureAllowed ||
+        AllowDevelopmentInContainer;
 
     public IReadOnlyList<string> GetAllActiveBypasses()
     {
@@ -109,6 +137,8 @@ public sealed class GatewayOptions
         if (IsMcpAuthBypassed) list.Add("DANGER:danger_bypass_mcp_auth");
         if (IsLakehouseAuthBypassed) list.Add("DANGER:danger_bypass_lakehouse_auth");
         if (IsWebSqlGovernanceBypassed) list.Add("DANGER:danger_bypass_websql_governance");
+        if (IsOpenSchemaExplicitlyEnabled) list.Add("DANGER:open_schema (OpenSchema / Catalog.OpenSchema)");
+        if (IsLegacyGlobalItsmWebhookSecretAllowed) list.Add("DANGER:itsm_legacy_global_webhook_secret (Itsm.LegacyGlobalWebhookSecret)");
         if (IsAllCorsAllowed) list.Add("WARN:warn_allow_all_cors_origins");
         if (IsRateLimitingDisabled) list.Add("WARN:warn_disable_rate_limiting");
         if (AreQueryLimitsRelaxed) list.Add("WARN:warn_relaxed_query_limits");
@@ -120,6 +150,8 @@ public sealed class GatewayOptions
         if (IsMcpUnmaskedAllowed) list.Add("WARN:warn_allow_unmasked_ai_access");
         if (AreUnsignedS3RequestsAllowed) list.Add("WARN:warn_allow_unsigned_s3_requests");
         if (IsWebSqlDmlAllowed) list.Add("WARN:warn_allow_websql_dml");
+        if (IsLegacyCatalogPayloadOnlySignatureAllowed) list.Add("WARN:catalog_legacy_payload_only_signature (Catalog.AllowLegacyPayloadOnlySignature)");
+        if (AllowDevelopmentInContainer) list.Add("WARN:allow_development_in_container (AllowDevelopmentInContainer)");
         return list;
     }
 }
@@ -248,6 +280,17 @@ public sealed class InsecureGettingStartedOptions
     /// [WARN] Erlaubt DML-Operationen (INSERT, UPDATE, DELETE) im WebSQL-Endpunkt (/api/v1/sql).
     /// </summary>
     public bool warn_allow_websql_dml { get; init; } = false;
+}
+
+/// <summary>
+/// SEC M-01: Kestrel server limits (global defaults; individual endpoints may raise the body limit explicitly).
+/// </summary>
+public sealed class HostingLimitsOptions
+{
+    [Range(1024, 1073741824)] public long MaxRequestBodySizeBytes { get; init; } = 2 * 1024 * 1024;
+    [Range(1, 1000000)] public long MaxConcurrentUpgradedConnections { get; init; } = 1000;
+    /// <summary>0 = unlimited (Kestrel default).</summary>
+    [Range(0, 10000000)] public long MaxConcurrentConnections { get; init; } = 0;
 }
 
 public sealed class PluginsOptions
@@ -396,6 +439,12 @@ public sealed class GarnetOptions
     /// Speicherort für Persistenz-Checkpoints (optional).
     /// </summary>
     public string? CheckpointDir { get; init; }
+
+    /// <summary>
+    /// SEC H-01: Secret-Referenz für das Garnet-Passwort (--auth Password). Ohne Angabe wird pro Prozess ein
+    /// zufälliges Passwort erzeugt, das nur der In-Process-Client kennt.
+    /// </summary>
+    public string? PasswordSecretRef { get; init; }
 }
 
 public sealed class L1MemoryCacheOptions
@@ -413,6 +462,16 @@ public sealed class RedisOptions
     public string InvalidationChannel { get; init; } = "consent:invalidations";
     [Range(100, 10000)] public int ConnectTimeoutMs { get; init; } = 2000;
     [Range(100, 10000)] public int SyncTimeoutMs { get; init; } = 1000;
+
+    /// <summary>
+    /// SEC H-01: Secret-Referenz für das Redis-Passwort (außerhalb Development Pflicht, falls nicht im Verbindungsstring).
+    /// </summary>
+    public string? PasswordSecretRef { get; init; }
+    /// <summary>
+    /// SEC H-01: Secret-Referenz, aus der per HKDF der HMAC-Schlüssel für L2-Consent-Cache-Einträge abgeleitet wird
+    /// (Standard: DataMasking.HmacSecretKeyVaultRef).
+    /// </summary>
+    public string? L2IntegrityKeyVaultRef { get; init; }
 }
 
 public sealed class EpochValidationOptions
@@ -450,10 +509,18 @@ public sealed class GraphQLOptions
     [Range(100, 10000)] public int MaxAllowedComplexity { get; init; } = 500;
     public bool EnableIntrospection { get; init; }
     public bool PersistedQueriesOnly { get; init; }
+
+    /// <summary>
+    /// SEC H-08: Directory containing the trusted GraphQL documents (*.graphql / *.gql) that are allowed
+    /// when PersistedQueriesOnly is true. Required when PersistedQueriesOnly is enabled (fail-fast at startup).
+    /// </summary>
+    public string TrustedDocumentsDirectory { get; init; } = string.Empty;
     public bool EnableBananaCakePop { get; init; }
     [Range(100, 100000)] public int MaxResponseRows { get; init; } = 5000;
     [Range(1048576, 104857600)] public long MaxResponseBytes { get; init; } = 10485760;
     [Range(10, 10000)] public int MaxInClauseBatchSize { get; init; } = 500;
+    // SEC M-13: Harte Obergrenze für Root-Felder/Aliase pro GraphQL-Operation (Alias-Amplifikation).
+    [Range(1, 200)] public int MaxRootFieldsPerOperation { get; init; } = 10;
     public List<string> TrustedOrigins { get; init; } = [];
     public bool warn_allow_all_cors_origins { get; init; } = false;
     public bool warn_relaxed_query_limits { get; init; } = false;
@@ -491,6 +558,12 @@ public sealed class AuditOptions
     [Range(1, 168)] public int VerifyHashChainIntervalHours { get; init; } = 24;
     public string ElasticsearchSinkUrl { get; init; } = string.Empty;
     public WormAuditOptions Worm { get; init; } = new();
+
+    /// <summary>
+    /// SEC H-17: Pfad der extern (außerhalb der Governance-DB) gehaltenen, HMAC-signierten Endanker-Datei der
+    /// Audit-Hash-Kette. Leer = "&lt;DB-Datei&gt;.audit-anchor.json" (bei In-Memory-DB: nur im Prozess).
+    /// </summary>
+    public string ChainAnchorPath { get; init; } = string.Empty;
 }
 
 public sealed class OpenMetadataOptions
@@ -510,6 +583,12 @@ public sealed class OpenMetadataOptions
     };
     public Dictionary<string, string> TeamToGroupSidMap { get; init; } = new();
     public Dictionary<string, string> UserToUserSidMap { get; init; } = new();
+
+    /// <summary>
+    /// SEC H-19: Wenn true, legt der OpenMetadata-Sync Allow-Consents aus OM-Policies (nur ViewAll/ViewSampleData,
+    /// ohne Condition) automatisch an. Standard: false – Vorschläge werden nur protokolliert.
+    /// </summary>
+    public bool AutoCreateConsents { get; init; } = false;
     public bool danger_bypass_webhook_signature_validation { get; init; } = false;
     public bool warn_ignore_webhook_timestamp_tolerance { get; init; } = false;
     public bool danger_allow_untrusted_certificates { get; init; } = false;
@@ -547,6 +626,13 @@ public sealed class ItsmOptions
     public bool warn_fallback_default_tenant_for_webhooks { get; init; } = false;
     public bool warn_mock_external_systems_if_unreachable { get; init; } = false;
     public bool danger_allow_untrusted_certificates { get; init; } = false;
+
+    /// <summary>
+    /// SEC H-06: Webhook signatures are verified with a per-instance secret (<c>itsm:webhook-secret:{instanceId}</c>).
+    /// Only when this legacy switch is set, the single global secret <c>itsm:webhook-secret</c> is accepted as fallback
+    /// (every ITSM instance can then sign callbacks for every other instance's tenant).
+    /// </summary>
+    public bool LegacyGlobalWebhookSecret { get; init; } = false;
 
 
     public TenantId? GetTenantForInstance(string instanceId)
@@ -605,6 +691,12 @@ public sealed class DataCatalogOptions
     /// Standard: false (Zero-Trust: Benutzer sehen im Katalog nur Tabellen, für die sie Consents besitzen).
     /// </summary>
     public bool AllowAuthenticatedCatalogDiscovery { get; init; } = false;
+
+    /// <summary>
+    /// SEC M-34: Erlaubt (abwärtskompatibel) Katalog-Webhook-Signaturen nur über den Payload statt über
+    /// "{unixTimestamp}.{payload}". Standard: false.
+    /// </summary>
+    public bool AllowLegacyPayloadOnlySignature { get; init; } = false;
 
     public PurviewOptions Purview { get; init; } = new();
     public CollibraOptions Collibra { get; init; } = new();
@@ -679,6 +771,9 @@ public sealed class LakehouseStorageOptions
     public string AzureAccountName { get; init; } = string.Empty;
     public string AzureContainer { get; init; } = string.Empty;
     public string AzureAccountKey { get; init; } = string.Empty;
+
+    /// <summary>SEC: Maximale Byte-Anzahl beim Lesen von Metadaten-/Manifest-Dateien (Standard 64 MB).</summary>
+    public long MaxReadBytes { get; init; } = 64L * 1024 * 1024;
 }
 
 public sealed class LakehouseTableOptions
@@ -708,7 +803,8 @@ public sealed class ExtensibilityOptions
     public bool Enabled { get; init; } = true;
     public bool EnableBreakGlass { get; init; } = true;
     public bool RequireJustificationForBreakGlass { get; init; } = true;
-    public bool RequireRoleForBreakGlass { get; init; } = false;
+    // SEC M-06: Break-glass requires an authorized role by default.
+    public bool RequireRoleForBreakGlass { get; init; } = true;
     public List<string> BreakGlassAllowedRoles { get; init; } = ["BreakGlassOperator", "ClusterAdmin", "GovernanceAdmin", "SecurityAdmin"];
     public string JustificationHeaderName { get; init; } = "X-Access-Justification";
     public string BreakGlassHeaderName { get; init; } = "X-Break-Glass";
@@ -746,6 +842,13 @@ public sealed class ResourceGroupsOptions
     public ResourceGroupTierConfigOptions Interactive { get; init; } = new(50, 20, 5);
     public ResourceGroupTierConfigOptions AutonomousAgents { get; init; } = new(10, 50, 15);
     public ResourceGroupTierConfigOptions BulkAnalytics { get; init; } = new(5, 100, 60);
+
+    /// <summary>
+    /// SEC H-07: Long-lived connections (WebSocket upgrades, SSE) do not occupy resource group slots;
+    /// instead they are capped per principal (SID) and per tenant.
+    /// </summary>
+    [Range(1, 10000)] public int MaxPersistentConnectionsPerPrincipal { get; init; } = 5;
+    [Range(1, 100000)] public int MaxPersistentConnectionsPerTenant { get; init; } = 50;
 }
 
 public sealed record ResourceGroupTierConfigOptions(
@@ -810,13 +913,27 @@ public sealed class SingleQueryPushdownOptions
 
 public sealed class WebSqlOptions
 {
-    public bool Enabled { get; init; } = true;
+    // SEC C-01/C-03: WebSQL is opt-in (secure default).
+    public bool Enabled { get; init; } = false;
     public bool AllowDml { get; init; } = false;
     public long DefaultMaxRows { get; init; } = 1000;
     public long MaxAllowedRows { get; init; } = 10000;
     public int MaxQueryLength { get; init; } = 64_000;
     public int ExecutionTimeoutSeconds { get; init; } = 30;
     public string DefaultDataSourceName { get; init; } = "default";
+
+    /// <summary>
+    /// SEC C-03: Additional data sources (keys of DataSources.Connections) a WebSQL request may target.
+    /// DefaultDataSourceName is always allowed; empty list = only DefaultDataSourceName.
+    /// </summary>
+    public List<string> AllowedDataSources { get; init; } = [];
+
+    /// <summary>
+    /// SEC M-20: Roles that are authorized to execute DML via WebSQL (in addition to AllowDml).
+    /// Consent and Casbin only evaluate read access, so DML is rejected unless the caller holds one of these roles.
+    /// </summary>
+    public List<string> DmlWriterRoles { get; init; } = [];
+
     public bool warn_allow_dml { get; init; } = false;
     public bool danger_bypass_sql_governance { get; init; } = false;
 }
@@ -826,6 +943,12 @@ public sealed class SqlEndpointsOptions
     public bool Enabled { get; init; } = true;
     public string Directory { get; init; } = "queries";
     public bool EnableHotReload { get; init; } = true;
+
+    /// <summary>
+    /// Writes dbt models as SQL endpoint files. Note: SQL endpoints (also dbt-generated ones) are executed via
+    /// GovernedSqlExecutionService and therefore require <c>WebSql.Enabled = true</c> (default: false); a model's
+    /// <c>-- @datasource</c> (dbt database) must be <c>WebSql.DefaultDataSourceName</c> or listed in <c>WebSql.AllowedDataSources</c>.
+    /// </summary>
     public bool AutoSyncFromDbt { get; init; } = true;
     public int MaxQueryTimeoutSeconds { get; init; } = 60;
 }

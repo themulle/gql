@@ -8,6 +8,8 @@ using System.Diagnostics;
 using System.Linq;
 using System.Security;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -25,6 +27,12 @@ using TrinoSqlEngine.Analysis;
 
 public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
 {
+    /// <summary>
+    /// SEC H-13/M-10: Prefix reserved for gateway-internal command parameters (masking keys, row-filter parameters).
+    /// Neither the raw SQL nor client-supplied parameters may use it.
+    /// </summary>
+    internal const string InternalParameterPrefix = "__gql_";
+
     private readonly FastSqlEngine _sqlEngine = new();
     private readonly IOptions<GatewayOptions> _options;
     private readonly IPolicyEnforcementService? _policyEnforcement;
@@ -35,6 +43,11 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
     private readonly IClientIpResolver? _clientIpResolver;
     private readonly IHostEnvironment? _environment;
     private readonly ILogger<GovernedSqlExecutionService>? _logger;
+    private readonly IConsentRepository? _consentRepository;
+    private readonly IKeyVaultSecretProvider? _secretProvider;
+
+    private byte[]? _masterHmacKey;
+    private bool _masterHmacKeyResolved;
 
     public GovernedSqlExecutionService(
         IOptions<GatewayOptions> options,
@@ -45,7 +58,9 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         ISqlConnectionFactory? connectionFactory = null,
         IClientIpResolver? clientIpResolver = null,
         IHostEnvironment? environment = null,
-        ILogger<GovernedSqlExecutionService>? logger = null)
+        ILogger<GovernedSqlExecutionService>? logger = null,
+        IConsentRepository? consentRepository = null,
+        IKeyVaultSecretProvider? secretProvider = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _policyEnforcement = policyEnforcement;
@@ -56,6 +71,8 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         _clientIpResolver = clientIpResolver;
         _environment = environment;
         _logger = logger;
+        _consentRepository = consentRepository;
+        _secretProvider = secretProvider;
     }
 
     public async Task<string> RewriteSqlAsync(
@@ -64,15 +81,28 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         TenantId tenantId,
         CancellationToken ct = default)
     {
+        var rewrite = await RewriteCoreAsync(rawSql, user, tenantId, _options.Value.WebSql.DefaultDataSourceName, ct).ConfigureAwait(false);
+        return rewrite.Sql;
+    }
+
+    private async Task<GovernedRewrite> RewriteCoreAsync(
+        string rawSql,
+        ClaimsPrincipal user,
+        TenantId tenantId,
+        string dataSourceName,
+        CancellationToken ct)
+    {
         if (string.IsNullOrWhiteSpace(rawSql))
         {
             throw new ArgumentException("SQL query cannot be empty or whitespace.", nameof(rawSql));
         }
 
+        ArgumentNullException.ThrowIfNull(user);
+
         var webSqlOptions = _options.Value.WebSql;
         if (!webSqlOptions.Enabled)
         {
-            throw new SecurityException("WebSQL execution is disabled by gateway configuration.");
+            throw new WebSqlPolicyException("WebSQL execution is disabled by gateway configuration.");
         }
 
         if (rawSql.Length > webSqlOptions.MaxQueryLength)
@@ -82,35 +112,107 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 $"SQL query length ({rawSql.Length}) exceeds the maximum allowed limit of {webSqlOptions.MaxQueryLength} characters.");
         }
 
-        // 1. AST Analysis
-        var metadata = _sqlEngine.Analyze(rawSql.AsMemory());
-
-        // 2. Validate Statement Type (Reject DDL, allow DML only if explicitly enabled)
-        if (metadata.StatementType == SqlStatementType.Ddl)
+        // SEC H-13: Gateway-internal parameter names (masking keys) must never be addressable from client SQL.
+        if (rawSql.Contains(InternalParameterPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            throw new SecurityException("DDL statements (CREATE, DROP, ALTER, TRUNCATE, GRANT, REVOKE) are strictly forbidden in WebSQL.");
+            throw new WebSqlPolicyException("The SQL statement references a reserved gateway identifier.");
         }
 
-        if (metadata.StatementType != SqlStatementType.Select && !_options.Value.IsWebSqlDmlAllowed)
+        // 1. AST Analysis
+        SqlQueryMetadata metadata;
+        try
         {
-            throw new SecurityException(
+            metadata = _sqlEngine.Analyze(rawSql.AsMemory());
+        }
+        catch (WebSqlPolicyException)
+        {
+            throw;
+        }
+        catch (SecurityException secEx)
+        {
+            _logger?.LogWarning(secEx, "WebSQL statement rejected by SQL analyzer.");
+            throw new WebSqlPolicyException("The SQL statement uses a construct that is not permitted by the WebSQL security policy.", secEx);
+        }
+        catch (OperationCanceledException parseEx) when (!ct.IsCancellationRequested)
+        {
+            // ANTLR ParseCanceledException derives from OperationCanceledException
+            throw new ArgumentException("The SQL statement could not be parsed.", nameof(rawSql), parseEx);
+        }
+
+        // 2. Validate Statement Type (Reject DDL, allow DML only if explicitly enabled AND authorized)
+        if (metadata.StatementType == SqlStatementType.Ddl)
+        {
+            throw new WebSqlPolicyException("DDL statements (CREATE, DROP, ALTER, TRUNCATE, GRANT, REVOKE) are strictly forbidden in WebSQL.");
+        }
+
+        bool isDml = metadata.StatementType is SqlStatementType.Insert or SqlStatementType.Update or SqlStatementType.Delete;
+        if (metadata.StatementType != SqlStatementType.Select && (!isDml || !_options.Value.IsWebSqlDmlAllowed))
+        {
+            throw new WebSqlPolicyException(
                 $"WebSQL only permits read-only SELECT statements by default. Received '{metadata.StatementType}' operation. DML must be explicitly enabled via configuration.");
+        }
+
+        if (isDml)
+        {
+            // SEC M-20: Consent and Casbin only grant 'read'. A DML statement therefore additionally requires an
+            // explicitly configured writer role; without one, DML is rejected (fail-closed).
+            var writerRoles = webSqlOptions.DmlWriterRoles;
+            bool isWriter = writerRoles != null && writerRoles.Any(r => !string.IsNullOrWhiteSpace(r) && user.IsInRole(r));
+            if (!isWriter)
+            {
+                isWriter = writerRoles != null && user.GetUserRoles().Overlaps(writerRoles.Where(r => !string.IsNullOrWhiteSpace(r)));
+            }
+
+            if (!isWriter)
+            {
+                throw new WebSqlPolicyException("WebSQL DML requires an authorized writer role (WebSql.DmlWriterRoles). Consent and ABAC policies only grant read access.");
+            }
         }
 
         // 3. Danger Bypass: If WebSQL governance is dangerously bypassed in dev/test, return raw SQL
         if (_options.Value.IsWebSqlGovernanceBypassed)
         {
             _logger?.LogWarning("[DANGER] WebSQL governance bypass is active! Query will be executed without RLS or AST masking.");
-            return rawSql;
+            return new GovernedRewrite(rawSql, new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase));
         }
 
-        // 4. Resolve RLS filters and Column Masking for all referenced physical tables
-        var tableRlsFilters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var tableMaskingExpressions = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-        var tableColumnsMap = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        // SEC C-01: RLS, masking and policies attach to physical table nodes. A statement without any governed table
+        // (e.g. SELECT query_to_xml('SELECT * FROM hr.salaries', ...)) would escape all of them and is rejected.
+        if (metadata.ReferencedTables.Count == 0)
+        {
+            throw new WebSqlPolicyException("WebSQL statements must reference at least one governed catalog table. Table-less statements (e.g. standalone function calls) are not permitted.");
+        }
 
-        var userSid = ResolveUserSid(user);
-        var groupSids = ResolveGroupSids(user);
+        // SEC C-01/H-14: Early function policy check on the analysis result (the RLS rewriter enforces the same policy
+        // again via RlsOptions.EnforceFunctionPolicy). Table functions, WITH SESSION and inline functions are rejected.
+        if (metadata.TableFunctionCalls is { Count: > 0 } || metadata.HasSessionProperties || metadata.HasInlineFunctionDefinitions)
+        {
+            throw new WebSqlPolicyException("Table functions, session properties and inline function definitions are not permitted in WebSQL.");
+        }
+
+        if (metadata.FunctionCalls is { Count: > 0 })
+        {
+            var functionPolicy = new RlsOptions { EnforceFunctionPolicy = true };
+            foreach (var functionName in metadata.FunctionCalls)
+            {
+                if (!SqlFunctionPolicy.IsFunctionAllowed(functionName, functionPolicy))
+                {
+                    throw new WebSqlPolicyException($"Function '{functionName}' is not permitted in WebSQL.");
+                }
+            }
+        }
+
+        // 4. Resolve identity
+        bool consentBypassed = _options.Value.IsConsentBypassed;
+        var userSidNullable = user.GetUserSid();
+        if (userSidNullable == null && !consentBypassed)
+        {
+            throw new WebSqlPolicyException("An authenticated user identity is required for WebSQL.");
+        }
+
+        var userSid = userSidNullable ?? new Sid("anonymous");
+        var groupSids = user.GetGroupSids();
+        var roles = user.GetUserRoles();
         var clientIp = ResolveClientIp(user);
         var purpose = user.FindFirst("purpose")?.Value ?? user.FindFirst("purpose_id")?.Value;
 
@@ -120,113 +222,155 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             attributes[claim.Type] = claim.Value;
         }
 
+        // SEC M-20: Make the requested action visible to ABAC sub-rules (set after claims so it cannot be spoofed).
+        attributes["gql.action"] = isDml ? "write" : "read";
+
+        // 5. Resolve RLS filters and Column Masking for all referenced physical tables
+        var tableRlsFilters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var tablesWithoutRls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tableMaskingExpressions = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        var tableColumnsMap = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        var internalParameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        var hmacKeyParameterNames = new Dictionary<string, string>(StringComparer.Ordinal);
+
         foreach (var target in metadata.ReferencedTables)
         {
-            // Resolve table metadata from repository
+            // SEC C-03: Tables without catalog metadata (or without column metadata) cannot be governed -> reject.
             TableIdentifier tableId = ResolveTableIdentifier(target);
+            TableIdentifier resolvedId = tableId;
             TableMetadata? tableMeta = null;
             if (_tableRepository != null)
             {
                 tableMeta = await _tableRepository.GetTableMetadataAsync(tableId, ct).ConfigureAwait(false);
                 if (tableMeta == null && !string.Equals(tableId.Domain, "default", StringComparison.OrdinalIgnoreCase))
                 {
-                    tableMeta = await _tableRepository.GetTableMetadataAsync(new TableIdentifier("default", tableId.Schema, tableId.TableName), ct).ConfigureAwait(false);
+                    resolvedId = new TableIdentifier("default", tableId.Schema, tableId.TableName);
+                    tableMeta = await _tableRepository.GetTableMetadataAsync(resolvedId, ct).ConfigureAwait(false);
                 }
             }
 
-            if (tableMeta != null && tableMeta.Columns.Count > 0)
+            if (tableMeta == null || tableMeta.Columns.Count == 0)
             {
-                var colList = tableMeta.Columns.Select(c => c.ColumnName).ToList();
-                tableColumnsMap[target.TableName] = colList;
-                tableColumnsMap[target.FullName] = colList;
+                _logger?.LogWarning("WebSQL rejected table {Table}: no catalog metadata registered.", target.FullName);
+                throw TableDenied(target);
             }
 
-            // ABAC Policy Evaluation
-            string? rlsFilter = null;
-            var columnMasks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            TableAccessDecision? policyDecision = null;
+            // SEC C-03: A catalog table bound to a specific data source must only be queried through that source.
+            if (!string.IsNullOrWhiteSpace(tableMeta.Table.SourceName) &&
+                !string.Equals(tableMeta.Table.SourceName, dataSourceName, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger?.LogWarning("WebSQL rejected table {Table}: catalog source does not match the requested data source.", target.FullName);
+                throw TableDenied(target);
+            }
 
+            var colList = tableMeta.Columns.Select(c => c.ColumnName).ToList();
+            tableColumnsMap[target.TableName] = colList;
+            tableColumnsMap[target.FullName] = colList;
+
+            // SEC C-03: Consent model (same truth table as the GraphQL path)
+            TableAccessDecision decision;
+            if (consentBypassed)
+            {
+                decision = TableAccessDecision.Allowed(resolvedId, new Dictionary<string, ColumnAccessLevel>(), rowFilterSql: null, hasUnconstrainedColumnAllow: true);
+            }
+            else if (_consentRepository == null || _consentResolution == null)
+            {
+                _logger?.LogError("WebSQL cannot evaluate consents (consent services not available); denying access (fail-closed).");
+                throw TableDenied(target);
+            }
+            else
+            {
+                var allSubjects = groupSids.Append(userSid).ToList();
+                var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, resolvedId, DateTimeOffset.UtcNow, tenantId, ct).ConfigureAwait(false);
+                var tenantConsents = activeConsents.Where(c => c.TenantId == tenantId).ToList();
+                decision = _consentResolution.ResolveAccess(userSid, groupSids, roles, resolvedId, tenantConsents, tableMeta.Dialect);
+            }
+
+            if (!decision.IsAllowed)
+            {
+                _logger?.LogWarning("WebSQL access to table {Table} denied by consent model.", target.FullName);
+                throw TableDenied(target);
+            }
+
+            // ABAC (Casbin) is applied as an additional restriction only
             if (_policyEnforcement != null && _policyEnforcement.HasPolicies(tenantId))
             {
                 var secContext = new SecurityEvaluationContext(
                     UserSid: userSid,
                     GroupSids: groupSids,
                     Tenant: tenantId,
-                    TargetTable: tableId,
-                    RequestedColumns: tableMeta?.Columns.Select(c => c.ColumnName).ToList() ?? new List<string>(),
+                    TargetTable: resolvedId,
+                    RequestedColumns: colList,
                     ClientIp: clientIp,
                     Timestamp: DateTimeOffset.UtcNow,
                     PurposeId: purpose,
                     Attributes: attributes);
 
-                policyDecision = await _policyEnforcement.EvaluatePolicyAsync(secContext, ct).ConfigureAwait(false);
+                var policyDecision = await _policyEnforcement.EvaluatePolicyAsync(secContext, ct).ConfigureAwait(false);
                 if (!policyDecision.IsAllowed)
                 {
-                    var reasons = policyDecision.DeniedReasons.Count > 0
-                        ? string.Join("; ", policyDecision.DeniedReasons)
-                        : "Table access forbidden by policy.";
-                    throw new SecurityException($"Access to table '{target.FullName}' denied by ABAC policy: {reasons}");
+                    _logger?.LogWarning("WebSQL access to table {Table} denied by ABAC policy.", target.FullName);
+                    throw TableDenied(target);
                 }
 
-                if (!string.IsNullOrWhiteSpace(policyDecision.CombinedRowFilterSql))
-                {
-                    SqlSecurityValidator.ValidatePredicateSql(policyDecision.CombinedRowFilterSql, "CombinedRowFilterSql");
-                    rlsFilter = policyDecision.CombinedRowFilterSql;
-                }
+                decision = RestrictWithPolicy(decision, policyDecision, tableMeta);
             }
 
-            // Resolve column masking rules (from policy or table metadata catalog)
-            if (tableMeta != null)
+            // Row-level security: tenant isolation (defense in depth) AND consent/ABAC row filters
+            var rlsParts = new List<string>(2);
+            bool hasTenantCol = tableMeta.HasColumn("tenant_id");
+            if (hasTenantCol)
             {
-                string hmacSalt = _options.Value.DataMasking.HmacSecretKeyVaultRef ?? _options.Value.DataMasking.HmacKeyId ?? "gateway_salt";
-                foreach (var col in tableMeta.Columns)
+                rlsParts.Add($"tenant_id = '{tenantId.Value.Replace("'", "''")}'");
+            }
+
+            if (!string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
+            {
+                SqlSecurityValidator.ValidatePredicateSql(decision.CombinedRowFilterSql, "CombinedRowFilterSql");
+                rlsParts.Add($"({decision.CombinedRowFilterSql})");
+                AddInternalRowFilterParameters(decision.RowFilterParameters, internalParameters);
+            }
+
+            if (rlsParts.Count > 0)
+            {
+                var rlsFilter = string.Join(" AND ", rlsParts);
+                tableRlsFilters[target.TableName] = rlsFilter;
+                tableRlsFilters[target.FullName] = rlsFilter;
+            }
+            else
+            {
+                tablesWithoutRls.Add(target.TableName);
+                tablesWithoutRls.Add(target.FullName);
+            }
+
+            // Column projection / masking (SEC C-03/H-10: shared effective access function, catalog-sensitive -> Mask unless explicit Clear)
+            var columnMasks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var col in tableMeta.Columns)
+            {
+                var lvl = decision.GetEffectiveColumnAccess(col.ColumnName, tableMeta);
+                bool isEffectiveHmac = false;
+
+                if (lvl == ColumnAccessLevel.Deny)
                 {
-                    ColumnAccessLevel lvl = ColumnAccessLevel.Clear;
-                    if (policyDecision != null)
-                    {
-                        lvl = policyDecision.GetColumnAccess(col.ColumnName);
-                    }
-                    else if (tableMeta.ColumnMaskingRules.ContainsKey(col.ColumnName) || col.IsSensitive)
-                    {
-                        lvl = ColumnAccessLevel.Mask;
-                    }
+                    columnMasks[col.ColumnName] = "NULL";
+                }
+                else if (lvl == ColumnAccessLevel.Mask)
+                {
+                    columnMasks[col.ColumnName] = GetMaskExpressionForRule(col.ColumnName, tableMeta, tenantId, internalParameters, hmacKeyParameterNames, out isEffectiveHmac);
+                }
 
-                    if (lvl == ColumnAccessLevel.Deny)
-                    {
-                        columnMasks[col.ColumnName] = "NULL";
-                    }
-                    else if (lvl == ColumnAccessLevel.Mask)
-                    {
-                        columnMasks[col.ColumnName] = GetMaskExpressionForRule(col.ColumnName, tableMeta, hmacSalt);
-                    }
+                // SEC-JOIN-01: Zero-Trust Guardrail: Check if any statically redacted column is used as a JOIN predicate
+                if (lvl != ColumnAccessLevel.Clear && !isEffectiveHmac &&
+                    metadata.JoinConditionColumns != null && metadata.JoinConditionColumns.Contains(col.ColumnName))
+                {
+                    string ruleDesc = tableMeta.ColumnMaskingRules.TryGetValue(col.ColumnName, out var mRule)
+                        ? mRule.RuleType ?? "REDACT"
+                        : (lvl == ColumnAccessLevel.Deny ? "DENY" : "ABAC_MASK");
 
-                    // SEC-JOIN-01: Zero-Trust Guardrail: Check if any statically redacted column is used as a JOIN predicate
-                    if (metadata.JoinConditionColumns != null && metadata.JoinConditionColumns.Contains(col.ColumnName))
-                    {
-                        bool isHmac = tableMeta.ColumnMaskingRules.TryGetValue(col.ColumnName, out var rule) &&
-                                      (rule.RuleType?.ToUpperInvariant() is "HMAC" or "HMAC_SHA256" or "HASH");
-
-                        if (!isHmac && (lvl == ColumnAccessLevel.Mask || lvl == ColumnAccessLevel.Deny || tableMeta.ColumnMaskingRules.ContainsKey(col.ColumnName)))
-                        {
-                            string ruleDesc = tableMeta.ColumnMaskingRules.TryGetValue(col.ColumnName, out var mRule)
-                                ? mRule.RuleType ?? "REDACT"
-                                : (lvl == ColumnAccessLevel.Deny ? "DENY" : "ABAC_MASK");
-
-                            throw new SecurityException(
-                                $"Security Policy Violation: Column '{col.ColumnName}' in table '{target.FullName}' is protected by static redaction ('{ruleDesc}') and cannot be used in a relational JOIN predicate. Joining on static constants produces false Cartesian cross-products and enables side-channel join inference attacks. Configure deterministic HMAC pseudonymization (RuleType = 'HMAC') or join on surrogate foreign keys (e.g. ID).");
-                        }
-                    }
+                    throw new WebSqlPolicyException(
+                        $"Security Policy Violation: Column '{col.ColumnName}' in table '{target.FullName}' is protected by static redaction ('{ruleDesc}') and cannot be used in a relational JOIN predicate. Joining on static constants produces false Cartesian cross-products and enables side-channel join inference attacks. Configure deterministic HMAC pseudonymization (RuleType = 'HMAC') or join on surrogate foreign keys (e.g. ID).");
                 }
             }
-
-            // Fallback tenant filter if no custom filter was resolved
-            if (string.IsNullOrWhiteSpace(rlsFilter))
-            {
-                rlsFilter = $"tenant_id = '{tenantId.Value.Replace("'", "''")}'";
-            }
-
-            tableRlsFilters[target.TableName] = rlsFilter;
-            tableRlsFilters[target.FullName] = rlsFilter;
 
             if (columnMasks.Count > 0)
             {
@@ -235,30 +379,59 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             }
         }
 
-        // 5. Construct RlsOptions
+        // 6. Construct RlsOptions
         long maxRows = webSqlOptions.DefaultMaxRows > 0 ? webSqlOptions.DefaultMaxRows : 1000;
         if (webSqlOptions.MaxAllowedRows > 0 && maxRows > webSqlOptions.MaxAllowedRows)
         {
             maxRows = webSqlOptions.MaxAllowedRows;
         }
 
+        // SEC C-03: Any table name the rewriter encounters that was not resolved above is filtered to the empty set (fail-closed).
+        const string denyAllFilter = "1 = 0";
+
         var rlsOptions = new RlsOptions
         {
             AppendTableAlias = true,
             EnforcedMaxRows = maxRows,
-            EnforceReadOnlyQueries = !_options.Value.IsWebSqlDmlAllowed,
+            EnforceReadOnlyQueries = !isDml,
+            // SEC M-20: WITH CHECK against the caller's tenant (not the library default) and explicit tenant column on INSERT
+            ExpectedTenantValue = tenantId.Value,
+            RequireTenantColumnInInsert = true,
+            // SEC C-01/H-14/H-15: Function denylist, no table functions / inline functions, no masked columns in DML
+            EnforceFunctionPolicy = true,
+            AllowInlineFunctionDefinitions = false,
+            RejectMaskedColumnsInDml = true,
             PolicyProvider = new DefaultRlsPolicyProvider(
-                defaultFilter: $"tenant_id = '{tenantId.Value.Replace("'", "''")}'",
-                predicate: tbl => tableRlsFilters.ContainsKey(tbl),
-                filterFunc: tbl => tableRlsFilters.TryGetValue(tbl, out var f) ? f : $"tenant_id = '{tenantId.Value.Replace("'", "''")}'"),
+                defaultFilter: denyAllFilter,
+                predicate: tbl => !tablesWithoutRls.Contains(tbl),
+                filterFunc: tbl => tableRlsFilters.TryGetValue(tbl, out var f) ? f : denyAllFilter),
             TableColumnsProvider = tbl => tableColumnsMap.TryGetValue(tbl, out var cols) ? cols : null,
             ColumnMaskingProvider = new DefaultColumnMaskingPolicyProvider(
                 hasMaskPredicate: (tbl, col) => tableMaskingExpressions.TryGetValue(tbl, out var dict) && dict.ContainsKey(col),
                 maskExpressionProvider: (tbl, col) => tableMaskingExpressions.TryGetValue(tbl, out var dict) && dict.TryGetValue(col, out var expr) ? expr : "'***'")
         };
 
-        // 6. Rewrite SQL AST
-        return _sqlEngine.RewriteRls(rawSql.AsMemory(), rlsOptions);
+        // 7. Rewrite SQL AST
+        string securedSql;
+        try
+        {
+            securedSql = _sqlEngine.RewriteRls(rawSql.AsMemory(), rlsOptions);
+        }
+        catch (WebSqlPolicyException)
+        {
+            throw;
+        }
+        catch (SecurityException secEx)
+        {
+            _logger?.LogWarning(secEx, "WebSQL statement rejected by RLS rewriter.");
+            throw new WebSqlPolicyException("The SQL statement violates the WebSQL row-level security policy.", secEx);
+        }
+        catch (OperationCanceledException parseEx) when (!ct.IsCancellationRequested)
+        {
+            throw new ArgumentException("The SQL statement could not be parsed.", nameof(rawSql), parseEx);
+        }
+
+        return new GovernedRewrite(securedSql, internalParameters);
     }
 
     public async Task ExecuteGovernedQueryAsync(
@@ -268,12 +441,38 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         Func<DbDataReader, CancellationToken, Task> rowWriter,
         CancellationToken ct = default)
     {
+        await ExecuteCoreAsync(request, user, tenantId, rowWriter, ct).ConfigureAwait(false);
+    }
+
+    private async Task<string> ExecuteCoreAsync(
+        GovernedSqlQueryRequest request,
+        ClaimsPrincipal user,
+        TenantId tenantId,
+        Func<DbDataReader, CancellationToken, Task> rowWriter,
+        CancellationToken ct)
+    {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(rowWriter);
 
-        string securedSql = await RewriteSqlAsync(request.Sql, user, tenantId, ct).ConfigureAwait(false);
+        // SEC C-03: dataSource must be on the allowlist (default data source + WebSql.AllowedDataSources)
+        string dsName = ResolveAllowedDataSource(request.DataSourceName);
 
-        // Audit Log Entry
+        // SEC H-13: Client parameters must not collide with gateway-internal parameters
+        if (request.Parameters != null)
+        {
+            foreach (var paramName in request.Parameters.Keys)
+            {
+                if (paramName.TrimStart('@').StartsWith(InternalParameterPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new WebSqlPolicyException("A request parameter uses a reserved gateway parameter name.");
+                }
+            }
+        }
+
+        var rewrite = await RewriteCoreAsync(request.Sql, user, tenantId, dsName, ct).ConfigureAwait(false);
+        string securedSql = rewrite.Sql;
+
+        // Audit Log Entry (secured SQL only contains parameter placeholders, never masking keys)
         if (_auditLogRepository != null)
         {
             var userSid = ResolveUserSid(user);
@@ -282,20 +481,19 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 TenantId = tenantId,
                 EventType = "WEBSQL_QUERY",
                 ActorSid = userSid,
-                TargetTable = request.DataSourceName ?? _options.Value.WebSql.DefaultDataSourceName,
+                TargetTable = dsName,
                 Decision = "ALLOW",
                 TraceId = Guid.NewGuid().ToString("N"),
                 DetailsJson = JsonSerializer.Serialize(new
                 {
                     originalSql = request.Sql,
                     securedSql,
-                    dataSource = request.DataSourceName ?? _options.Value.WebSql.DefaultDataSourceName
+                    dataSource = dsName
                 })
             }, ct).ConfigureAwait(false);
         }
 
         // Connection resolution
-        string dsName = request.DataSourceName ?? _options.Value.WebSql.DefaultDataSourceName;
         var connections = _options.Value.DataSources?.Connections;
         DataSourceConnectionOptions? connOptions = null;
         connections?.TryGetValue(dsName, out connOptions);
@@ -315,7 +513,7 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             // Synthetic demo reader for testing/dev environments without a backing DB
             using var syntheticReader = new SyntheticDataTableReader(securedSql);
             await rowWriter(syntheticReader, ct).ConfigureAwait(false);
-            return;
+            return securedSql;
         }
 
         // Real Database Execution
@@ -323,6 +521,15 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         await using var command = connection.CreateCommand();
         command.CommandText = securedSql;
         command.CommandTimeout = Math.Max(1, _options.Value.WebSql.ExecutionTimeoutSeconds);
+
+        // Gateway-internal parameters (masking keys, row-filter parameters) are bound as parameters, never inlined
+        foreach (var (paramName, paramVal) in rewrite.InternalParameters)
+        {
+            var p = command.CreateParameter();
+            p.ParameterName = paramName.StartsWith('@') ? paramName : "@" + paramName;
+            p.Value = paramVal ?? DBNull.Value;
+            command.Parameters.Add(p);
+        }
 
         if (request.Parameters != null)
         {
@@ -337,6 +544,7 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
 
         await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
         await rowWriter(reader, ct).ConfigureAwait(false);
+        return securedSql;
     }
 
     public async Task<GovernedSqlResult> ExecuteQueryBufferedAsync(
@@ -347,12 +555,11 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        string securedSql = await RewriteSqlAsync(request.Sql, user, tenantId, ct).ConfigureAwait(false);
         var rows = new List<IReadOnlyDictionary<string, object?>>();
         var columns = new List<string>();
         var sw = Stopwatch.StartNew();
 
-        await ExecuteGovernedQueryAsync(
+        string securedSql = await ExecuteCoreAsync(
             request,
             user,
             tenantId,
@@ -386,14 +593,109 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             ElapsedMilliseconds: sw.ElapsedMilliseconds);
     }
 
+    /// <summary>
+    /// SEC C-03: Resolves the requested data source against the allowlist. The default data source is always allowed,
+    /// any other source must be listed in WebSql.AllowedDataSources.
+    /// </summary>
+    private string ResolveAllowedDataSource(string? requested)
+    {
+        var webSqlOptions = _options.Value.WebSql;
+        string defaultName = webSqlOptions.DefaultDataSourceName;
+        if (string.IsNullOrWhiteSpace(requested) || string.Equals(requested, defaultName, StringComparison.OrdinalIgnoreCase))
+        {
+            return defaultName;
+        }
+
+        var allowed = webSqlOptions.AllowedDataSources;
+        if (allowed != null)
+        {
+            foreach (var candidate in allowed)
+            {
+                if (string.Equals(candidate, requested, StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        throw new WebSqlPolicyException("The requested data source is not enabled for WebSQL.");
+    }
+
+    /// <summary>
+    /// SEC C-03: Applies an ABAC (Casbin) decision as an additional restriction on top of the consent decision.
+    /// Column levels can only be lowered; an explicit Clear can only come from the consent decision.
+    /// Row filters are combined with AND.
+    /// </summary>
+    private static TableAccessDecision RestrictWithPolicy(TableAccessDecision consentDecision, TableAccessDecision policyDecision, TableMetadata tableMeta)
+    {
+        var mergedColumns = new Dictionary<string, ColumnAccessLevel>(StringComparer.OrdinalIgnoreCase);
+        foreach (var col in tableMeta.Columns)
+        {
+            var policyLevel = policyDecision.GetColumnAccess(col.ColumnName);
+            if (consentDecision.ColumnAccess.TryGetValue(col.ColumnName, out var explicitLevel))
+            {
+                mergedColumns[col.ColumnName] = explicitLevel < policyLevel ? explicitLevel : policyLevel;
+            }
+            else if (consentDecision.HasUnconstrainedColumnAllow)
+            {
+                if (policyLevel != ColumnAccessLevel.Clear)
+                {
+                    mergedColumns[col.ColumnName] = policyLevel;
+                }
+            }
+        }
+
+        string? mergedFilter = consentDecision.CombinedRowFilterSql;
+        if (!string.IsNullOrWhiteSpace(policyDecision.CombinedRowFilterSql))
+        {
+            SqlSecurityValidator.ValidatePredicateSql(policyDecision.CombinedRowFilterSql, "CombinedRowFilterSql");
+            mergedFilter = !string.IsNullOrWhiteSpace(mergedFilter)
+                ? $"({mergedFilter}) AND ({policyDecision.CombinedRowFilterSql})"
+                : policyDecision.CombinedRowFilterSql;
+        }
+
+        Dictionary<string, object?>? mergedParameters = null;
+        if (consentDecision.RowFilterParameters != null || policyDecision.RowFilterParameters != null)
+        {
+            mergedParameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            AddInternalRowFilterParameters(consentDecision.RowFilterParameters, mergedParameters);
+            AddInternalRowFilterParameters(policyDecision.RowFilterParameters, mergedParameters);
+        }
+
+        return consentDecision with
+        {
+            ColumnAccess = mergedColumns,
+            CombinedRowFilterSql = mergedFilter,
+            RowFilterParameters = mergedParameters ?? consentDecision.RowFilterParameters
+        };
+    }
+
+    private static void AddInternalRowFilterParameters(IReadOnlyDictionary<string, object?>? source, Dictionary<string, object?> target)
+    {
+        if (source == null)
+        {
+            return;
+        }
+
+        foreach (var (name, value) in source)
+        {
+            if (target.TryGetValue(name, out var existing) && !Equals(existing, value))
+            {
+                // Two row filters bind the same parameter name to different values: ambiguous -> fail-closed
+                throw new WebSqlPolicyException("Conflicting row-level security parameters; the statement cannot be governed safely.");
+            }
+
+            target[name] = value;
+        }
+    }
+
+    // SEC M-10: Identical message for "unknown table" and "access denied" (no catalog enumeration oracle, no policy details)
+    private static WebSqlPolicyException TableDenied(TableAccessTarget target) =>
+        new($"Access to table '{target.FullName}' is denied or the table is not registered in the governance catalog.");
+
     private static Sid ResolveUserSid(ClaimsPrincipal user)
     {
         return user.GetUserSid() ?? new Sid("anonymous");
-    }
-
-    private static IReadOnlyList<Sid> ResolveGroupSids(ClaimsPrincipal user)
-    {
-        return user.GetGroupSids().ToList();
     }
 
     private System.Net.IPAddress ResolveClientIp(ClaimsPrincipal user)
@@ -416,8 +718,15 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         return new TableIdentifier(domain, schema, target.TableName);
     }
 
-    private static string GetMaskExpressionForRule(string columnName, TableMetadata tableMeta, string hmacSalt)
+    private string GetMaskExpressionForRule(
+        string columnName,
+        TableMetadata tableMeta,
+        TenantId tenantId,
+        Dictionary<string, object?> internalParameters,
+        Dictionary<string, string> hmacKeyParameterNames,
+        out bool isEffectiveHmac)
     {
+        isEffectiveHmac = false;
         if (tableMeta.ColumnMaskingRules.TryGetValue(columnName, out var rule))
         {
             var ruleType = rule.RuleType?.ToUpperInvariant() ?? "REDACT";
@@ -427,7 +736,19 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             }
             if (ruleType is "HMAC" or "HMAC_SHA256" or "HASH")
             {
-                return BuildDeterministicHashExpression(columnName, tableMeta.Dialect, hmacSalt);
+                string keyId = !string.IsNullOrWhiteSpace(rule.HmacKeyId)
+                    ? rule.HmacKeyId
+                    : (_options.Value.DataMasking.HmacKeyId ?? "default");
+
+                var expression = TryBuildKeyedHmacExpression(columnName, tableMeta.Dialect, keyId, tenantId, internalParameters, hmacKeyParameterNames);
+                if (expression != null)
+                {
+                    isEffectiveHmac = true;
+                    return expression;
+                }
+
+                // SEC H-13: No resolvable HMAC secret -> redact (fail-closed), never fall back to an unkeyed hash
+                return "'***'";
             }
             if (!string.IsNullOrWhiteSpace(rule.Replacement))
             {
@@ -437,21 +758,99 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         return "'***'";
     }
 
-    private static string BuildDeterministicHashExpression(string columnName, DatabaseDialect dialect, string salt)
+    /// <summary>
+    /// SEC H-13: Builds a real HMAC-SHA256 expression. The key is derived per tenant and key id (HKDF over the resolved
+    /// master secret) and is bound as a command parameter; it never appears in SQL text, logs or audit records.
+    /// </summary>
+    private string? TryBuildKeyedHmacExpression(
+        string columnName,
+        DatabaseDialect dialect,
+        string keyId,
+        TenantId tenantId,
+        Dictionary<string, object?> internalParameters,
+        Dictionary<string, string> hmacKeyParameterNames)
     {
-        string safeSalt = salt.Replace("'", "''");
+        var masterKey = GetMasterHmacKey();
+        if (masterKey == null)
+        {
+            return null;
+        }
+
+        if (!hmacKeyParameterNames.TryGetValue(keyId, out var paramBase))
+        {
+            paramBase = $"{InternalParameterPrefix}mk{hmacKeyParameterNames.Count}";
+            hmacKeyParameterNames[keyId] = paramBase;
+
+            byte[] derivedKey = HKDF.DeriveKey(
+                HashAlgorithmName.SHA256,
+                masterKey,
+                32,
+                Encoding.UTF8.GetBytes("gql-websql-tenant:" + tenantId.Value),
+                Encoding.UTF8.GetBytes("gql-websql-mask:" + keyId));
+            string hexKey = Convert.ToHexString(derivedKey);
+
+            if (dialect == DatabaseDialect.SqlServer)
+            {
+                // T-SQL has no native HMAC: precompute the inner/outer padded keys (64-byte key == SHA-256 block size)
+                byte[] keyBytes = Encoding.ASCII.GetBytes(hexKey);
+                var innerPad = new byte[keyBytes.Length];
+                var outerPad = new byte[keyBytes.Length];
+                for (int i = 0; i < keyBytes.Length; i++)
+                {
+                    innerPad[i] = (byte)(keyBytes[i] ^ 0x36);
+                    outerPad[i] = (byte)(keyBytes[i] ^ 0x5c);
+                }
+
+                internalParameters["@" + paramBase + "_i"] = innerPad;
+                internalParameters["@" + paramBase + "_o"] = outerPad;
+            }
+            else
+            {
+                internalParameters["@" + paramBase] = hexKey;
+            }
+        }
+
         return dialect switch
         {
             DatabaseDialect.PostgreSql =>
-                $"ENCODE(DIGEST(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT) || '{safeSalt}', 'sha256'), 'hex')",
+                $"ENCODE(HMAC(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), CAST(@{paramBase} AS TEXT), 'sha256'), 'hex')",
             DatabaseDialect.SqlServer =>
-                $"CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST([{columnName.Replace("]", "]]")}] AS VARCHAR(MAX)) + '{safeSalt}'), 2)",
-            DatabaseDialect.Sqlite =>
-                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), '{safeSalt}')",
+                $"CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', @{paramBase}_o + HASHBYTES('SHA2_256', @{paramBase}_i + CAST(CAST([{columnName.Replace("]", "]]")}] AS NVARCHAR(MAX)) AS VARBINARY(MAX)))), 2)",
             _ =>
-                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), '{safeSalt}')"
+                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), @{paramBase})"
         };
     }
+
+    private byte[]? GetMasterHmacKey()
+    {
+        if (_masterHmacKeyResolved)
+        {
+            return _masterHmacKey;
+        }
+
+        _masterHmacKeyResolved = true;
+        var secretRef = _options.Value.DataMasking.HmacSecretKeyVaultRef;
+        if (_secretProvider == null || string.IsNullOrWhiteSpace(secretRef))
+        {
+            _logger?.LogWarning("WebSQL HMAC masking key is not resolvable (no secret provider or secret reference); HMAC columns are redacted.");
+            return null;
+        }
+
+        try
+        {
+            var key = _secretProvider.GetSecretBytes(secretRef);
+            _masterHmacKey = key is { Length: > 0 } ? key : null;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or KeyNotFoundException)
+        {
+            _logger?.LogWarning("WebSQL HMAC masking secret could not be resolved; HMAC columns are redacted.");
+            _masterHmacKey = null;
+        }
+
+        return _masterHmacKey;
+    }
+
+    private sealed record GovernedRewrite(string Sql, IReadOnlyDictionary<string, object?> InternalParameters);
 
     /// <summary>
     /// Lightweight synthetic reader for developer / unit test environments where no physical DB is attached.

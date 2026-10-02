@@ -2,8 +2,8 @@ namespace GqlGateway.Api.Endpoints;
 
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Threading.Tasks;
+using GqlGateway.Api.Extensions;
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Domain.Common;
@@ -30,22 +30,24 @@ public static class DbtEndpoints
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            if (context.Request.ContentLength > 100 * 1024 * 1024)
+            // SEC M-07: Server-side body limit instead of a bypassable Content-Length check.
+            const string manifestTooLarge = "Manifest size exceeds maximum allowed size (100 MB).";
+            var limitError = EndpointSecurity.TryApplyBodyLimit(context.Request, 100 * 1024 * 1024, manifestTooLarge);
+            if (limitError != null)
             {
-                return Results.BadRequest(new { error = "Manifest size exceeds maximum allowed size (100 MB)." });
+                return limitError;
             }
 
             var dryRun = context.Request.Query.ContainsKey("dryRun") &&
                          bool.TryParse(context.Request.Query["dryRun"], out var dr) && dr;
 
-            var result = await dbtService.IngestManifestStreamAsync(context.Request.Body, dryRun, context.RequestAborted);
-            if (!result.Success)
+            return await EndpointSecurity.WithBodyLimitAsync(async () =>
             {
-                return Results.BadRequest(result);
-            }
-
-            return Results.Ok(result);
-        }).RequireAuthorization();
+                var result = await dbtService.IngestManifestStreamAsync(context.Request.Body, dryRun, context.RequestAborted);
+                return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+            }, manifestTooLarge);
+        }).RequireAuthorization()
+          .WithRequestBodyLimit(100 * 1024 * 1024); // SEC M-01: explicit large-body exception to the global Kestrel limit
 
         app.MapGet("/api/extensions/dbt/exposures", async (
             IDbtExposurePublisher exposurePublisher,
@@ -92,10 +94,9 @@ public static class DbtEndpoints
             IDbtMetadataIngestionService dbtService,
             HttpContext context) =>
         {
-            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
-                               context.User.IsInRole("ClusterAdmin") ||
-                               context.User.IsInRole("DataOwner");
-            if (!isPrivileged)
+            // SEC M-11: dbt proposals carry no tenant and change global masking metadata ->
+            // only global governance administrators (GovernanceAdmin / ClusterAdmin) may decide.
+            if (!EndpointSecurity.IsGlobalGovernanceAdmin(context.User))
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -117,10 +118,9 @@ public static class DbtEndpoints
             IDbtMetadataIngestionService dbtService,
             HttpContext context) =>
         {
-            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
-                               context.User.IsInRole("ClusterAdmin") ||
-                               context.User.IsInRole("DataOwner");
-            if (!isPrivileged)
+            // SEC M-11: dbt proposals carry no tenant and change global masking metadata ->
+            // only global governance administrators (GovernanceAdmin / ClusterAdmin) may decide.
+            if (!EndpointSecurity.IsGlobalGovernanceAdmin(context.User))
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
@@ -150,14 +150,21 @@ public static class DbtEndpoints
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            if (context.Request.ContentLength > 100 * 1024 * 1024)
+            // SEC M-07: Server-side body limit instead of a bypassable Content-Length check.
+            const string manifestTooLarge = "Manifest size exceeds maximum allowed size (100 MB).";
+            var limitError = EndpointSecurity.TryApplyBodyLimit(context.Request, 100 * 1024 * 1024, manifestTooLarge);
+            if (limitError != null)
             {
-                return Results.BadRequest(new { error = "Manifest size exceeds maximum allowed size (100 MB)." });
+                return limitError;
             }
 
-            var result = await validator.ValidateContractsStreamAsync(context.Request.Body, context.RequestAborted);
-            return result.IsCompatible ? Results.Ok(result) : Results.UnprocessableEntity(result);
-        }).RequireAuthorization();
+            return await EndpointSecurity.WithBodyLimitAsync(async () =>
+            {
+                var result = await validator.ValidateContractsStreamAsync(context.Request.Body, context.RequestAborted);
+                return result.IsCompatible ? Results.Ok(result) : Results.UnprocessableEntity(result);
+            }, manifestTooLarge);
+        }).RequireAuthorization()
+          .WithRequestBodyLimit(100 * 1024 * 1024); // SEC M-01: explicit large-body exception to the global Kestrel limit
 
         // dbt Health & Circuit Breaker Endpoints (F-DBT-1)
         app.MapPost("/api/extensions/dbt/run-results", async (
@@ -172,14 +179,21 @@ public static class DbtEndpoints
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            if (context.Request.ContentLength > 50 * 1024 * 1024)
+            // SEC M-07: Server-side body limit instead of a bypassable Content-Length check.
+            const string runResultsTooLarge = "Run results payload exceeds maximum allowed size (50 MB).";
+            var limitError = EndpointSecurity.TryApplyBodyLimit(context.Request, 50 * 1024 * 1024, runResultsTooLarge);
+            if (limitError != null)
             {
-                return Results.BadRequest(new { error = "Run results payload exceeds maximum allowed size (50 MB)." });
+                return limitError;
             }
 
-            var report = await circuitBreaker.RecordRunResultsAsync(context.Request.Body, context.RequestAborted);
-            return Results.Ok(report);
-        }).RequireAuthorization();
+            return await EndpointSecurity.WithBodyLimitAsync(async () =>
+            {
+                var report = await circuitBreaker.RecordRunResultsAsync(context.Request.Body, context.RequestAborted);
+                return Results.Ok(report);
+            }, runResultsTooLarge);
+        }).RequireAuthorization()
+          .WithRequestBodyLimit(50 * 1024 * 1024); // SEC M-01: explicit large-body exception to the global Kestrel limit
 
         app.MapGet("/api/extensions/dbt/health", async (
             HttpContext context,
@@ -228,6 +242,12 @@ public static class DbtEndpoints
                 return Results.Ok(new { message = $"Table '{tableId}' health reset to healthy." });
             }
 
+            // SEC M-11: Resetting all health states is a global action -> GovernanceAdmin / ClusterAdmin only.
+            if (!EndpointSecurity.IsGlobalGovernanceAdmin(context.User))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             await circuitBreaker.ResetAllAsync(context.RequestAborted);
             return Results.Ok(new { message = "All table health states reset to healthy." });
         }).RequireAuthorization();
@@ -237,13 +257,16 @@ public static class DbtEndpoints
             HttpContext context,
             IDbtWebhookReceiver webhookReceiver) =>
         {
-            if (context.Request.ContentLength > 10 * 1024 * 1024)
+            // SEC M-07: Bounded read instead of a bypassable Content-Length check.
+            var (payload, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                context.Request,
+                10 * 1024 * 1024,
+                "Webhook payload exceeds maximum allowed size (10 MB).",
+                context.RequestAborted);
+            if (payload == null)
             {
-                return Results.BadRequest(new { error = "Webhook payload exceeds maximum allowed size (10 MB)." });
+                return tooLarge!;
             }
-
-            using var reader = new StreamReader(context.Request.Body, System.Text.Encoding.UTF8);
-            var payload = await reader.ReadToEndAsync(context.RequestAborted);
 
             string? signatureHeader = null;
             if (context.Request.Headers.TryGetValue("X-Dbt-Signature", out var dbtSig))
@@ -262,7 +285,8 @@ public static class DbtEndpoints
             }
 
             return Results.Ok(result);
-        }).AllowAnonymous();
+        }).AllowAnonymous()
+          .WithRequestBodyLimit(10 * 1024 * 1024); // SEC M-01: explicit large-body exception to the global Kestrel limit
 
         return app;
     }

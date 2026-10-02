@@ -211,6 +211,16 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
                     : new Uri(new Uri(currentUrl), response.Headers.Location);
 
                 var targetUrl = targetUri.ToString();
+
+                // SEC M-25: credentials (forwarded bearer token, API key, client credential, identity/tenant headers)
+                // must never reach another origin. Cross-origin redirects are refused instead of being followed.
+                if (!IsSameOrigin(new Uri(currentUrl), targetUri))
+                {
+                    response.Dispose();
+                    throw new SecurityException(
+                        $"Cross-origin HTTP redirect from '{new Uri(currentUrl).GetLeftPart(UriPartial.Authority)}' to '{targetUri.GetLeftPart(UriPartial.Authority)}' was blocked.");
+                }
+
                 await ValidateDestinationUrl(targetUrl, ct);
 
                 _logger.LogInformation("Following validated HTTP redirect #{Hop} from {Source} to {Target}",
@@ -230,6 +240,12 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             return response;
         }
     }
+
+    internal static bool IsSameOrigin(Uri source, Uri target) =>
+        source.IsAbsoluteUri && target.IsAbsoluteUri &&
+        string.Equals(source.Scheme, target.Scheme, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(source.IdnHost, target.IdnHost, StringComparison.OrdinalIgnoreCase) &&
+        source.Port == target.Port;
 
     private static bool IsRedirectStatusCode(HttpStatusCode code) =>
         code is HttpStatusCode.MovedPermanently or HttpStatusCode.Found or HttpStatusCode.SeeOther
@@ -283,6 +299,8 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             : "/" + descriptor.PathTemplate;
 
         var usedArgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var reservedNames = GetReservedParameterNames(descriptor, includeStaticNames: true);
+        var pathReservedNames = GetReservedParameterNames(descriptor, includeStaticNames: false);
 
         // 1. Expand {param} path placeholders
         var expandedPath = pathTemplate;
@@ -291,6 +309,12 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
             var placeholder = "{" + k + "}";
             if (expandedPath.Contains(placeholder, StringComparison.OrdinalIgnoreCase))
             {
+                // SEC M-26: gateway-controlled parameters (tenant etc.) can never be supplied by the caller.
+                if (IsReservedParameter(k, pathReservedNames))
+                {
+                    throw new SecurityException($"Der Parameter '{k}' ist für das Gateway reserviert und darf nicht vom Aufrufer gesetzt werden.");
+                }
+
                 var strVal = v?.ToString() ?? string.Empty;
                 // SEC-5: Disallow directory traversal sequences in path placeholder parameters
                 if (strVal.Contains("..") || strVal.Contains('/') || strVal.Contains('\\'))
@@ -308,29 +332,22 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         {
             if (!usedArgs.Contains(k) && v != null && v is not IEnumerable<object>)
             {
-                // SEC-5: Disallow injection of sensitive security or tenant context parameter names
-                if (k.Equals("tenant_id", StringComparison.OrdinalIgnoreCase) ||
-                    k.Equals("tid", StringComparison.OrdinalIgnoreCase) ||
-                    k.Equals("tenant", StringComparison.OrdinalIgnoreCase) ||
-                    k.Equals("isAdmin", StringComparison.OrdinalIgnoreCase) ||
-                    k.Equals("role", StringComparison.OrdinalIgnoreCase))
+                // SEC-5 / SEC M-26: only well-formed argument names; reserved (gateway-set) names are dropped.
+                if (!IsAllowedArgumentName(k) || IsReservedParameter(k, reservedNames))
                 {
+                    _logger.LogWarning("Security: Dropped caller argument '{Argument}' (reserved or malformed parameter name).", k);
                     continue;
                 }
                 queryParams.Add($"{Uri.EscapeDataString(k)}={Uri.EscapeDataString(v.ToString() ?? string.Empty)}");
             }
         }
 
-        // 3. Tenant ID Pushdown as query parameter
+        // 3. Tenant ID Pushdown as query parameter (fail-closed without tenant claim, SEC M-26)
         if (!string.IsNullOrWhiteSpace(descriptor.TenantIdQueryParam))
         {
-            var tenantClaim = principal.FindFirst("tenant_id")?.Value
-                              ?? principal.FindFirst("tid")?.Value
-                              ?? principal.FindFirst("tenant")?.Value;
-            if (!string.IsNullOrWhiteSpace(tenantClaim))
-            {
-                queryParams.Add($"{Uri.EscapeDataString(descriptor.TenantIdQueryParam)}={Uri.EscapeDataString(tenantClaim)}");
-            }
+            var tenantClaim = ResolveTenantClaim(principal)
+                ?? throw new SecurityException($"Die HTTP-Datenquelle verlangt einen Tenant ('{descriptor.TenantIdQueryParam}'), der Aufrufer besitzt aber keinen Tenant-Claim.");
+            queryParams.Add($"{Uri.EscapeDataString(descriptor.TenantIdQueryParam)}={Uri.EscapeDataString(tenantClaim)}");
         }
 
         var fullUrl = baseUrl + expandedPath;
@@ -341,6 +358,66 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         }
 
         return fullUrl;
+    }
+
+    private static readonly string[] StaticReservedParameterNames = ["tenant_id", "tid", "tenant", "tenantid", "isAdmin", "role", "roles"];
+
+    private static HashSet<string> GetReservedParameterNames(HttpEndpointDescriptor descriptor, bool includeStaticNames)
+    {
+        var reserved = includeStaticNames
+            ? new HashSet<string>(StaticReservedParameterNames, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(descriptor.TenantIdQueryParam))
+        {
+            reserved.Add(NormalizeParameterName(descriptor.TenantIdQueryParam));
+        }
+        if (!string.IsNullOrWhiteSpace(descriptor.TenantIdHeaderName))
+        {
+            reserved.Add(NormalizeParameterName(descriptor.TenantIdHeaderName));
+        }
+        if (!string.IsNullOrWhiteSpace(descriptor.ApiKeyHeaderName))
+        {
+            reserved.Add(NormalizeParameterName(descriptor.ApiKeyHeaderName));
+        }
+        return reserved;
+    }
+
+    private static bool IsReservedParameter(string name, HashSet<string> reservedNames) =>
+        reservedNames.Contains(NormalizeParameterName(name));
+
+    private static string NormalizeParameterName(string name)
+    {
+        var trimmed = name.Trim();
+        if (trimmed.EndsWith("[]", StringComparison.Ordinal))
+        {
+            trimmed = trimmed[..^2];
+        }
+        return trimmed;
+    }
+
+    private static bool IsAllowedArgumentName(string name)
+    {
+        if (string.IsNullOrEmpty(name) || name.Length > 64)
+        {
+            return false;
+        }
+
+        foreach (var c in name)
+        {
+            if (!(char.IsAsciiLetterOrDigit(c) || c == '_' || c == '-' || c == '.'))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static string? ResolveTenantClaim(ClaimsPrincipal principal)
+    {
+        var tenantClaim = principal.FindFirst("tenant_id")?.Value
+                          ?? principal.FindFirst("tid")?.Value
+                          ?? principal.FindFirst("tenant")?.Value;
+        return string.IsNullOrWhiteSpace(tenantClaim) ? null : tenantClaim;
     }
 
     internal Task ValidateDestinationUrl(string fullUrl, CancellationToken ct = default)
@@ -505,7 +582,10 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         {
             foreach (var (targetHeader, sourceHeader) in descriptor.ForwardHeaders)
             {
-                if (DisallowedForwardHeaders.Contains(targetHeader) || DisallowedForwardHeaders.Contains(sourceHeader))
+                if (DisallowedForwardHeaders.Contains(targetHeader) || DisallowedForwardHeaders.Contains(sourceHeader) ||
+                    // SEC M-26: gateway-set headers (tenant, API key) can never be supplied via forwarding
+                    string.Equals(targetHeader, descriptor.TenantIdHeaderName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(targetHeader, descriptor.ApiKeyHeaderName, StringComparison.OrdinalIgnoreCase))
                 {
                     _logger.LogWarning("Security: Blocked forwarding of sensitive header '{Header}' downstream.", targetHeader);
                     continue;
@@ -522,13 +602,10 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         if (!string.IsNullOrWhiteSpace(descriptor.TenantIdHeaderName))
         {
             request.Headers.Remove(descriptor.TenantIdHeaderName);
-            var tenantClaim = context.Principal.FindFirst("tenant_id")?.Value
-                              ?? context.Principal.FindFirst("tid")?.Value
-                              ?? context.Principal.FindFirst("tenant")?.Value;
-            if (!string.IsNullOrWhiteSpace(tenantClaim))
-            {
-                request.Headers.TryAddWithoutValidation(descriptor.TenantIdHeaderName, tenantClaim);
-            }
+            // SEC M-26: fail-closed - never call a tenant-scoped API without the caller's tenant.
+            var tenantClaim = ResolveTenantClaim(context.Principal)
+                ?? throw new SecurityException($"Die HTTP-Datenquelle verlangt einen Tenant-Header ('{descriptor.TenantIdHeaderName}'), der Aufrufer besitzt aber keinen Tenant-Claim.");
+            request.Headers.TryAddWithoutValidation(descriptor.TenantIdHeaderName, tenantClaim);
         }
 
         // 3. User Identity Header Pushdown (X-User-Sid) - strip any forwarded value first

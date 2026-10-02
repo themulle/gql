@@ -67,13 +67,27 @@ public sealed class AuditWormExportService : IAuditWormExportService
                 ErrorMessage: "Audit hash-chain integrity verification failed: potential tampering detected.");
         }
 
-        // 2. Fetch and filter audit logs for target window
-        var allEntries = await _auditRepo.QueryAuditLogsAsync(since: windowFrom, limit: 100000, ct: ct).ConfigureAwait(false);
-        var windowEntries = allEntries
-            .Where(e => e.OccurredAt >= windowFrom && e.OccurredAt <= windowTo)
-            .OrderBy(e => e.OccurredAt)
-            .ToList();
+        // 2. SEC M-31: fetch the complete, contiguous chain segment for the window (paged by rowid, no capping)
+        var segment = _auditRepo is IAuditChainExportSource chainSource
+            ? await LoadChainSegmentAsync(chainSource, windowFrom, windowTo, ct).ConfigureAwait(false)
+            : await LoadLegacySegmentAsync(windowFrom, windowTo, ct).ConfigureAwait(false);
 
+        if (segment.Error != null)
+        {
+            _logger.LogCritical("WORM Export aborted: {Error}", segment.Error);
+            return new WormExportResult(
+                Success: false,
+                RecordCount: 0,
+                ManifestJson: "{}",
+                ChecksumSha256: string.Empty,
+                RootHash: string.Empty,
+                FinalHash: string.Empty,
+                RetentionUntil: DateTimeOffset.MinValue,
+                DestinationLocation: string.Empty,
+                ErrorMessage: segment.Error);
+        }
+
+        var windowEntries = segment.Entries;
         if (windowEntries.Count == 0)
         {
             _logger.LogInformation("No audit log entries found for window [{From} -> {To}].", windowFrom, windowTo);
@@ -92,7 +106,9 @@ public sealed class AuditWormExportService : IAuditWormExportService
         var finalHash = windowEntries[^1].EntryHash;
 
         // 3. Serialize and compute payload checksum
-        var payloadJson = JsonSerializer.Serialize(windowEntries, IndentedJsonOptions);
+        var payloadJson = segment.Records != null
+            ? JsonSerializer.Serialize(segment.Records.Select(r => new { rowId = r.RowId, sequence = r.Sequence, entry = r.Entry }), IndentedJsonOptions)
+            : JsonSerializer.Serialize(windowEntries, IndentedJsonOptions);
         var payloadBytes = Encoding.UTF8.GetBytes(payloadJson);
         var checksumSha256 = Convert.ToHexStringLower(SHA256.HashData(payloadBytes));
 
@@ -100,6 +116,7 @@ public sealed class AuditWormExportService : IAuditWormExportService
         var retentionDays = wormOpts.RetentionDays > 0 ? wormOpts.RetentionDays : 3650;
         var retentionUntil = DateTimeOffset.UtcNow.AddDays(retentionDays);
 
+        var anchor = segment.Anchor;
         var manifestObj = new
         {
             exportId = Guid.NewGuid().ToString("D"),
@@ -107,9 +124,22 @@ public sealed class AuditWormExportService : IAuditWormExportService
             windowFrom = windowFrom,
             windowTo = windowTo,
             recordCount = windowEntries.Count,
+            expectedRecordCount = segment.ExpectedCount,
+            firstRowId = segment.Records is { Count: > 0 } ? (long?)segment.Records[0].RowId : null,
+            lastRowId = segment.Records is { Count: > 0 } ? (long?)segment.Records[^1].RowId : null,
+            firstSequence = segment.Records is { Count: > 0 } ? segment.Records[0].Sequence : null,
+            lastSequence = segment.Records is { Count: > 0 } ? segment.Records[^1].Sequence : null,
+            continuityVerified = true,
             payloadSha256 = checksumSha256,
             rootHash,
             finalHash,
+            chainAnchor = anchor == null ? null : new
+            {
+                sequence = anchor.Sequence,
+                entryHash = anchor.EntryHash,
+                updatedAt = anchor.UpdatedAt,
+                signature = anchor.Signature
+            },
             retentionUntil,
             objectLockMode = wormOpts.ObjectLockMode,
             complianceRegulation = "SEC-Rule-17a-4 / BaFin-MaRisk / GDPR-Art-30"
@@ -142,6 +172,102 @@ public sealed class AuditWormExportService : IAuditWormExportService
             FinalHash: finalHash,
             RetentionUntil: retentionUntil,
             DestinationLocation: destinationLocation);
+    }
+
+    private const int ExportPageSize = 1000;
+    private const int LegacyQueryCap = 5000;
+
+    private sealed record ChainSegment(
+        IReadOnlyList<AuditLogEntry> Entries,
+        IReadOnlyList<AuditChainRecord>? Records,
+        long ExpectedCount,
+        AuditChainAnchor? Anchor,
+        string? Error);
+
+    private static async Task<ChainSegment> LoadChainSegmentAsync(
+        IAuditChainExportSource source,
+        DateTimeOffset windowFrom,
+        DateTimeOffset windowTo,
+        CancellationToken ct)
+    {
+        var anchor = source.GetVerifiedChainAnchor();
+        var range = await source.GetAuditChainRangeAsync(windowFrom, windowTo, ct).ConfigureAwait(false);
+        if (range == null)
+        {
+            return new ChainSegment(Array.Empty<AuditLogEntry>(), Array.Empty<AuditChainRecord>(), 0, anchor, null);
+        }
+
+        var records = new List<AuditChainRecord>();
+        var afterRowId = range.FirstRowId - 1;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var page = await source.GetAuditChainPageAsync(afterRowId, range.LastRowId, ExportPageSize, ct).ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                break;
+            }
+
+            records.AddRange(page);
+            afterRowId = page[^1].RowId;
+            if (afterRowId >= range.LastRowId)
+            {
+                break;
+            }
+        }
+
+        if (records.Count != range.Count)
+        {
+            return new ChainSegment(Array.Empty<AuditLogEntry>(), null, range.Count, anchor,
+                $"Audit export incomplete: expected {range.Count} entries in rowid range [{range.FirstRowId}..{range.LastRowId}], read {records.Count}.");
+        }
+
+        for (var i = 1; i < records.Count; i++)
+        {
+            if (!string.Equals(records[i].Entry.PrevHash, records[i - 1].Entry.EntryHash, StringComparison.Ordinal))
+            {
+                return new ChainSegment(Array.Empty<AuditLogEntry>(), null, range.Count, anchor,
+                    $"Audit export continuity check failed at rowid {records[i].RowId}: PrevHash does not match the preceding entry.");
+            }
+
+            var prevSeq = records[i - 1].Sequence;
+            var curSeq = records[i].Sequence;
+            if ((prevSeq.HasValue && curSeq.HasValue && curSeq.Value != prevSeq.Value + 1) ||
+                (prevSeq.HasValue && !curSeq.HasValue))
+            {
+                return new ChainSegment(Array.Empty<AuditLogEntry>(), null, range.Count, anchor,
+                    $"Audit export sequence gap detected at rowid {records[i].RowId}.");
+            }
+        }
+
+        return new ChainSegment(records.Select(r => r.Entry).ToList(), records, range.Count, anchor, null);
+    }
+
+    private async Task<ChainSegment> LoadLegacySegmentAsync(DateTimeOffset windowFrom, DateTimeOffset windowTo, CancellationToken ct)
+    {
+        var allEntries = await _auditRepo.QueryAuditLogsAsync(since: windowFrom, limit: LegacyQueryCap, ct: ct).ConfigureAwait(false);
+        if (allEntries.Count >= LegacyQueryCap)
+        {
+            // SEC M-31: never report success for a possibly capped result.
+            return new ChainSegment(Array.Empty<AuditLogEntry>(), null, allEntries.Count, null,
+                $"Audit export window contains {LegacyQueryCap} or more entries; the repository does not support gap-free paged export.");
+        }
+
+        var windowEntries = allEntries
+            .Where(e => e.OccurredAt >= windowFrom && e.OccurredAt <= windowTo)
+            .OrderBy(e => e.OccurredAt)
+            .ToList();
+
+        for (var i = 1; i < windowEntries.Count; i++)
+        {
+            if (!string.Equals(windowEntries[i].PrevHash, windowEntries[i - 1].EntryHash, StringComparison.Ordinal))
+            {
+                return new ChainSegment(Array.Empty<AuditLogEntry>(), null, windowEntries.Count, null,
+                    $"Audit export continuity check failed at entry {windowEntries[i].Id}: PrevHash does not match the preceding entry.");
+            }
+        }
+
+        return new ChainSegment(windowEntries, null, windowEntries.Count, null, null);
     }
 
     private async Task<string> ExportToLocalWormAsync(

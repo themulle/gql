@@ -212,6 +212,7 @@ public static class GatewayServiceCollectionExtensions
             var garnetConfig = new ConfigurationOptions
             {
                 EndPoints = { $"{gatewayOptions.Caching.Garnet.Host}:{gatewayOptions.Caching.Garnet.Port}" },
+                Password = garnetManager.ClientPassword, // SEC H-01: Garnet runs with --auth Password
                 ConnectTimeout = gatewayOptions.Caching.Redis.ConnectTimeoutMs,
                 SyncTimeout = gatewayOptions.Caching.Redis.SyncTimeoutMs,
                 AbortOnConnectFail = false
@@ -227,7 +228,8 @@ public static class GatewayServiceCollectionExtensions
             redisConfig.ConnectTimeout = gatewayOptions.Caching.Redis.ConnectTimeoutMs;
             redisConfig.SyncTimeout = gatewayOptions.Caching.Redis.SyncTimeoutMs;
             redisConfig.AbortOnConnectFail = false;
-            services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConfig));
+            services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(
+                RedisConnectionSecurity.Apply(redisConfig, gatewayOptions.Caching.Redis, sp.GetService<IKeyVaultSecretProvider>(), sp.GetService<IHostEnvironment>())));
             services.AddSingleton<IEventBus, RedisEventBus>();
             services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
@@ -477,6 +479,9 @@ public static class GatewayServiceCollectionExtensions
 
         // Resource Groups & Workload Isolation (F-PERF-08)
         services.AddSingleton<IResourceGroupManager, ResourceGroupManager>();
+        // SEC H-07: Per-principal / per-tenant limits for long-lived connections (WebSocket, SSE)
+        services.AddSingleton(sp => new PersistentConnectionLimiter(
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.ResourceGroups));
 
         // Canonical System Metadata & Monitoring (F-API-07)
         services.AddSingleton<IGatewaySystemMetricsService, GatewaySystemMetricsService>();
@@ -688,11 +693,13 @@ public static class GatewayServiceCollectionExtensions
                 if (!string.IsNullOrWhiteSpace(adfsConfig.Audience)) validAudiences.Add(adfsConfig.Audience);
             }
 
+            // SEC M-02: Issuer and audience are ALWAYS validated (fail-closed). If no issuer/audience is
+            // configured, no token can pass validation; outside Development startup is aborted beforehand.
             options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
             {
-                ValidateIssuer = validIssuers.Count > 0,
+                ValidateIssuer = true,
                 ValidIssuers = validIssuers.Count > 0 ? validIssuers : null,
-                ValidateAudience = validAudiences.Count > 0,
+                ValidateAudience = true,
                 ValidAudiences = validAudiences.Count > 0 ? validAudiences : null,
                 ValidateLifetime = true,
                 ValidateIssuerSigningKey = true,
@@ -776,7 +783,8 @@ public static class GatewayServiceCollectionExtensions
             };
         });
 
-        services.AddAuthorization();
+        // SEC M-03: Authenticated-user fallback policy and named role policies.
+        services.AddAuthorization(GatewayPolicies.Configure);
         services.AddHttpContextAccessor();
 
         return services;
@@ -789,7 +797,8 @@ public static class GatewayServiceCollectionExtensions
         var maxDepth = gatewayOptions.AreQueryLimitsRelaxed ? 100 : gatewayOptions.GraphQL.MaxAllowedExecutionDepth;
         var maxCost = gatewayOptions.AreQueryLimitsRelaxed ? 100000 : gatewayOptions.GraphQL.MaxAllowedComplexity;
 
-        services.AddScoped<IClientTierResolver, ClientTierResolver>();
+        // SEC M-16: Singleton, damit registrierte API-Keys und der Key-Cache über Requests hinweg bestehen.
+        services.AddSingleton<IClientTierResolver, ClientTierResolver>();
         services.AddHttpClient<CloudflareCdnPurgeService>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddHttpClient<FastlyCdnPurgeService>().AddHttpMessageHandler<SsrfProtectionHandler>();
         services.AddTransient<ICdnCachePurgeService, CloudflareCdnPurgeService>();
@@ -805,7 +814,20 @@ public static class GatewayServiceCollectionExtensions
             .UseInstrumentation()
             .UseExceptions()
             .UseTimeout()
-            .UseDocumentCache()
+            .UseDocumentCache();
+
+        // SEC H-08: Trusted-document enforcement must run BEFORE parsing/validation/execution.
+        // HotChocolate's UseOnlyPersistedOperationAllowed() was previously appended after UseOperationExecution
+        // without a document store and without OnlyAllowPersistedDocuments, i.e. it never took effect.
+        // We enforce an allowlist of trusted documents (normalized SHA-256) directly after the document cache.
+        if (gatewayOptions.GraphQL.PersistedQueriesOnly)
+        {
+            var trustedDocuments = TrustedDocumentStore.LoadFromDirectory(gatewayOptions.GraphQL.TrustedDocumentsDirectory);
+            services.AddSingleton(trustedDocuments);
+            gqlBuilder.UseRequest<TrustedDocumentsOnlyMiddleware>();
+        }
+
+        gqlBuilder
             .UseDocumentParser()
             .UseDocumentValidation()
             .UseRequest<GqlGateway.GraphQL.Interceptors.DbtHealthExecutionMiddleware>()
@@ -833,18 +855,15 @@ public static class GatewayServiceCollectionExtensions
                 new GqlGateway.GraphQL.Interceptors.QueryCostAnalyzerRule(
                     maxAllowedCost: maxCost,
                     maxResponseRows: gatewayOptions.GraphQL.MaxResponseRows,
-                    onQueryTooComplex: () => GatewayDiagnostics.QueryTooComplexCounter.Add(1)))
+                    onQueryTooComplex: () => GatewayDiagnostics.QueryTooComplexCounter.Add(1),
+                    maxRootFields: gatewayOptions.AreQueryLimitsRelaxed ? 200 : gatewayOptions.GraphQL.MaxRootFieldsPerOperation))
             .ModifyRequestOptions(opt =>
             {
                 opt.ExecutionTimeout = TimeSpan.FromSeconds(gatewayOptions.HighAvailability.QueryTimeoutSeconds);
             });
 
-        if (gatewayOptions.GraphQL.PersistedQueriesOnly)
-        {
-            gqlBuilder.UseOnlyPersistedOperationAllowed();
-        }
-
-        if (!gatewayOptions.GraphQL.EnableIntrospection && !gatewayOptions.IsIntrospectionForced && !gatewayOptions.IsOpenSchemaAllowed)
+        // SEC H-02: OpenSchema only opens catalog/OpenAPI documentation routes; it no longer enables introspection.
+        if (!gatewayOptions.GraphQL.EnableIntrospection && !gatewayOptions.IsIntrospectionForced)
         {
             gqlBuilder.DisableIntrospection();
         }
@@ -853,8 +872,37 @@ public static class GatewayServiceCollectionExtensions
     }
 
     internal static void ValidateGatewayOptions(GatewayOptions options, IHostEnvironment environment)
+        => ValidateGatewayOptions(options, environment, System.Environment.GetEnvironmentVariable);
+
+    internal static void ValidateGatewayOptions(GatewayOptions options, IHostEnvironment environment, Func<string, string?> getEnvironmentVariable)
     {
+        ArgumentNullException.ThrowIfNull(getEnvironmentVariable);
         ValidateObjectRecursively(options);
+
+        // SEC C-04: Development disables most protections. Inside a container this is almost always an
+        // accidentally shipped image default, so it requires an explicit opt-in.
+        if (environment.IsDevelopment() &&
+            IsTruthy(getEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER")) &&
+            !options.AllowDevelopmentInContainer &&
+            !IsTruthy(getEnvironmentVariable("GQL_ALLOW_DEV_IN_CONTAINER")))
+        {
+            throw new ValidationException(
+                "Sicherheitsverletzung: ASPNETCORE_ENVIRONMENT=Development ist in einem Container (DOTNET_RUNNING_IN_CONTAINER=true) " +
+                "nur mit explizitem Opt-in erlaubt (Gateway:AllowDevelopmentInContainer=true bzw. GQL_ALLOW_DEV_IN_CONTAINER=true). " +
+                "Für Produktion ASPNETCORE_ENVIRONMENT=Production verwenden; für lokale Tests docker-compose.dev.yml nutzen.");
+        }
+
+        // SEC H-08: PersistedQueriesOnly needs a trusted document store; otherwise the switch would be ineffective.
+        if (options.GraphQL.PersistedQueriesOnly)
+        {
+            var dir = options.GraphQL.TrustedDocumentsDirectory;
+            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(System.IO.Path.GetFullPath(dir)))
+            {
+                throw new ValidationException(
+                    "Sicherheitsverletzung: GraphQL.PersistedQueriesOnly=true erfordert ein existierendes GraphQL.TrustedDocumentsDirectory " +
+                    "mit den freigegebenen Operationen (*.graphql / *.gql). Ohne Dokumentenspeicher wäre der Schalter wirkungslos.");
+            }
+        }
 
         if (options.HasAnySecurityBypassActive)
         {
@@ -985,9 +1033,12 @@ public static class GatewayServiceCollectionExtensions
                 }
             }
 
-            if (options.Authentication.EntraId.Enabled && (string.IsNullOrWhiteSpace(options.Authentication.EntraId.Audience) || (string.IsNullOrWhiteSpace(options.Authentication.EntraId.TenantId) && string.IsNullOrWhiteSpace(options.Authentication.EntraId.Instance))))
+            // SEC M-02: Fail-closed when JWT is active without audience or issuer.
+            if (options.Authentication.EntraId.Enabled &&
+                ((string.IsNullOrWhiteSpace(options.Authentication.EntraId.Audience) && string.IsNullOrWhiteSpace(options.Authentication.EntraId.ClientId)) ||
+                 string.IsNullOrWhiteSpace(options.Authentication.EntraId.TenantId)))
             {
-                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development müssen EntraId.Audience und TenantId/Instance zwingend konfiguriert sein!");
+                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development müssen bei aktivem EntraId zwingend Audience oder ClientId sowie TenantId (Issuer) konfiguriert sein!");
             }
 
             if (options.Authentication.Adfs.Enabled && (string.IsNullOrWhiteSpace(options.Authentication.Adfs.Audience) || string.IsNullOrWhiteSpace(options.Authentication.Adfs.Authority)))
@@ -1013,6 +1064,13 @@ public static class GatewayServiceCollectionExtensions
         {
             throw new ValidationException($"GovernanceDb Provider '{options.GovernanceDb.Provider}' wird aktuell nicht unterstützt. Die aktive Implementierung unterstützt derzeit 'Sqlite'.");
         }
+    }
+
+    private static bool IsTruthy(string? value)
+    {
+        var trimmed = value?.Trim();
+        return string.Equals(trimmed, "true", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(trimmed, "1", StringComparison.Ordinal);
     }
 
     private static void ValidateObjectRecursively(object instance)

@@ -104,6 +104,7 @@ public class MemoryPackAndGarnetTests
             var config = new ConfigurationOptions
             {
                 EndPoints = { $"127.0.0.1:{port}" },
+                Password = manager.ClientPassword, // SEC H-01: embedded Garnet requires authentication
                 AbortOnConnectFail = false,
                 ConnectTimeout = 2000,
                 SyncTimeout = 1000
@@ -155,6 +156,7 @@ public class MemoryPackAndGarnetTests
             var config = new ConfigurationOptions
             {
                 EndPoints = { $"127.0.0.1:{port}" },
+                Password = manager.ClientPassword, // SEC H-01: embedded Garnet requires authentication
                 AbortOnConnectFail = false,
                 ConnectTimeout = 2000,
                 SyncTimeout = 1000

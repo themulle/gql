@@ -52,6 +52,23 @@ public interface IConsentApprovalRepository
     Task ActivateConsentAsync(Guid requestId, CancellationToken ct = default);
     Task DeleteConsentRequestAsync(Guid requestId, CancellationToken ct = default);
     Task UpdateConsentRequestTicketIdAsync(Guid requestId, string ticketId, CancellationToken ct = default);
+
+    /// <summary>
+    /// SEC H-06: Tenant-bound ticket lookup (<c>WHERE itsm_ticket_id = @t AND tenant_id = @tenant</c>).
+    /// The default implementation filters the unscoped lookup; persistent repositories override it with a scoped query.
+    /// </summary>
+    async Task<ConsentRequest?> GetConsentRequestByTicketIdAsync(string ticketId, TenantId tenantId, CancellationToken ct = default)
+    {
+        var request = await GetConsentRequestByTicketIdAsync(ticketId, ct).ConfigureAwait(false);
+        return request != null && request.TenantId == tenantId ? request : null;
+    }
+
+    /// <summary>
+    /// SEC H-06: Activates a pending consent request and records <paramref name="approvedBy"/> as audit actor
+    /// (e.g. the ITSM instance/approver instead of the requester). Activation only happens from a pending status.
+    /// </summary>
+    Task ActivateConsentAsync(Guid requestId, Sid? approvedBy, CancellationToken ct = default)
+        => ActivateConsentAsync(requestId, ct);
 }
 
 public interface IDataOwnershipRepository

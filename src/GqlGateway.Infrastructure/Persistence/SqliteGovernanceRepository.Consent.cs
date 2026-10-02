@@ -500,7 +500,16 @@ public partial class SqliteGovernanceRepository
         }
     }
 
-    public async Task<ConsentRequest?> GetConsentRequestByTicketIdAsync(string ticketId, CancellationToken ct = default)
+    public Task<ConsentRequest?> GetConsentRequestByTicketIdAsync(string ticketId, CancellationToken ct = default)
+        => GetConsentRequestByTicketIdCoreAsync(ticketId, null, ct);
+
+    /// <summary>
+    /// SEC H-06: Tenant-bound ticket lookup – a ticket id of another tenant never resolves.
+    /// </summary>
+    public Task<ConsentRequest?> GetConsentRequestByTicketIdAsync(string ticketId, TenantId tenantId, CancellationToken ct = default)
+        => GetConsentRequestByTicketIdCoreAsync(ticketId, tenantId, ct);
+
+    private async Task<ConsentRequest?> GetConsentRequestByTicketIdCoreAsync(string ticketId, TenantId? tenantId, CancellationToken ct)
     {
         await _lock.WaitAsync(ct);
         try
@@ -515,6 +524,11 @@ public partial class SqliteGovernanceRepository
                                 LEFT JOIN POLICY_EPOCHS p ON t.id = p.table_id
                                 WHERE r.itsm_ticket_id = @ticketId";
             cmd.Parameters.AddWithValue("@ticketId", ticketId);
+            if (tenantId.HasValue)
+            {
+                cmd.CommandText += " AND r.tenant_id = @tenantId";
+                cmd.Parameters.AddWithValue("@tenantId", tenantId.Value.Value);
+            }
 
             using var reader = await cmd.ExecuteReaderAsync(ct);
             if (await reader.ReadAsync(ct))
@@ -543,7 +557,10 @@ public partial class SqliteGovernanceRepository
         }
     }
 
-    public async Task ActivateConsentAsync(Guid requestId, CancellationToken ct = default)
+    public Task ActivateConsentAsync(Guid requestId, CancellationToken ct = default)
+        => ActivateConsentAsync(requestId, null, ct);
+
+    public async Task ActivateConsentAsync(Guid requestId, Sid? approvedBy, CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct);
         try
@@ -588,9 +605,16 @@ public partial class SqliteGovernanceRepository
             using (var cmd = _connection.CreateCommand())
             {
                 cmd.Transaction = tx;
-                cmd.CommandText = "UPDATE CONSENT_REQUESTS SET status = 'APPROVED' WHERE id = @id";
+                // SEC H-06: Only a pending request may be activated (replay/double activation yields no second consent).
+                cmd.CommandText = @"UPDATE CONSENT_REQUESTS SET status = 'APPROVED'
+                                    WHERE id = @id AND status IN ('PENDING', 'PENDING_SECOND_APPROVAL', 'PENDING_EXTERNAL_APPROVAL')";
                 cmd.Parameters.AddWithValue("@id", requestId.ToString());
-                await cmd.ExecuteNonQueryAsync(ct);
+                var rowsAffected = await cmd.ExecuteNonQueryAsync(ct);
+                if (rowsAffected != 1)
+                {
+                    await tx.RollbackAsync(ct);
+                    return;
+                }
             }
 
             var isRole = req.RequestedGranteeType == GranteeType.Role;
@@ -620,7 +644,7 @@ public partial class SqliteGovernanceRepository
             {
                 TenantId = req.TenantId,
                 EventType = "CONSENT_GRANTED",
-                ActorSid = req.RequesterSid,
+                ActorSid = approvedBy ?? req.RequesterSid,
                 TargetTable = req.TableIdentifier.ToString(),
                 Decision = "APPROVED",
                 TraceId = Guid.NewGuid().ToString("N"),

@@ -250,14 +250,13 @@ public partial class SqliteGovernanceRepository
         EnsureConsentColumns();
         EnsureAuditLogColumns();
 
-        using (var lastHashCmd = _connection.CreateCommand())
+        // Startup reference only; it is cross-checked against the external signed anchor (SEC H-17)
+        // in InitializeAuditChainAnchor and never silently re-synchronised from the DB afterwards.
+        var (tailHash, tailSeq) = ReadAuditTail(null);
+        if (tailHash != null)
         {
-            lastHashCmd.CommandText = "SELECT entry_hash FROM AUDIT_LOG_ENTRIES ORDER BY rowid DESC LIMIT 1;";
-            var res = lastHashCmd.ExecuteScalar();
-            if (res != null && res != DBNull.Value && !string.IsNullOrWhiteSpace(res.ToString()))
-            {
-                _lastAuditHash = res.ToString()!;
-            }
+            _lastAuditHash = tailHash;
+            _lastAuditSeq = tailSeq;
         }
     }
 
@@ -796,6 +795,21 @@ public partial class SqliteGovernanceRepository
             using var alterCmd = _connection.CreateCommand();
             alterCmd.CommandText = "ALTER TABLE AUDIT_LOG_ENTRIES ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'legacy-single-tenant';";
             alterCmd.ExecuteNonQuery();
+        }
+
+        // SEC H-17: gap-free sequence number (part of the v2 entry hash). Legacy rows keep NULL and are
+        // verified with the v1 payload; their sequence is their ordinal position in rowid order.
+        if (!existingCols.Contains("seq"))
+        {
+            using var alterCmd = _connection.CreateCommand();
+            alterCmd.CommandText = "ALTER TABLE AUDIT_LOG_ENTRIES ADD COLUMN seq INTEGER;";
+            alterCmd.ExecuteNonQuery();
+        }
+
+        using (var seqIdxCmd = _connection.CreateCommand())
+        {
+            seqIdxCmd.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_seq ON AUDIT_LOG_ENTRIES (seq);";
+            seqIdxCmd.ExecuteNonQuery();
         }
 
         using (var idxCmd = _connection.CreateCommand())

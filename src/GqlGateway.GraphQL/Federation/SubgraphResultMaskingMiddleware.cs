@@ -75,23 +75,37 @@ public sealed class SubgraphResultMaskingMiddleware
         }
     }
 
-    private static Dictionary<string, string>? ExtractAliasToFieldMap(HotChocolate.Language.DocumentNode? document)
+    internal static Dictionary<string, string>? ExtractAliasToFieldMap(HotChocolate.Language.DocumentNode? document)
     {
         if (document == null) return null;
+
+        // SEC (Niedrig): Benannte Fragmente (FragmentSpread) werden aufgelöst, damit Aliase darin ebenfalls erfasst werden.
+        var fragments = new Dictionary<string, HotChocolate.Language.FragmentDefinitionNode>(StringComparer.Ordinal);
+        foreach (var def in document.Definitions)
+        {
+            if (def is HotChocolate.Language.FragmentDefinitionNode fragment)
+            {
+                fragments.TryAdd(fragment.Name.Value, fragment);
+            }
+        }
 
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var def in document.Definitions)
         {
             if (def is HotChocolate.Language.OperationDefinitionNode op)
             {
-                TraverseSelections(op.SelectionSet, map);
+                TraverseSelections(op.SelectionSet, map, fragments, new HashSet<string>(StringComparer.Ordinal));
             }
         }
 
         return map;
     }
 
-    private static void TraverseSelections(HotChocolate.Language.SelectionSetNode? selectionSet, Dictionary<string, string> map)
+    private static void TraverseSelections(
+        HotChocolate.Language.SelectionSetNode? selectionSet,
+        Dictionary<string, string> map,
+        IReadOnlyDictionary<string, HotChocolate.Language.FragmentDefinitionNode> fragments,
+        HashSet<string> activeFragments)
     {
         if (selectionSet == null) return;
 
@@ -103,11 +117,18 @@ public sealed class SubgraphResultMaskingMiddleware
                 {
                     map[field.Alias.Value] = field.Name.Value;
                 }
-                TraverseSelections(field.SelectionSet, map);
+                TraverseSelections(field.SelectionSet, map, fragments, activeFragments);
             }
             else if (sel is HotChocolate.Language.InlineFragmentNode frag)
             {
-                TraverseSelections(frag.SelectionSet, map);
+                TraverseSelections(frag.SelectionSet, map, fragments, activeFragments);
+            }
+            else if (sel is HotChocolate.Language.FragmentSpreadNode spread &&
+                     fragments.TryGetValue(spread.Name.Value, out var fragmentDef) &&
+                     activeFragments.Add(fragmentDef.Name.Value))
+            {
+                TraverseSelections(fragmentDef.SelectionSet, map, fragments, activeFragments);
+                activeFragments.Remove(fragmentDef.Name.Value);
             }
         }
     }

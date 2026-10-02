@@ -7,6 +7,7 @@ using System.IO;
 using System.Security;
 using System.Text.Json;
 using System.Threading.Tasks;
+using GqlGateway.Application.Sql;
 using GqlGateway.Application.Sql.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
@@ -19,6 +20,10 @@ using Microsoft.Extensions.Options;
 public static class WebSqlEndpoints
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
+    public const string GenericForbiddenMessage = "The SQL statement was rejected by the gateway security policy.";
+    public const string GenericBadRequestMessage = "The SQL request is invalid (syntax error, empty statement or size limit exceeded).";
+    public const string GenericServerErrorMessage = "The SQL statement could not be executed. Contact support with the trace id.";
 
     public sealed record WebSqlRequestDto(
         string? Sql,
@@ -38,7 +43,7 @@ public static class WebSqlEndpoints
         return app;
     }
 
-    private static async Task HandleWebSqlRequest(
+    internal static async Task HandleWebSqlRequest(
         HttpContext httpContext,
         IGovernedSqlExecutionService sqlService,
         IOptions<GatewayOptions> gatewayOptions,
@@ -81,8 +86,10 @@ public static class WebSqlEndpoints
             }
             catch (JsonException ex)
             {
+                // SEC M-10: Parser details stay in the server log
+                logger.LogWarning(ex, "WebSQL request body is not valid JSON. TraceId={TraceId}", httpContext.TraceIdentifier);
                 httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                await httpContext.Response.WriteAsJsonAsync(new { error = "Invalid JSON payload.", details = ex.Message }, ct);
+                await httpContext.Response.WriteAsJsonAsync(new { error = "Invalid JSON payload.", traceId = httpContext.TraceIdentifier }, ct);
                 return;
             }
         }
@@ -110,14 +117,11 @@ public static class WebSqlEndpoints
 
         var governedRequest = new GovernedSqlQueryRequest(sql, parameters, dataSource);
 
+        // SEC M-10: The JSON writer is created lazily when the first result arrives. Policy/parse errors raised while the
+        // statement is governed therefore never start the response, so the 4xx/5xx status and the curated body can still be sent.
+        Utf8JsonWriter? writer = null;
         try
         {
-            httpContext.Response.StatusCode = StatusCodes.Status200OK;
-            httpContext.Response.ContentType = "application/json; charset=utf-8";
-
-            await using var writer = new Utf8JsonWriter(httpContext.Response.Body);
-            writer.WriteStartObject();
-
             int rowCount = 0;
             string[] columnNames = Array.Empty<string>();
 
@@ -127,6 +131,13 @@ public static class WebSqlEndpoints
                 tenantId,
                 async (reader, token) =>
                 {
+                    httpContext.Response.StatusCode = StatusCodes.Status200OK;
+                    httpContext.Response.ContentType = "application/json; charset=utf-8";
+
+                    var w = new Utf8JsonWriter(httpContext.Response.Body);
+                    writer = w;
+                    w.WriteStartObject();
+
                     int fieldCount = reader.FieldCount;
                     columnNames = new string[fieldCount];
                     for (int i = 0; i < fieldCount; i++)
@@ -135,49 +146,62 @@ public static class WebSqlEndpoints
                     }
 
                     // Write "columns": [...]
-                    writer.WriteStartArray("columns");
+                    w.WriteStartArray("columns");
                     for (int i = 0; i < fieldCount; i++)
                     {
-                        writer.WriteStringValue(columnNames[i]);
+                        w.WriteStringValue(columnNames[i]);
                     }
-                    writer.WriteEndArray();
+                    w.WriteEndArray();
 
                     // Write "rows": [...]
-                    writer.WriteStartArray("rows");
+                    w.WriteStartArray("rows");
 
                     while (await reader.ReadAsync(token))
                     {
                         rowCount++;
                         if (formatArrays)
                         {
-                            writer.WriteStartArray();
+                            w.WriteStartArray();
                             for (int i = 0; i < fieldCount; i++)
                             {
-                                WriteDbValue(writer, reader.IsDBNull(i) ? null : reader.GetValue(i));
+                                WriteDbValue(w, reader.IsDBNull(i) ? null : reader.GetValue(i));
                             }
-                            writer.WriteEndArray();
+                            w.WriteEndArray();
                         }
                         else
                         {
-                            writer.WriteStartObject();
+                            w.WriteStartObject();
                             for (int i = 0; i < fieldCount; i++)
                             {
-                                writer.WritePropertyName(columnNames[i]);
-                                WriteDbValue(writer, reader.IsDBNull(i) ? null : reader.GetValue(i));
+                                w.WritePropertyName(columnNames[i]);
+                                WriteDbValue(w, reader.IsDBNull(i) ? null : reader.GetValue(i));
                             }
-                            writer.WriteEndObject();
+                            w.WriteEndObject();
                         }
 
                         // Flush writer periodically to maintain streaming response for large row sets
                         if (rowCount % 250 == 0)
                         {
-                            await writer.FlushAsync(token);
+                            await w.FlushAsync(token);
                         }
                     }
 
-                    writer.WriteEndArray();
+                    w.WriteEndArray();
                 },
                 ct);
+
+            if (writer == null)
+            {
+                // No result set was produced: emit an empty, well-formed result
+                httpContext.Response.StatusCode = StatusCodes.Status200OK;
+                httpContext.Response.ContentType = "application/json; charset=utf-8";
+                writer = new Utf8JsonWriter(httpContext.Response.Body);
+                writer.WriteStartObject();
+                writer.WriteStartArray("columns");
+                writer.WriteEndArray();
+                writer.WriteStartArray("rows");
+                writer.WriteEndArray();
+            }
 
             writer.WriteNumber("rowCount", rowCount);
             writer.WriteEndObject();
@@ -186,7 +210,8 @@ public static class WebSqlEndpoints
         }
         catch (SecurityException secEx)
         {
-            logger.LogWarning(secEx, "WebSQL Security Violation: {Message}", secEx.Message);
+            // SEC M-10: Only curated policy messages (WebSqlPolicyException) are returned to the client
+            logger.LogWarning(secEx, "WebSQL Security Violation. TraceId={TraceId}", httpContext.TraceIdentifier);
             if (!httpContext.Response.HasStarted)
             {
                 httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
@@ -194,13 +219,14 @@ public static class WebSqlEndpoints
                 await httpContext.Response.WriteAsJsonAsync(new
                 {
                     error = "Forbidden",
-                    message = secEx.Message
+                    message = secEx is WebSqlPolicyException ? secEx.Message : GenericForbiddenMessage,
+                    traceId = httpContext.TraceIdentifier
                 }, ct);
             }
         }
         catch (ArgumentException argEx)
         {
-            logger.LogWarning(argEx, "WebSQL Bad Request: {Message}", argEx.Message);
+            logger.LogWarning(argEx, "WebSQL Bad Request. TraceId={TraceId}", httpContext.TraceIdentifier);
             if (!httpContext.Response.HasStarted)
             {
                 httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -208,13 +234,15 @@ public static class WebSqlEndpoints
                 await httpContext.Response.WriteAsJsonAsync(new
                 {
                     error = "BadRequest",
-                    message = argEx.Message
+                    message = GenericBadRequestMessage,
+                    traceId = httpContext.TraceIdentifier
                 }, ct);
             }
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "WebSQL Execution Failed: {Message}", ex.Message);
+            // SEC M-10: Never echo exception/database messages (schema, table or server names) to the client
+            logger.LogError(ex, "WebSQL Execution Failed. TraceId={TraceId}", httpContext.TraceIdentifier);
             if (!httpContext.Response.HasStarted)
             {
                 httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
@@ -222,8 +250,16 @@ public static class WebSqlEndpoints
                 await httpContext.Response.WriteAsJsonAsync(new
                 {
                     error = "InternalServerError",
-                    message = ex.Message
+                    message = GenericServerErrorMessage,
+                    traceId = httpContext.TraceIdentifier
                 }, ct);
+            }
+        }
+        finally
+        {
+            if (writer != null)
+            {
+                await writer.DisposeAsync();
             }
         }
     }

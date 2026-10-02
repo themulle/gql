@@ -8,12 +8,21 @@ using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.Services;
 using GqlGateway.Application.Streaming.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
+using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
+/// <summary>
+/// Enforces the gateway access model on CDC streaming events.
+/// SEC H-09: Uses the same decision chain as <see cref="GatewayExecutionService"/>:
+/// consent (via <see cref="IConsentResolutionService"/> and the consent cache) -> Casbin ABAC as additional gate and row filter
+/// -> catalog masking (sensitive columns / ColumnMaskingRules are masked unless explicitly released as Clear).
+/// </summary>
 public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
 {
     private static readonly MaskingRule DefaultRedactRule = new() { RuleType = "REDACT", Replacement = "[REDACTED]" };
@@ -23,19 +32,34 @@ public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
     private readonly IColumnMaskingProvider _maskingProvider;
     private readonly IEpochValidationService _epochValidationService;
     private readonly ILogger<StreamRlsPolicyEnforcer> _logger;
+    private readonly IConsentRepository _consentRepository;
+    private readonly IConsentResolutionService _resolutionService;
+    private readonly IConsentCacheService _cacheService;
+    private readonly IClientIpResolver? _clientIpResolver;
+    private readonly GatewayOptions? _options;
 
     public StreamRlsPolicyEnforcer(
         IPolicyEnforcementService policyEnforcementService,
         ITableMetadataRepository metadataRepository,
         IColumnMaskingProvider maskingProvider,
         IEpochValidationService epochValidationService,
-        ILogger<StreamRlsPolicyEnforcer> logger)
+        ILogger<StreamRlsPolicyEnforcer> logger,
+        IConsentRepository consentRepository,
+        IConsentResolutionService resolutionService,
+        IConsentCacheService cacheService,
+        IClientIpResolver? clientIpResolver = null,
+        IOptions<GatewayOptions>? options = null)
     {
         _policyEnforcementService = policyEnforcementService ?? throw new ArgumentNullException(nameof(policyEnforcementService));
         _metadataRepository = metadataRepository ?? throw new ArgumentNullException(nameof(metadataRepository));
         _maskingProvider = maskingProvider ?? throw new ArgumentNullException(nameof(maskingProvider));
         _epochValidationService = epochValidationService ?? throw new ArgumentNullException(nameof(epochValidationService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _consentRepository = consentRepository ?? throw new ArgumentNullException(nameof(consentRepository));
+        _resolutionService = resolutionService ?? throw new ArgumentNullException(nameof(resolutionService));
+        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
+        _clientIpResolver = clientIpResolver;
+        _options = options?.Value;
     }
 
     public async ValueTask<StreamSecurityDecision> EvaluateAndMaskAsync(
@@ -61,6 +85,11 @@ public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
             return StreamSecurityDecision.Denied("Tenant mismatch");
         }
 
+        if (!TenantId.TryParse(subscriberTenant, out var tenantId))
+        {
+            return StreamSecurityDecision.Denied("Tenant mismatch");
+        }
+
         // 2. Extract Raw Payload based on Operation
         var rawPayload = cdcEvent.Operation == CdcOperation.Delete
             ? (cdcEvent.Before ?? cdcEvent.After)
@@ -71,69 +100,129 @@ public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
             return StreamSecurityDecision.Denied("Empty event payload");
         }
 
-        // 3. User Identity Extraction
-        var userSidStr = subscriber.FindFirst(ClaimTypes.PrimarySid)?.Value
-            ?? subscriber.FindFirst(ClaimTypes.NameIdentifier)?.Value
-            ?? subscriber.FindFirst("sub")?.Value
-            ?? "S-1-5-ANONYMOUS";
+        // 3. User Identity Extraction (no anonymous fallback: a subscriber without a SID gets nothing)
+        var userSidNullable = subscriber.GetUserSid();
+        if (userSidNullable == null)
+        {
+            return StreamSecurityDecision.Denied("Access denied: no subject identifier");
+        }
 
-        var userSid = new Sid(userSidStr);
-        var groupSids = subscriber.FindAll(ClaimTypes.GroupSid)
-            .Select(c => new Sid(c.Value))
-            .ToList();
+        var userSid = userSidNullable.Value;
+        var groupSids = subscriber.GetGroupSids();
+        var roles = subscriber.GetUserRoles();
 
-        var requestedColumns = rawPayload.Keys.ToList();
-
-        // 4. Casbin ABAC Policy Enforcement
-        var evalContext = new SecurityEvaluationContext(
-            UserSid: userSid,
-            GroupSids: groupSids,
-            Tenant: new TenantId(subscriberTenant),
-            TargetTable: cdcEvent.Table,
-            RequestedColumns: requestedColumns,
-            ClientIp: IPAddress.Loopback,
-            Timestamp: DateTimeOffset.UtcNow,
-            PurposeId: null
-        );
-
-        TableAccessDecision accessDecision;
+        // 4. Catalog metadata is mandatory (dialect, column list, masking rules) -> fail-closed
+        TableMetadata? metadata;
+        TableAccessDecision decision;
         try
         {
-            accessDecision = await _policyEnforcementService.EvaluatePolicyAsync(evalContext, ct);
+            metadata = await _metadataRepository.GetTableMetadataAsync(cdcEvent.Table, ct).ConfigureAwait(false);
+            if (metadata == null)
+            {
+                _logger.LogDebug("Streaming event '{EventId}' dropped: table '{Table}' not found in catalog", cdcEvent.EventId, cdcEvent.Table.ToQualifiedName());
+                return StreamSecurityDecision.Denied("Table not found in catalog");
+            }
+
+            // 5. Consent decision (same chain as GatewayExecutionService)
+            decision = await ResolveConsentDecisionAsync(tenantId, userSid, groupSids, roles, cdcEvent.Table, metadata, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to evaluate streaming ABAC policy for event '{EventId}' - failing closed", cdcEvent.EventId);
+            _logger.LogError(ex, "Failed to evaluate streaming consent decision for event '{EventId}' - failing closed", cdcEvent.EventId);
             return StreamSecurityDecision.Denied("Policy evaluation error");
         }
 
-        if (!accessDecision.IsAllowed)
+        if (metadata == null)
         {
-            _logger.LogDebug(
-                "Streaming event '{EventId}' on table '{Table}' denied for subscriber '{UserSid}' by ABAC policy",
-                cdcEvent.EventId, cdcEvent.Table.ToQualifiedName(), userSid.Value);
-            return StreamSecurityDecision.Denied("Access denied by ABAC policy");
+            return StreamSecurityDecision.Denied("Table not found in catalog");
         }
 
-        // 4b. In-Stream Row-Level Security Filtering (Fail-Closed)
-        if (!string.IsNullOrWhiteSpace(accessDecision.CombinedRowFilterSql))
+        if (!decision.IsAllowed)
         {
-            if (!MatchesStreamingRowFilter(rawPayload, accessDecision.CombinedRowFilterSql))
+            _logger.LogDebug(
+                "Streaming event '{EventId}' on table '{Table}' denied for subscriber '{UserSid}' by consent policy",
+                cdcEvent.EventId, cdcEvent.Table.ToQualifiedName(), userSid.Value);
+            return StreamSecurityDecision.Denied("Access denied by consent policy");
+        }
+
+        // 6. Casbin ABAC Policy Enforcement as additional gate + row filter (with full ABAC context)
+        if (_policyEnforcementService.HasPolicies(tenantId) && _options?.IsConsentBypassed != true)
+        {
+            var attributes = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var claim in subscriber.Claims)
+            {
+                attributes[claim.Type] = claim.Value;
+            }
+
+            var purpose = subscriber.FindFirst("purpose")?.Value ?? subscriber.FindFirst("purpose_id")?.Value;
+
+            var evalContext = new SecurityEvaluationContext(
+                UserSid: userSid,
+                GroupSids: groupSids,
+                Tenant: tenantId,
+                TargetTable: cdcEvent.Table,
+                RequestedColumns: rawPayload.Keys.ToList(),
+                ClientIp: ResolveClientIp(subscriber),
+                Timestamp: DateTimeOffset.UtcNow,
+                PurposeId: purpose,
+                Attributes: attributes
+            );
+
+            TableAccessDecision casbinDecision;
+            try
+            {
+                casbinDecision = await _policyEnforcementService.EvaluatePolicyAsync(evalContext, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to evaluate streaming ABAC policy for event '{EventId}' - failing closed", cdcEvent.EventId);
+                return StreamSecurityDecision.Denied("Policy evaluation error");
+            }
+
+            if (!casbinDecision.IsAllowed)
             {
                 _logger.LogDebug(
-                    "Streaming event '{EventId}' filtered out by in-stream row filter '{Filter}' for subscriber '{UserSid}'",
-                    cdcEvent.EventId, accessDecision.CombinedRowFilterSql, userSid.Value);
+                    "Streaming event '{EventId}' on table '{Table}' denied for subscriber '{UserSid}' by ABAC policy",
+                    cdcEvent.EventId, cdcEvent.Table.ToQualifiedName(), userSid.Value);
+                return StreamSecurityDecision.Denied("Access denied by ABAC policy");
+            }
+
+            if (!string.IsNullOrWhiteSpace(casbinDecision.CombinedRowFilterSql))
+            {
+                var mergedFilter = !string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql)
+                    ? $"({decision.CombinedRowFilterSql}) AND ({casbinDecision.CombinedRowFilterSql})"
+                    : casbinDecision.CombinedRowFilterSql;
+
+                decision = decision with { CombinedRowFilterSql = mergedFilter };
+            }
+        }
+
+        // 7. In-Stream Row-Level Security Filtering (Fail-Closed, SQL three-valued logic)
+        if (!string.IsNullOrWhiteSpace(decision.CombinedRowFilterSql))
+        {
+            if (!MatchesStreamingRowFilter(rawPayload, decision.CombinedRowFilterSql))
+            {
+                _logger.LogDebug(
+                    "Streaming event '{EventId}' filtered out by in-stream row filter for subscriber '{UserSid}'",
+                    cdcEvent.EventId, userSid.Value);
                 return StreamSecurityDecision.Denied("Filtered by row-level security");
             }
         }
 
-        // 5. In-Stream Column Masking and Redaction
-        var metadata = await _metadataRepository.GetTableMetadataAsync(cdcEvent.Table, ct);
+        // 8. In-Stream Column Masking and Redaction (Consent level + catalog sensitivity)
         var maskedResult = new Dictionary<string, object?>(rawPayload.Count, StringComparer.OrdinalIgnoreCase);
+        bool maskingDisabled = _options?.IsColumnMaskingDisabled == true;
 
         foreach (var (columnName, rawValue) in rawPayload)
         {
-            var accessLevel = accessDecision.GetColumnAccess(columnName);
+            var catalogColumn = metadata.GetColumn(columnName);
+            if (catalogColumn == null)
+            {
+                // Zero-Trust: columns unknown to the catalog are never streamed (mirrors the query path, which only projects catalog columns)
+                continue;
+            }
+
+            var accessLevel = decision.GetEffectiveColumnAccess(catalogColumn.ColumnName, metadata);
 
             switch (accessLevel)
             {
@@ -142,16 +231,16 @@ public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
                     continue;
 
                 case ColumnAccessLevel.Mask:
-                    if (rawValue != null)
+                    if (rawValue != null && !maskingDisabled)
                     {
-                        var rule = (metadata != null && metadata.ColumnMaskingRules.TryGetValue(columnName, out var r))
+                        var rule = metadata.ColumnMaskingRules.TryGetValue(catalogColumn.ColumnName, out var r)
                             ? r
                             : DefaultRedactRule;
                         maskedResult[columnName] = _maskingProvider.MaskValue(columnName, rawValue, rule);
                     }
                     else
                     {
-                        maskedResult[columnName] = null;
+                        maskedResult[columnName] = rawValue;
                     }
                     break;
 
@@ -163,6 +252,74 @@ public sealed class StreamRlsPolicyEnforcer : IStreamRlsPolicyEnforcer
         }
 
         return StreamSecurityDecision.Allowed(maskedResult);
+    }
+
+    private async Task<TableAccessDecision> ResolveConsentDecisionAsync(
+        TenantId tenantId,
+        Sid userSid,
+        HashSet<Sid> groupSids,
+        HashSet<string> roles,
+        TableIdentifier table,
+        TableMetadata metadata,
+        CancellationToken ct)
+    {
+        if (_options?.IsConsentBypassed == true)
+        {
+            return TableAccessDecision.Allowed(table, new Dictionary<string, ColumnAccessLevel>(), rowFilterSql: null, hasUnconstrainedColumnAllow: true);
+        }
+
+        var contextHash = IConsentCacheService.ComputeSubjectContextHash(groupSids, roles);
+        var cached = await _cacheService.GetCachedDecisionAsync(tenantId, userSid, table, contextHash, ct).ConfigureAwait(false);
+        if (cached != null)
+        {
+            return cached;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var allSubjects = groupSids.Append(userSid).ToList();
+        var activeConsents = await _consentRepository.GetActiveConsentsForSubjectsAsync(allSubjects, table, now, tenantId, ct).ConfigureAwait(false);
+
+        // Multi-Tenancy Isolation: Filter active consents strictly for current tenant
+        var tenantConsents = activeConsents
+            .Where(c => c.TenantId == tenantId)
+            .ToList();
+
+        var decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, tenantConsents, metadata.Dialect);
+
+        var ttl = ConsentResolutionService.ComputeDecisionCacheTtl(metadata.Table.IsHighlySensitive, tenantConsents, now);
+        await _cacheService.SetCachedDecisionAsync(tenantId, userSid, table, decision, ttl, contextHash, ct).ConfigureAwait(false);
+
+        return decision;
+    }
+
+    private IPAddress ResolveClientIp(ClaimsPrincipal subscriber)
+    {
+        IPAddress? resolved = null;
+        try
+        {
+            resolved = _clientIpResolver?.ResolveClientIp();
+        }
+        catch (InvalidOperationException)
+        {
+            // No HTTP context available for this (long-lived) subscription
+            resolved = null;
+        }
+
+        // The HTTP resolver reports Loopback when no HttpContext is available (typical for long-lived subscriptions);
+        // that value is not trustworthy as a client address and is therefore treated as unknown.
+        if (resolved != null && !IPAddress.IsLoopback(resolved))
+        {
+            return resolved;
+        }
+
+        if (subscriber.FindFirst("ip")?.Value is { Length: > 0 } ipStr && IPAddress.TryParse(ipStr, out var parsedIp))
+        {
+            return parsedIp;
+        }
+
+        // SEC H-09: Never fall back to Loopback (which may satisfy "internal network" ABAC rules).
+        // SecurityEvaluationContext.ClientIp is non-nullable, so the unroutable IPAddress.None is used as "unknown".
+        return IPAddress.None;
     }
 
     private static bool MatchesStreamingRowFilter(IReadOnlyDictionary<string, object?> payload, string filterSql)

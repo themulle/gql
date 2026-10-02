@@ -235,12 +235,18 @@ Currently passes **1,666 / 1,666 tests (100% green)** across all test suites:
 
 Ein schlüsselfertiges Container-Image mit integriertem **Microsoft Garnet .NET Cache**, In-Memory Governance-DB (10 Domänen vorbefüllt) und aktivierter Web-UI steht in der GitHub Container Registry bereit:
 
-```bash
-# Direkt via Docker Run (Ports 8080 HTTP / 8081 HTTPS)
-docker run -d -p 8080:8080 -p 8081:8081 --name gql-gateway ghcr.io/themulle/gql:getting-started
+> **Sicherheitshinweis:** Das Image startet standardmäßig in `Production`. Der unten gezeigte Getting-Started-Modus
+> setzt explizit `ASPNETCORE_ENVIRONMENT=Development` plus das Opt-in `GQL_ALLOW_DEV_IN_CONTAINER=true` und ist
+> ausschließlich für lokale Tests gedacht.
 
-# Oder via Docker Compose
-docker compose up -d
+```bash
+# Direkt via Docker Run (Ports 8080 HTTP / 8081 HTTPS) – lokaler Getting-Started-Modus
+docker run -d -p 8080:8080 -p 8081:8081 \
+  -e ASPNETCORE_ENVIRONMENT=Development -e GQL_ALLOW_DEV_IN_CONTAINER=true \
+  --name gql-gateway ghcr.io/themulle/gql:getting-started
+
+# Oder via Docker Compose (Basis = Production, Override = lokaler Dev-Modus)
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
 #### Sofort verfügbare Endpunkte auf Port 8080:

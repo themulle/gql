@@ -46,7 +46,8 @@ public class IngressEgressTests
 
         var context = new IngressContext
         {
-            Headers = headers
+            Headers = headers,
+            User = BreakGlassOperator() // SEC M-06: break-glass requires an authenticated principal with role (default)
         };
 
         var result = await interceptor.OnIngressAsync(context);
@@ -74,7 +75,8 @@ public class IngressEgressTests
 
         var context = new IngressContext
         {
-            Headers = headers
+            Headers = headers,
+            User = BreakGlassOperator() // SEC M-06: break-glass requires an authenticated principal with role (default)
         };
 
         var result = await interceptor.OnIngressAsync(context);
@@ -101,7 +103,8 @@ public class IngressEgressTests
 
         var context = new IngressContext
         {
-            Headers = headers
+            Headers = headers,
+            User = BreakGlassOperator() // SEC M-06: break-glass requires an authenticated principal with role (default)
         };
 
         var result = await interceptor.OnIngressAsync(context);
@@ -218,6 +221,7 @@ public class IngressEgressTests
         httpContext.Request.Path = "/graphql";
         httpContext.Request.Method = "POST";
         httpContext.Request.Headers["X-Break-Glass"] = "true";
+        httpContext.User = BreakGlassOperator();
         // No justification header -> should challenge 412
 
         await middleware.InvokeAsync(httpContext);
@@ -225,6 +229,11 @@ public class IngressEgressTests
         httpContext.Response.StatusCode.ShouldBe(412);
         httpContext.Response.Headers.ContainsKey("X-Challenge-Reason").ShouldBeTrue();
     }
+
+    private static ClaimsPrincipal BreakGlassOperator() =>
+        new(new ClaimsIdentity(
+            [new Claim(ClaimTypes.Name, "operator"), new Claim(ClaimTypes.Role, "BreakGlassOperator")],
+            "TestAuth"));
 
     private sealed class OrderedTestInterceptor(int order, IngressResult result) : IIngressInterceptor
     {

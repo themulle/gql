@@ -36,4 +36,63 @@ public interface IMcpSessionStore
     /// Sends an SSE event to the client stream of an active session.
     /// </summary>
     System.Threading.Tasks.Task<bool> SendEventAsync(string sessionId, string eventType, string eventData);
+
+    /// <summary>
+    /// SEC H-16: Replaces the authorization attributes (roles, group SIDs) of a session with those of the
+    /// current request principal, so that tool calls never run with stale or foreign privileges.
+    /// Returns the updated session or null if the session does not exist (any more).
+    /// </summary>
+    McpSessionContext? RefreshPrincipalContext(
+        string sessionId,
+        System.Collections.Generic.IReadOnlyList<string> roles,
+        System.Collections.Generic.IReadOnlyList<string> groupSids);
+}
+
+/// <summary>
+/// SEC M-09: Raised when the global or per-principal MCP session limit is reached. Endpoints map it to HTTP 429.
+/// </summary>
+public sealed class McpSessionLimitExceededException : System.InvalidOperationException
+{
+    public McpSessionLimitExceededException()
+    {
+    }
+
+    public McpSessionLimitExceededException(string message)
+        : base(message)
+    {
+    }
+
+    public McpSessionLimitExceededException(string message, System.Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>
+/// SEC H-16: Binding of an MCP session to the subject (<c>GetUserSid()</c>: sub/oid/SID) and tenant that created it.
+/// </summary>
+public static class McpSessionBinding
+{
+    /// <summary>
+    /// True if the caller (identified by its user SID and resolved tenant) owns the session.
+    /// Sessions created without a user SID (anonymous MCP in insecure dev mode) are only usable by callers without a user SID.
+    /// </summary>
+    public static bool IsOwnedBy(McpSessionContext session, string? callerUserSid, string? callerTenantId)
+    {
+        System.ArgumentNullException.ThrowIfNull(session);
+
+        if (string.IsNullOrWhiteSpace(callerTenantId) ||
+            !string.Equals(session.TenantId, callerTenantId, System.StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(session.UserSid))
+        {
+            return string.IsNullOrWhiteSpace(callerUserSid);
+        }
+
+        return !string.IsNullOrWhiteSpace(callerUserSid) &&
+               string.Equals(session.UserSid, callerUserSid, System.StringComparison.OrdinalIgnoreCase);
+    }
 }

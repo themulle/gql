@@ -69,7 +69,7 @@ p, S-1-5-21-BOB, tenant1, Customers, read, true, allow
         );
 
         // Act
-        var result = await simulationService.SimulateAsync(request);
+        var result = await simulationService.SimulateAsync(request, new TenantId("tenant1"));
 
         // Assert
         result.TotalEvaluatedLogs.ShouldBe(2);
@@ -105,7 +105,7 @@ p, S-1-5-21-HACKER, default, *, read, System.IO.File.ReadAllText('/etc/passwd') 
         var request = new PolicySimulationRequest(DraftPolicyCsv: maliciousDraftCsv);
 
         // Act & Assert
-        var ex = await Should.ThrowAsync<ArgumentException>(() => simulationService.SimulateAsync(request));
+        var ex = await Should.ThrowAsync<ArgumentException>(() => simulationService.SimulateAsync(request, new TenantId("default")));
         ex.Message.ShouldContain("Security validation error");
         ex.Message.ShouldContain("System.");
     }

@@ -48,6 +48,7 @@ public class LineageTraversalTests
             Id = consentId,
             TableId = Guid.NewGuid(),
             TableIdentifier = new TableIdentifier("finance", "dbo", "table_a"),
+            TenantId = new TenantId("tenant-a"), // SEC M-15: keine LegacySingleTenant-Ausnahme mehr
             Effect = ConsentEffect.Allow,
             GranteeType = GranteeType.User,
             GranteeSid = new Sid("S-1-5-21-USER-1"),
@@ -59,7 +60,7 @@ public class LineageTraversalTests
         var callerContext = new CallerSecurityContext(
             new Sid("S-1-5-21-USER-1"),
             [],
-            ["Analyst"],
+            ["PrivacyAdmin"], // SEC M-15: Auswirkungsanalyse nur für Owner/GovernanceAdmin/PrivacyAdmin
             new TenantId("tenant-a"),
             IsGovernanceAdmin: false,
             IsClusterAdmin: false);
@@ -89,6 +90,7 @@ public class LineageTraversalTests
             Id = consentId,
             TableId = Guid.NewGuid(),
             TableIdentifier = new TableIdentifier("sales", "dbo", "orders"),
+            TenantId = new TenantId("tenant-a"), // SEC M-15: keine LegacySingleTenant-Ausnahme mehr
             Effect = ConsentEffect.Allow,
             GranteeType = GranteeType.User,
             GranteeSid = new Sid("S-1-5-21-ANALYST"),
@@ -102,7 +104,7 @@ public class LineageTraversalTests
         var analystContext = new CallerSecurityContext(
             new Sid("S-1-5-21-ANALYST"),
             [],
-            ["Analyst"],
+            ["PrivacyAdmin"], // SEC M-15: Zugriff erlaubt, E-Mail bleibt maskiert (kein Owner/GovernanceAdmin)
             new TenantId("tenant-a"),
             IsGovernanceAdmin: false,
             IsClusterAdmin: false);
@@ -135,6 +137,7 @@ public class LineageTraversalTests
             Id = consentId,
             TableId = Guid.NewGuid(),
             TableIdentifier = new TableIdentifier("sales", "dbo", "orders"),
+            TenantId = new TenantId("tenant-a"), // SEC M-15: keine LegacySingleTenant-Ausnahme mehr
             Effect = ConsentEffect.Allow,
             GranteeType = GranteeType.User,
             GranteeSid = new Sid("S-1-5-21-ADMIN"),
@@ -178,6 +181,7 @@ public class LineageTraversalTests
             Id = consentId,
             TableId = Guid.NewGuid(),
             TableIdentifier = new TableIdentifier("core", "dbo", "source"),
+            TenantId = new TenantId("tenant-a"), // SEC M-15: keine LegacySingleTenant-Ausnahme mehr
             Effect = ConsentEffect.Allow,
             GranteeType = GranteeType.User,
             GranteeSid = new Sid("S-1-5-21-USER"),
@@ -189,7 +193,7 @@ public class LineageTraversalTests
         var report = await _sut.CalculateConsentRevocationImpactAsync(
             new TenantId("tenant-a"),
             consentId,
-            new CallerSecurityContext(new Sid("S-1-5-21-USER"), [], [], new TenantId("tenant-a"), false, false));
+            new CallerSecurityContext(new Sid("S-1-5-21-USER"), [], ["PrivacyAdmin"], new TenantId("tenant-a"), false, false));
 
         report.ContainsCycles.ShouldBeFalse("A converging diamond DAG must NOT be flagged as a cycle!");
         report.AffectedDownstreamCount.ShouldBe(3); // model_a, model_b, target_dash
@@ -231,6 +235,7 @@ public class LineageTraversalTests
             Id = consentId,
             TableId = Guid.NewGuid(),
             TableIdentifier = new TableIdentifier("perf", "dbo", "root"),
+            TenantId = new TenantId("perf-tenant"), // SEC M-15: keine LegacySingleTenant-Ausnahme mehr
             Effect = ConsentEffect.Allow,
             GranteeType = GranteeType.User,
             GranteeSid = new Sid("S-1-5-21-PERF-USER"),
@@ -242,7 +247,7 @@ public class LineageTraversalTests
         var callerContext = new CallerSecurityContext(
             new Sid("S-1-5-21-PERF-USER"),
             [],
-            ["Analyst"],
+            ["PrivacyAdmin"],
             new TenantId("perf-tenant"),
             IsGovernanceAdmin: false,
             IsClusterAdmin: false);

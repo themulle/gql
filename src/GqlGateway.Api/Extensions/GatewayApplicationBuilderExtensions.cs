@@ -61,6 +61,27 @@ public static class GatewayApplicationBuilderExtensions
             ? gatewayOptions.GraphQL.EndpointPath
             : "/" + gatewayOptions.GraphQL.EndpointPath;
 
+        var mcpBasePath = ResolveMcpBasePath(gatewayOptions);
+
+        // SEC M-05: MCP JSON-RPC POSTs must be sent as application/json. text/plain & form encodings are
+        // "simple requests" that browsers send cross-site without preflight (ambient Negotiate/Kerberos credentials).
+        app.Use(async (context, next) =>
+        {
+            if (HttpMethods.IsPost(context.Request.Method) &&
+                context.Request.Path.StartsWithSegments(mcpBasePath) &&
+                !IsJsonContentType(context.Request.ContentType))
+            {
+                context.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType;
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    error = "MCP requests must use 'Content-Type: application/json'."
+                });
+                return;
+            }
+
+            await next();
+        });
+
         // Anti-CSRF Middleware: Enforce custom preflight header on GraphQL POST and GET query requests
         app.Use(async (context, next) =>
         {
@@ -91,7 +112,10 @@ public static class GatewayApplicationBuilderExtensions
                                                 HttpMethods.IsPut(context.Request.Method) ||
                                                 HttpMethods.IsDelete(context.Request.Method) ||
                                                 HttpMethods.IsPatch(context.Request.Method))
-                                               && (context.Request.Path.StartsWithSegments("/api") || context.Request.Path.StartsWithSegments("/odata"));
+                                               && (context.Request.Path.StartsWithSegments("/api") ||
+                                                   context.Request.Path.StartsWithSegments("/odata") ||
+                                                   // SEC M-05: MCP is covered by the CSRF protection as well
+                                                   context.Request.Path.StartsWithSegments(mcpBasePath));
 
             if (isGraphQLEndpoint || isStateChangingRestEndpoint)
             {
@@ -217,6 +241,29 @@ public static class GatewayApplicationBuilderExtensions
         return app;
     }
 
+    internal static string ResolveMcpBasePath(GatewayOptions gatewayOptions)
+    {
+        var path = string.IsNullOrWhiteSpace(gatewayOptions.Mcp.EndpointPath)
+            ? "/mcp"
+            : gatewayOptions.Mcp.EndpointPath.TrimEnd('/');
+        if (path.Length == 0)
+        {
+            path = "/mcp";
+        }
+        return path.StartsWith('/') ? path : "/" + path;
+    }
+
+    internal static bool IsJsonContentType(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            return false;
+        }
+
+        var mediaType = contentType.Split(';', 2)[0].Trim();
+        return string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static WebApplication MapGatewayEndpoints(this WebApplication app, GatewayOptions gatewayOptions)
     {
         app.MapMetrics().RequireAuthorization();
@@ -253,7 +300,13 @@ public static class GatewayApplicationBuilderExtensions
 
         app.UseWebSockets();
         var gqlEndpoint = app.MapGraphQL(endpoint);
-        if (!gatewayOptions.IsAnonymousAccessAllowed && !gatewayOptions.IsOpenSchemaAllowed)
+        // SEC H-02: OpenSchema no longer opens /graphql; only the Development-only anonymous mode does.
+        // (SEC M-03: with the authenticated-user FallbackPolicy the anonymous mode must opt out explicitly.)
+        if (gatewayOptions.IsAnonymousAccessAllowed)
+        {
+            gqlEndpoint.AllowAnonymous();
+        }
+        else
         {
             gqlEndpoint.RequireAuthorization();
         }

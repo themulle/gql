@@ -7,6 +7,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using GqlGateway.Api.Extensions;
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.Governance.Interfaces;
@@ -34,11 +35,6 @@ public static class GovernanceEndpoints
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            if (context.Request.ContentLength > 20 * 1024 * 1024)
-            {
-                return Results.BadRequest(new { error = "OpenAPI specification exceeds maximum allowed size (20 MB)." });
-            }
-
             var domain = context.Request.Query.TryGetValue("domain", out var dVal) && !string.IsNullOrWhiteSpace(dVal)
                 ? dVal.ToString()
                 : "external";
@@ -46,8 +42,16 @@ public static class GovernanceEndpoints
                 ? bVal.ToString()
                 : null;
 
-            using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
-            var json = await reader.ReadToEndAsync(context.RequestAborted);
+            // SEC M-07: Bounded read instead of a bypassable Content-Length check.
+            var (json, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                context.Request,
+                20 * 1024 * 1024,
+                "OpenAPI specification exceeds maximum allowed size (20 MB).",
+                context.RequestAborted);
+            if (json == null)
+            {
+                return tooLarge!;
+            }
 
             var result = await ingestionService.IngestOpenApiJsonAsync(json, domain, baseUrl, context.RequestAborted);
             if (!result.Success)
@@ -56,7 +60,8 @@ public static class GovernanceEndpoints
             }
 
             return Results.Ok(result);
-        }).RequireAuthorization();
+        }).RequireAuthorization()
+          .WithRequestBodyLimit(20 * 1024 * 1024); // SEC M-01: explicit large-body exception to the global Kestrel limit
 
         // P10: Multi-Tenant Policy Simulation Sandbox ("What-If" Replay via Audit Logs)
         app.MapPost("/api/governance/policy-simulation/replay", async (
@@ -72,7 +77,21 @@ public static class GovernanceEndpoints
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            var result = await simulationService.SimulateAsync(request, context.RequestAborted);
+            // SEC H-05: Tenant is enforced server-side from the resolved principal tenant;
+            // a foreign tenant from the request body is honored only for ClusterAdmin.
+            var effectiveTenant = context.Items.TryGetValue(TenantResolutionMiddleware.TenantIdItemKey, out var itemTenant) && itemTenant is TenantId resolvedTenant
+                ? resolvedTenant
+                : TenantId.LegacySingleTenant;
+            if (request.Tenant is { } requestedTenant && requestedTenant != effectiveTenant)
+            {
+                if (!context.User.IsInRole("ClusterAdmin"))
+                {
+                    return Results.StatusCode(StatusCodes.Status403Forbidden);
+                }
+                effectiveTenant = requestedTenant;
+            }
+
+            var result = await simulationService.SimulateAsync(request, effectiveTenant, context.RequestAborted);
             return Results.Ok(result);
         }).RequireAuthorization();
 
@@ -99,10 +118,8 @@ public static class GovernanceEndpoints
             ISchemaSunsettingService sunsettingService,
             HttpContext context) =>
         {
-            var isPrivileged = context.User.IsInRole("GovernanceAdmin") ||
-                               context.User.IsInRole("SchemaAdmin") ||
-                               context.User.IsInRole("ClusterAdmin");
-            if (!isPrivileged)
+            // SEC M-11: Sunsetting rules are global (not tenant-scoped) -> GovernanceAdmin / ClusterAdmin only.
+            if (!EndpointSecurity.IsGlobalGovernanceAdmin(context.User))
             {
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
