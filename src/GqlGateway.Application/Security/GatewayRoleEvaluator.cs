@@ -79,10 +79,10 @@ public sealed class GatewayRoleEvaluator : IGatewayRoleEvaluator
                 var roleTenant = raw[..colonIdx];
                 var roleName = raw[(colonIdx + 1)..];
 
-                // If a tenantId is requested, only consider roles for this tenant (or wildcard)
-                if (!string.IsNullOrEmpty(tenantId) &&
-                    !string.Equals(roleTenant, tenantId, StringComparison.OrdinalIgnoreCase) &&
-                    roleTenant != "*")
+                // Security Guard: Tenant-scoped roles only apply when evaluating within that specific tenant.
+                // They never satisfy a global (tenantId == null) authorization check unless the role is wildcard (*).
+                if (string.IsNullOrEmpty(tenantId) ||
+                    (!string.Equals(roleTenant, tenantId, StringComparison.OrdinalIgnoreCase) && roleTenant != "*"))
                 {
                     continue;
                 }

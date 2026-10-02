@@ -263,57 +263,84 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
             return NotFoundResult(approvalId);
         }
 
-        lock (entry.Lock)
+        IAsyncDisposable? distLock = null;
+        if (_clusterState != null)
         {
-            // VULN-05: Replay & Race condition prevention
-            if (entry.Ticket.Status != HitLApprovalStatus.Pending)
+            try
             {
-                return new HitLApprovalResult(
-                    false,
-                    entry.Ticket,
-                    $"Ticket is already in status '{entry.Ticket.Status}'. Cannot approve."
-                );
-            }
-
-            // VULN-04 / SEC C-05: Self-Approval Bypass prevention (Four-Eyes invariant).
-            // Every identifier of the approver is compared, so oid/sub/upn/PrimarySid variants of the same user are caught.
-            if (_options.Value.HitLStepUp.RequireDifferentApprover && IsSameIdentity(entry.Ticket.RequesterSid, approver))
-            {
-                _logger.LogWarning("Four-Eyes security violation: Requester '{RequesterSid}' attempted self-approval on ticket '{ApprovalId}'.",
-                    entry.Ticket.RequesterSid, approvalId);
-
-                return new HitLApprovalResult(
-                    false,
-                    entry.Ticket,
-                    "Four-Eyes security violation: Self-approval is strictly prohibited. Approver cannot be the requester."
-                );
-            }
-
-            entry.Ticket = entry.Ticket with
-            {
-                Status = HitLApprovalStatus.Approved,
-                ApproverSid = approver.ApproverSid
-            };
-            entry.CompletedAt = DateTimeOffset.UtcNow;
-
-            if (_clusterState != null)
-            {
-                try
+                distLock = _clusterState.TryAcquireLockAsync($"hitl:lock:{approvalId}", TimeSpan.FromSeconds(5)).AsTask().GetAwaiter().GetResult();
+                if (distLock == null)
                 {
-                    _clusterState.SetAsync($"hitl:ticket:{approvalId}", entry.Ticket, CompletedTicketRetention).AsTask().GetAwaiter().GetResult();
-                    _clusterState.PublishEventAsync($"hitl:events:{approvalId}", new HitLApprovalBroadcast(approvalId, approver.ApproverSid, true)).AsTask().GetAwaiter().GetResult();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to broadcast HitL approval for ticket '{ApprovalId}' to cluster.", approvalId);
+                    return new HitLApprovalResult(false, entry.Ticket, "Ticket is currently being decided on another cluster node. Please retry.");
                 }
             }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to acquire distributed lock for ticket '{ApprovalId}'.", approvalId);
+            }
+        }
 
-            var approvedResult = new HitLApprovalResult(true, entry.Ticket, "Approval granted.");
-            entry.Tcs.TrySetResult(approvedResult);
+        try
+        {
+            lock (entry.Lock)
+            {
+                // VULN-05: Replay & Race condition prevention
+                if (entry.Ticket.Status != HitLApprovalStatus.Pending)
+                {
+                    return new HitLApprovalResult(
+                        false,
+                        entry.Ticket,
+                        $"Ticket is already in status '{entry.Ticket.Status}'. Cannot approve."
+                    );
+                }
 
-            _logger.LogInformation("HitL ticket '{ApprovalId}' approved by '{ApproverSid}'.", approvalId, approver.ApproverSid);
-            return approvedResult;
+                // VULN-04 / SEC C-05: Self-Approval Bypass prevention (Four-Eyes invariant).
+                // Every identifier of the approver is compared, so oid/sub/upn/PrimarySid variants of the same user are caught.
+                if (_options.Value.HitLStepUp.RequireDifferentApprover && IsSameIdentity(entry.Ticket.RequesterSid, approver))
+                {
+                    _logger.LogWarning("Four-Eyes security violation: Requester '{RequesterSid}' attempted self-approval on ticket '{ApprovalId}'.",
+                        entry.Ticket.RequesterSid, approvalId);
+
+                    return new HitLApprovalResult(
+                        false,
+                        entry.Ticket,
+                        "Four-Eyes security violation: Self-approval is strictly prohibited. Approver cannot be the requester."
+                    );
+                }
+
+                entry.Ticket = entry.Ticket with
+                {
+                    Status = HitLApprovalStatus.Approved,
+                    ApproverSid = approver.ApproverSid
+                };
+                entry.CompletedAt = DateTimeOffset.UtcNow;
+
+                if (_clusterState != null)
+                {
+                    try
+                    {
+                        _clusterState.SetAsync($"hitl:ticket:{approvalId}", entry.Ticket, CompletedTicketRetention).AsTask().GetAwaiter().GetResult();
+                        _clusterState.PublishEventAsync($"hitl:events:{approvalId}", new HitLApprovalBroadcast(approvalId, approver.ApproverSid, true)).AsTask().GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to broadcast HitL approval for ticket '{ApprovalId}' to cluster.", approvalId);
+                    }
+                }
+
+                var approvedResult = new HitLApprovalResult(true, entry.Ticket, "Approval granted.");
+                entry.Tcs.TrySetResult(approvedResult);
+
+                _logger.LogInformation("HitL ticket '{ApprovalId}' approved by '{ApproverSid}'.", approvalId, approver.ApproverSid);
+                return approvedResult;
+            }
+        }
+        finally
+        {
+            if (distLock != null)
+            {
+                try { distLock.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { /* ignore */ }
+            }
         }
     }
 
@@ -338,44 +365,71 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
             return NotFoundResult(approvalId);
         }
 
-        lock (entry.Lock)
+        IAsyncDisposable? distLock = null;
+        if (_clusterState != null)
         {
-            if (entry.Ticket.Status != HitLApprovalStatus.Pending)
+            try
             {
-                return new HitLApprovalResult(
-                    false,
-                    entry.Ticket,
-                    $"Ticket is already in status '{entry.Ticket.Status}'. Cannot reject."
-                );
-            }
-
-            entry.Ticket = entry.Ticket with
-            {
-                Status = HitLApprovalStatus.Rejected,
-                ApproverSid = approver.ApproverSid,
-                RejectionReason = reason ?? "Rejected by data steward."
-            };
-            entry.CompletedAt = DateTimeOffset.UtcNow;
-
-            if (_clusterState != null)
-            {
-                try
+                distLock = _clusterState.TryAcquireLockAsync($"hitl:lock:{approvalId}", TimeSpan.FromSeconds(5)).AsTask().GetAwaiter().GetResult();
+                if (distLock == null)
                 {
-                    _clusterState.SetAsync($"hitl:ticket:{approvalId}", entry.Ticket, CompletedTicketRetention).AsTask().GetAwaiter().GetResult();
-                    _clusterState.PublishEventAsync($"hitl:events:{approvalId}", new HitLApprovalBroadcast(approvalId, approver.ApproverSid, false, entry.Ticket.RejectionReason)).AsTask().GetAwaiter().GetResult();
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to broadcast HitL rejection for ticket '{ApprovalId}' to cluster.", approvalId);
+                    return new HitLApprovalResult(false, entry.Ticket, "Ticket is currently being decided on another cluster node. Please retry.");
                 }
             }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to acquire distributed lock for ticket '{ApprovalId}'.", approvalId);
+            }
+        }
 
-            var rejectedResult = new HitLApprovalResult(false, entry.Ticket, entry.Ticket.RejectionReason);
-            entry.Tcs.TrySetResult(rejectedResult);
+        try
+        {
+            lock (entry.Lock)
+            {
+                if (entry.Ticket.Status != HitLApprovalStatus.Pending)
+                {
+                    return new HitLApprovalResult(
+                        false,
+                        entry.Ticket,
+                        $"Ticket is already in status '{entry.Ticket.Status}'. Cannot reject."
+                    );
+                }
 
-            _logger.LogInformation("HitL ticket '{ApprovalId}' rejected by '{ApproverSid}'. Reason: {Reason}",
-                approvalId, approver.ApproverSid, entry.Ticket.RejectionReason);
-            return rejectedResult;
+                entry.Ticket = entry.Ticket with
+                {
+                    Status = HitLApprovalStatus.Rejected,
+                    ApproverSid = approver.ApproverSid,
+                    RejectionReason = reason ?? "Rejected by data steward."
+                };
+                entry.CompletedAt = DateTimeOffset.UtcNow;
+
+                if (_clusterState != null)
+                {
+                    try
+                    {
+                        _clusterState.SetAsync($"hitl:ticket:{approvalId}", entry.Ticket, CompletedTicketRetention).AsTask().GetAwaiter().GetResult();
+                        _clusterState.PublishEventAsync($"hitl:events:{approvalId}", new HitLApprovalBroadcast(approvalId, approver.ApproverSid, false, entry.Ticket.RejectionReason)).AsTask().GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to broadcast HitL rejection for ticket '{ApprovalId}' to cluster.", approvalId);
+                    }
+                }
+
+                var rejectedResult = new HitLApprovalResult(false, entry.Ticket, entry.Ticket.RejectionReason);
+                entry.Tcs.TrySetResult(rejectedResult);
+
+                _logger.LogInformation("HitL ticket '{ApprovalId}' rejected by '{ApproverSid}'. Reason: {Reason}",
+                    approvalId, approver.ApproverSid, entry.Ticket.RejectionReason);
+                return rejectedResult;
+            }
+        }
+        finally
+        {
+            if (distLock != null)
+            {
+                try { distLock.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { /* ignore */ }
+            }
         }
     }
 
