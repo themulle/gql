@@ -2,11 +2,15 @@
 
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Hot Chocolate](https://img.shields.io/badge/GraphQL-Hot%20Chocolate%2016-F00E2B?logo=graphql&logoColor=white)](https://chillicream.com/)
+[![MCP Ready](https://img.shields.io/badge/AI-Model%20Context%20Protocol-8A2BE2?logo=anthropic&logoColor=white)](#-agentic-ai--model-context-protocol-mcp-gateway)
+[![Iceberg](https://img.shields.io/badge/Lakehouse-Apache%20Iceberg%20v2-4B8BBE?logo=apache&logoColor=white)](#)
+[![OData](https://img.shields.io/badge/Protocol-OData%20v4-0078D4)](#)
+[![AuthZ](https://img.shields.io/badge/AuthZ-Casbin%20ABAC-009688)](#)
 [![CI Build & Test](https://img.shields.io/badge/CI-Passing-brightgreen?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-1%2C666%20Passing-brightgreen)](tests/GqlGateway.Tests.Unit)
+[![Tests](https://img.shields.io/badge/Tests-2%2C261%20Passing-brightgreen)](tests/GqlGateway.Tests.Unit)
+[![Security Review](https://img.shields.io/badge/Security%20Review-2026--10--02%20Remediated-brightgreen)](security-review-2026-10-02.md)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/themulle/gql/pkgs/container/gql)
 [![Architecture](https://img.shields.io/badge/Architecture-Clean%20%2F%20Onion-blue)](docs/architecture/arc42.md)
-[![Security](https://img.shields.io/badge/Security-Zero%20Trust-green)](docs/threat-model/threat-model.md)
 [![Features](https://img.shields.io/badge/Features-Enterprise%20Catalog-blueviolet)](featurelist.md)
 [![Comparison](https://img.shields.io/badge/Comparison-Market%20Moats-orange)](featurecomparison.md)
 [![License](https://img.shields.io/badge/License-Proprietary%20%2F%20Enterprise-lightgrey)](#)
@@ -193,12 +197,12 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 | [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 16.6.7 GraphQL engine, dynamic schemas, Subscriptions, Fusion Router (`FusionGatewayExtensions`), MCP Server, queries & mutations |
 | [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Host, Basic Auth Login (`/api/auth/login`), ForwardAuth header security, rate limiting, anti-CSRF, health probes, ITSM webhooks, MCP endpoints |
 | [`GqlGateway.Extensions`](/root/gql_extensions/src/GqlGateway.Extensions) | `net10.0` | Apache Iceberg Lakehouse connector, Enterprise Data Catalogs (Purview, Collibra, Alation, OpenMetadata), dbt manifest ingestion, ITSM handlers, OData |
-| [`TrinoSqlEngine`](/root/gql_sqlparser) | `net10.0` | High-performance ANTLR4 SQL Parser, AST Rewriter, WebSQL engine, and parameter extractor (790 parser tests) |
+| [`TrinoSqlEngine`](/root/gql_sqlparser) | `net10.0` | High-performance ANTLR4 SQL Parser, AST Rewriter, WebSQL engine, and parameter extractor (857 parser tests) |
 | [`GqlGateway.Benchmarks`](benchmarks/GqlGateway.Benchmarks) | `net10.0` | BenchmarkDotNet suites for throughput, cache hit/miss, and masking allocations |
-| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 722 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
+| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 1,180 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
 | [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | 5 NetArchTest rules enforcing Clean Architecture dependency directions |
-| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 106 End-to-end integration tests using `WebApplicationFactory<Program>` |
-| [`GqlGateway.Extensions.Tests`](/root/gql_extensions/tests/GqlGateway.Extensions.Tests) | `net10.0` | 43 Unit & Integration tests for Iceberg Lakehouse, Data Catalogs, dbt, ITSM, and OData |
+| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 144 End-to-end integration tests using `WebApplicationFactory<Program>` |
+| [`GqlGateway.Extensions.Tests`](/root/gql_extensions/tests/GqlGateway.Extensions.Tests) | `net10.0` | 75 Unit & Integration tests for Iceberg Lakehouse, Data Catalogs, dbt, ITSM, and OData |
 
 ---
 
@@ -224,11 +228,11 @@ dotnet test GqlGateway.sln -c Release
 dotnet test /root/gql_extensions/GqlExtensions.slnx -c Release
 dotnet test /root/gql_sqlparser/TrinoSqlEngine.csproj -c Release
 ```
-Currently passes **1,666 / 1,666 tests (100% green)** across all test suites:
-- **790 TrinoSqlEngine & WebSQL Parser Tests** (ANTLR4 parsing, AST statement validation, parameter extraction, RLS AST-injection, type inference)
-- **722 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Declarative SQL-to-API Execution, Casbin ABAC Hot-Reload, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure, MCP Guardrails, Differential Privacy)
-- **106 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Declarative SQL Endpoints & OpenAPI 3.0 Generation, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
-- **43 Extensions Tests** (Apache Iceberg v2 Lakehouse connector & partition pruning, Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion & contract validation, ServiceNow/Jira webhooks, OData)
+Currently passes **2,261 / 2,261 tests (100% green)** across all test suites:
+- **857 TrinoSqlEngine & WebSQL Parser Tests** (ANTLR4 parsing, AST statement validation, parameter extraction, RLS AST-injection, type inference)
+- **1,180 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Declarative SQL-to-API Execution, Casbin ABAC Hot-Reload, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure, MCP Guardrails, Differential Privacy)
+- **144 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Declarative SQL Endpoints & OpenAPI 3.0 Generation, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
+- **75 Extensions Tests** (Apache Iceberg v2 Lakehouse connector & partition pruning, Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion & contract validation, ServiceNow/Jira webhooks, OData)
 - **5 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application)
 
 ### 3. Run Gateway via Docker Container (Fastest / Getting Started)

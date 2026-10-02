@@ -26,7 +26,7 @@ The GraphQL Enterprise Gateway acts as a centralized, secure data access layer a
 ## 2. Architecture Constraints
 
 - **Platform**: .NET 10 / C# 14, ASP.NET Core Minimal API.
-- **GraphQL Engine**: Hot Chocolate 14.1.0 with dynamic schema generation and dynamic type projection.
+- **GraphQL Engine**: Hot Chocolate 16.6.7 with dynamic schema generation and dynamic type projection.
 - **Multi-Protocol Authentication**:
   - **Kubernetes Ingress ForwardAuth**: Offloaded authentication via Traefik Ingress (Authelia, Keycloak, Authentik, OAuth2-Proxy) with proxy CIDR filtering and pre-shared secrets (`X-Forwarded-Secret`).
   - **Enterprise Identity Providers**: Microsoft Entra ID (Azure AD) and AD FS JWT Bearer tokens with normalized claims transformation (`EnterpriseClaimsTransformation`).

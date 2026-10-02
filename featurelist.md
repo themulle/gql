@@ -2,7 +2,7 @@
 
 **Dokument-Version:** 2.0 (General Availability)  
 **Autor:** Principal Enterprise Product Manager & Platform Strategist  
-**Plattform:** .NET 10 | C# 14 | Hot Chocolate 14 | Garnet / Redis | Hot Chocolate Fusion  
+**Plattform:** .NET 10 | C# 14 | Hot Chocolate 16 | Garnet / Redis | Hot Chocolate Fusion  
 **Architektur:** Clean / Onion Architecture, Zero-Trust Data-Owner-Consent Engine  
 
 ---
@@ -40,8 +40,8 @@ Die Lösung vereint föderierte GraphQL-Abfragen über relationale Datenbanken, 
 * **Modernste .NET 10 & C# 14 Basis**:
   * Entwickelt auf der neuesten .NET 10 LTS-Laufzeitumgebung unter Ausnutzung modernster C# 14 Sprachfeatures (Primary Constructors, ref struct, Inline Arrays, Collection Expressions, Pattern Matching).
   * Kompiliert mit striktem `<TreatWarningsAsErrors>true</TreatWarningsAsErrors>` (0 Warnungen, 0 Fehler).
-* **Hot Chocolate 14 GraphQL Engine**:
-  * Dynamic Schema Building & Execution Engine der Spitzenklasse (`HotChocolate.AspNetCore` 14.1.0).
+* **Hot Chocolate 16 GraphQL Engine**:
+  * Dynamic Schema Building & Execution Engine der Spitzenklasse (`HotChocolate.AspNetCore` 16.6.7).
   * Dynamische Typ-Projektion basierend auf dem aktiven Governance-Katalog.
   * Native Unterstützung von Queries, Mutations und Realtime Subscriptions (`graphql-transport-ws`, SSE).
 * **Zero-Allocation Hot Paths**:
