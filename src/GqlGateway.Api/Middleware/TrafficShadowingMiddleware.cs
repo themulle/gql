@@ -46,6 +46,13 @@ public sealed class TrafficShadowingMiddleware
             return;
         }
 
+        // SEC M-07: Guard against memory exhaustion from oversized payloads in shadowing path (max 2 MB)
+        if (context.Request.ContentLength > 2 * 1024 * 1024)
+        {
+            await _next(context).ConfigureAwait(false);
+            return;
+        }
+
         string? body = null;
         if (context.Request.ContentLength > 0 || context.Request.ContentType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true)
         {

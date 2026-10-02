@@ -18,7 +18,7 @@ public static class AstShadowingFilter
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex SqlWriteKeywordRegex = new(
-        @"\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|DROP\s+|ALTER\s+|TRUNCATE\s+|CREATE\s+|REPLACE\s+|MERGE\s+INTO|EXEC\s+|CALL\s+)\b",
+        @"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|REPLACE|MERGE|EXEC|EXECUTE|CALL|GRANT|REVOKE|COPY)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>

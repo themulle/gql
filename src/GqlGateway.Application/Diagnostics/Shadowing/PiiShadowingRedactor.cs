@@ -27,7 +27,15 @@ public static class PiiShadowingRedactor
         "Cookie",
         "Set-Cookie",
         "X-Api-Key",
-        "Proxy-Authorization"
+        "ApiKey",
+        "api-key",
+        "Proxy-Authorization",
+        "X-Forwarded-Client-Cert",
+        "Client-Cert",
+        "X-Arr-ClientCert",
+        "X-Client-Cert",
+        "X-Vault-Token",
+        "X-Auth-Token"
     };
 
     public static Dictionary<string, string> RedactHeaders(
@@ -39,6 +47,13 @@ public static class PiiShadowingRedactor
         foreach (var (key, value) in incomingHeaders)
         {
             if (DroppedHeaders.Contains(key))
+            {
+                continue;
+            }
+
+            if (stripPiiHeaders && (key.Contains("secret", StringComparison.OrdinalIgnoreCase) ||
+                                    key.Contains("token", StringComparison.OrdinalIgnoreCase) ||
+                                    key.Contains("password", StringComparison.OrdinalIgnoreCase)))
             {
                 continue;
             }

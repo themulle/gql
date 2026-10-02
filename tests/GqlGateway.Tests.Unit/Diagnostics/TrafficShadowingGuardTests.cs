@@ -49,10 +49,13 @@ public sealed class TrafficShadowingGuardTests
     [InlineData("INSERT INTO customers (id, name) VALUES (1, 'Alice')")]
     [InlineData("UPDATE accounts SET balance = balance + 100 WHERE id = 42")]
     [InlineData("DELETE FROM logs WHERE created_at < NOW()")]
+    [InlineData("DELETE logs WHERE created_at < NOW()")]
+    [InlineData("INSERT orders (id) VALUES (1)")]
     [InlineData("DROP TABLE staging_orders")]
     [InlineData("ALTER TABLE users ADD COLUMN is_admin BOOLEAN")]
     [InlineData("TRUNCATE TABLE session_cache")]
     [InlineData("MERGE INTO target_table USING source_table ON (id)")]
+    [InlineData("GRANT SELECT ON accounts TO public")]
     public void AstShadowingFilter_RejectsSqlWrites(string sqlPayload)
     {
         var (isSafe, reason) = AstShadowingFilter.IsSafeForShadowing("/api/sql/execute", sqlPayload);
