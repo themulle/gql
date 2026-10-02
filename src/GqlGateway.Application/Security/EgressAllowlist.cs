@@ -53,13 +53,17 @@ public sealed class EgressAllowlist
         IPNetwork.Parse("240.0.0.0/4"),
         IPNetwork.Parse("255.255.255.255/32"),
         IPNetwork.Parse("168.63.129.16/32"),
+        IPNetwork.Parse("100.100.100.200/32"),
         IPNetwork.Parse("::/128"),
         IPNetwork.Parse("::1/128"),
         IPNetwork.Parse("::/96"),
         IPNetwork.Parse("64:ff9b::/96"),
+        IPNetwork.Parse("64:ff9b:1::/48"),
+        IPNetwork.Parse("2002::/16"),
         IPNetwork.Parse("fe80::/10"),
         IPNetwork.Parse("ff00::/8"),
-        IPNetwork.Parse("fd00:ec2::/32")
+        IPNetwork.Parse("fd00:ec2::/32"),
+        IPNetwork.Parse("fd00:ec2::254/128")
     ];
 
     private readonly HashSet<string> _hosts;
@@ -88,6 +92,11 @@ public sealed class EgressAllowlist
     {
         ArgumentNullException.ThrowIfNull(address);
         var ip = EgressAddressRules.Normalize(address);
+        if (EgressAddressRules.IsAlwaysForbidden(ip) || EgressAddressRules.IsMetadataAddress(ip))
+        {
+            return false;
+        }
+
         foreach (var network in _networks)
         {
             if (network.Contains(ip))
@@ -197,7 +206,9 @@ public sealed class EgressAllowlist
             return false;
         }
 
-        if (parsed.BaseAddress.IsIPv4MappedToIPv6)
+        if (parsed.BaseAddress.IsIPv4MappedToIPv6 ||
+            (parsed.BaseAddress.AddressFamily == AddressFamily.InterNetworkV6 &&
+             parsed.BaseAddress.GetAddressBytes().AsSpan(0, 10).SequenceEqual(stackalloc byte[10])))
         {
             error = "IPv4-mapped IPv6-Netze (::ffff:0:0/96) sind nicht zulässig; IPv4-Notation verwenden.";
             return false;

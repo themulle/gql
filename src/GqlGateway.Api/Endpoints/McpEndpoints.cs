@@ -27,7 +27,8 @@ public static class McpEndpoints
         string? UserSid,
         string TenantId,
         IReadOnlyList<string> Roles,
-        IReadOnlyList<string> GroupSids);
+        IReadOnlyList<string> GroupSids,
+        string? ClientIp = null);
 
     public static IEndpointRouteBuilder MapMcpEndpoints(this IEndpointRouteBuilder app, GatewayOptions gatewayOptions)
     {
@@ -62,7 +63,7 @@ public static class McpEndpoints
             McpSessionContext session;
             try
             {
-                session = mcpHandler.CreateSession(caller.PrincipalId, caller.TenantId, caller.UserSid, caller.Roles, caller.GroupSids);
+                session = mcpHandler.CreateSession(caller.PrincipalId, caller.TenantId, caller.UserSid, caller.Roles, caller.GroupSids, caller.ClientIp);
             }
             catch (McpSessionLimitExceededException)
             {
@@ -328,7 +329,9 @@ public static class McpEndpoints
         var userSid = isAuthenticated ? principal.GetUserSid()?.Value : null;
         var roles = isAuthenticated ? principal.GetUserRoles().ToList() : new List<string>();
         var groupSids = isAuthenticated ? principal.GetGroupSids().Select(s => s.Value).ToList() : new List<string>();
+        var clientIp = (context.RequestServices?.GetService<GqlGateway.Application.Interfaces.IClientIpResolver>()?.ResolveClientIp()
+                        ?? context.Connection.RemoteIpAddress)?.ToString();
 
-        return new McpCaller(principalId, userSid, tenantId, roles, groupSids);
+        return new McpCaller(principalId, userSid, tenantId, roles, groupSids, clientIp);
     }
 }

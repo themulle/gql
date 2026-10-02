@@ -520,7 +520,7 @@ public sealed class Wave3MarketFeaturesTests
             Columns: ["id", "name", "is_active", "score"]
         );
 
-        var result = service.ExportToParquet(request, rows);
+        var result = await service.ExportToParquetAsync(request, rows);
 
         Assert.NotNull(result);
         Assert.Equal(2, result.RowCount);
@@ -570,7 +570,7 @@ public sealed class Wave3MarketFeaturesTests
             Columns: ["customer_id", "nested_order"]
         );
 
-        var result = service.ExportToParquet(request, rows);
+        var result = await service.ExportToParquetAsync(request, rows);
 
         Assert.NotNull(result);
         Assert.Equal(1, result.RowCount);
@@ -612,7 +612,7 @@ public sealed class Wave3MarketFeaturesTests
             Columns: ["id", "iban", "email"]
         );
 
-        var result = service.ExportToParquet(request, rows);
+        var result = await service.ExportToParquetAsync(request, rows);
 
         // Verify that masked strings are read back verbatim from the (compressed) Parquet file
         var columns = await ReadParquetColumnsAsync(result.Data);
@@ -652,17 +652,17 @@ public sealed class Wave3MarketFeaturesTests
     [InlineData("table\r\nSet-Cookie: evil=1")]
     [InlineData("table; DROP TABLE users;--")]
     [InlineData("schema/table")]
-    public void ParquetExportService_VULN_02_PathTraversalAndCrlf_StrictlyRejected(string maliciousTableName)
+    public async Task ParquetExportService_VULN_02_PathTraversalAndCrlf_StrictlyRejected(string maliciousTableName)
     {
         var options = Options.Create(new GatewayOptions());
         var service = new ParquetExportService(options, NullLogger<ParquetExportService>.Instance);
 
         // TableIdentifier constructor itself or ParquetExportService validation prevents path traversal & invalid characters
-        Assert.ThrowsAny<ArgumentException>(() =>
+        await Assert.ThrowsAnyAsync<ArgumentException>(async () =>
         {
             var table = new TableIdentifier("analytics", "public", maliciousTableName);
             var req = new ParquetExportRequest(table, ["id"]);
-            service.ExportToParquet(req, []);
+            await service.ExportToParquetAsync(req, []);
         });
     }
 
@@ -687,7 +687,7 @@ public sealed class Wave3MarketFeaturesTests
             Limit: 1000 // Client requested 1000, but Gateway max is 50
         );
 
-        var result = service.ExportToParquet(request, rows);
+        var result = await service.ExportToParquetAsync(request, rows);
 
         Assert.Equal(50, result.RowCount);
         Assert.True(result.IsTruncated);

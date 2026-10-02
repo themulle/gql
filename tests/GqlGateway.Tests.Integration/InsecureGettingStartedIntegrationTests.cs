@@ -188,6 +188,7 @@ public class InsecureGettingStartedIntegrationTests : IClassFixture<WebApplicati
             }";
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/graphql");
+        request.Headers.Add("GraphQL-Preflight", "1");
         request.Content = new StringContent(JsonSerializer.Serialize(new { query = mutation }), Encoding.UTF8, "application/json");
 
         var response = await client.SendAsync(request);
@@ -244,6 +245,7 @@ public class InsecureGettingStartedIntegrationTests : IClassFixture<WebApplicati
             }";
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/graphql");
+        request.Headers.Add("GraphQL-Preflight", "1");
         request.Content = new StringContent(JsonSerializer.Serialize(new { query = mutation }), Encoding.UTF8, "application/json");
 
         var response = await client.SendAsync(request);

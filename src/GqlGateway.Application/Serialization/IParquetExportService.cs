@@ -7,9 +7,6 @@ using GqlGateway.Domain.Model;
 
 public interface IParquetExportService
 {
-    ParquetExportResult ExportToParquet(
-        ParquetExportRequest request,
-        IReadOnlyList<IReadOnlyDictionary<string, object?>> rows);
 
     /// <summary>
     /// Serializes already governed rows (RLS, masking, consent applied) into an Apache Parquet file.

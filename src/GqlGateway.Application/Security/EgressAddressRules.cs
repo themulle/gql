@@ -112,7 +112,21 @@ public static class EgressAddressRules
                 b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 && b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0)
             {
                 var embedded = new IPAddress(new[] { b[12], b[13], b[14], b[15] });
-                return IsAlwaysForbidden(embedded) || DeclarativeHttpDataSourceExecutor.IsRestrictedIp(embedded);
+                return IsAlwaysForbidden(embedded) || IsPrivate(embedded);
+            }
+
+            // 64:ff9b:1::/48 – NAT64 local prefix: check the embedded IPv4 address.
+            if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xFF && b[3] == 0x9B && b[4] == 0x00 && b[5] == 0x01)
+            {
+                var embedded = new IPAddress(new[] { b[12], b[13], b[14], b[15] });
+                return IsAlwaysForbidden(embedded) || IsPrivate(embedded);
+            }
+
+            // 2002::/16 – 6to4 prefix: bytes 2..5 contain embedded IPv4 address.
+            if (b[0] == 0x20 && b[1] == 0x02)
+            {
+                var embedded = new IPAddress(new[] { b[2], b[3], b[4], b[5] });
+                return IsAlwaysForbidden(embedded) || IsPrivate(embedded);
             }
         }
 
@@ -120,10 +134,50 @@ public static class EgressAddressRules
     }
 
     /// <summary>
-    /// True for private/internal addresses (RFC 1918, ULA, site-local, ...) as defined by
-    /// <see cref="DeclarativeHttpDataSourceExecutor.IsRestrictedIp"/>.
+    /// True for forbidden cloud metadata and cluster internal service hosts.
     /// </summary>
-    public static bool IsPrivate(IPAddress address) => DeclarativeHttpDataSourceExecutor.IsRestrictedIp(Normalize(address));
+    public static bool IsForbiddenHost(string host)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        var h = NormalizeHost(host);
+        return h == "metadata.google.internal" ||
+               h.EndsWith(".metadata.google.internal", StringComparison.OrdinalIgnoreCase) ||
+               h == "kubernetes.default.svc" ||
+               h.EndsWith(".kubernetes.default.svc", StringComparison.OrdinalIgnoreCase) ||
+               h.StartsWith("kubernetes.default.svc.", StringComparison.OrdinalIgnoreCase) ||
+               h == "localhost" ||
+               h.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// True for private/internal addresses (RFC 1918, ULA, site-local, ...).
+    /// </summary>
+    public static bool IsPrivate(IPAddress address)
+    {
+        var ip = Normalize(address);
+        if (ip.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var bytes = ip.GetAddressBytes();
+            // RFC 1918: 10.0.0.0/8
+            if (bytes[0] == 10) return true;
+            // RFC 1918: 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
+            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
+            // RFC 1918: 192.168.0.0/16
+            if (bytes[0] == 192 && bytes[1] == 168) return true;
+            return false;
+        }
+
+        if (ip.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            var bytes = ip.GetAddressBytes();
+            // Unique Local Address (ULA) fc00::/7 (RFC 4193: fc00:: to fdff::)
+            if ((bytes[0] & 0xFE) == 0xFC) return true;
+            if (ip.IsIPv6SiteLocal) return true;
+            return false;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Connect-time decision for one candidate address: never-allowed addresses are rejected everywhere; in Development

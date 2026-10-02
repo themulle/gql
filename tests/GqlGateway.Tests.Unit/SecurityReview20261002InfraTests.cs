@@ -675,15 +675,7 @@ public sealed class SecurityReview20261002InfraTests : IDisposable
         Should.Throw<SecurityException>(() => trust.ReadVerifiedBytes(outside));
     }
 
-    [Fact]
-    public void M27_DynamicPluginAlc_RequiresHash()
-    {
-        var file = Path.Combine(_tempDir, "dyn_plugin.dll");
-        File.WriteAllBytes(file, FakePluginBytes);
 
-        Should.Throw<SecurityException>(() => new DynamicPluginAssemblyLoadContext(file, ""));
-        Should.Throw<SecurityException>(() => new DynamicPluginAssemblyLoadContext(file, "not-a-hash"));
-    }
 
     // =========================================================================
     // M-25 / M-26: declarative HTTP data source

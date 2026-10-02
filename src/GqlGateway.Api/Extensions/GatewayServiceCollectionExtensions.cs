@@ -272,7 +272,6 @@ public static class GatewayServiceCollectionExtensions
 
         // Outbound SSRF protection (HIGH-03 / SEC-02) & OpenAPI ingestion (P1).
         // Data catalog clients, factory and sync are registered by AddGatewayExtensions (GqlGateway.Extensions/DataCatalog).
-        services.TryAddTransient<SsrfProtectionHandler>();
         // SEC E-03: hardened primary handler (no redirects, connect-time IP check); allowlist only if "AuditWorm" is listed
         // in Egress.TrustedIntegrations (SEC E-02).
         services.AddHttpClient<IAuditWormExportService, AuditWormExportService>().AddSecureOutboundHandlers(EgressIntegrations.AuditWorm);
@@ -295,77 +294,8 @@ public static class GatewayServiceCollectionExtensions
             });
         }
 
-        services.AddHttpClient();
         services.AddHttpClient(DeclarativeHttpDataSourceExecutor.HttpClientName)
-            .ConfigurePrimaryHttpMessageHandler(sp =>
-            {
-                var env = sp.GetRequiredService<IHostEnvironment>();
-                return new SocketsHttpHandler
-                {
-                    AllowAutoRedirect = false,
-                    SslOptions = gatewayOptions.AreUntrustedCertificatesAllowed
-                        ? new System.Net.Security.SslClientAuthenticationOptions
-                        {
-                            RemoteCertificateValidationCallback = delegate { return true; }
-                        }
-                        : new System.Net.Security.SslClientAuthenticationOptions(),
-                    ConnectCallback = async (context, cancellationToken) =>
-                    {
-                        var host = context.DnsEndPoint.Host.TrimEnd('.').ToLowerInvariant();
-                        if (DeclarativeHttpDataSourceExecutor.IsForbiddenMetadataHost(host))
-                        {
-                            throw new System.Security.SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
-                        }
-
-                        IPAddress[] addresses;
-                        if (IPAddress.TryParse(host, out var directIp))
-                        {
-                            addresses = [directIp];
-                        }
-                        else
-                        {
-                            addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
-                        }
-
-                        if (addresses.Length == 0)
-                        {
-                            throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound);
-                        }
-
-                        bool isDev = env.IsDevelopment();
-                        IPAddress? targetIp = null;
-                        foreach (var ip in addresses)
-                        {
-                            if (isDev || !DeclarativeHttpDataSourceExecutor.IsRestrictedIp(ip))
-                            {
-                                targetIp = ip;
-                                break;
-                            }
-                        }
-
-                        if (targetIp == null)
-                        {
-                            throw new System.Security.SecurityException($"SSRF / DNS Rebinding Defense: Outbound connection to restricted IP address '{addresses[0]}' is strictly forbidden.");
-                        }
-
-                        var socket = new System.Net.Sockets.Socket(targetIp.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp)
-                        {
-                            NoDelay = true
-                        };
-
-                        try
-                        {
-                            await socket.ConnectAsync(new IPEndPoint(targetIp, context.DnsEndPoint.Port), cancellationToken).ConfigureAwait(false);
-                            return new NetworkStream(socket, ownsSocket: true);
-                        }
-                        catch
-                        {
-                            socket.Dispose();
-                            throw;
-                        }
-                    }
-                };
-            });
+            .ConfigurePrimaryHttpMessageHandler(sp => SecureOutboundHttp.CreatePrimaryHandler(sp, "DeclarativeHttp"));
 #pragma warning restore CA5359
         services.AddSingleton<IPluginManager, PluginManager>();
         services.AddSingleton<IDataSourceExecutor, SqlDataSourceExecutor>();

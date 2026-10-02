@@ -39,8 +39,32 @@ public class ODataIntegrationTests : IClassFixture<WebApplicationFactory<Program
     [Fact]
     public async Task ODataServiceDocument_WhenAuthenticated_Returns200WithEntitySets()
     {
+        var userSid = new Sid("S-1-5-21-USER-1");
+        var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var consentRepo = scope.ServiceProvider.GetRequiredService<IConsentRepository>();
+            var metaRepo = scope.ServiceProvider.GetRequiredService<ITableMetadataRepository>();
+
+            var meta = await metaRepo.GetTableMetadataAsync(tableId);
+            if (meta != null)
+            {
+                await consentRepo.CreateConsentAsync(new Consent
+                {
+                    TableId = meta.Table.Id,
+                    TableIdentifier = tableId,
+                    Effect = ConsentEffect.Allow,
+                    GranteeType = GranteeType.User,
+                    GranteeSid = userSid,
+                    ValidFrom = DateTimeOffset.UtcNow.AddHours(-1),
+                    ValidTo = DateTimeOffset.UtcNow.AddHours(24)
+                });
+            }
+        }
+
         var client = _factory.CreateClient();
-        client.DefaultRequestHeaders.Add("X-Test-User-Sid", "S-1-5-21-USER-1");
+        client.DefaultRequestHeaders.Add("X-Test-User-Sid", userSid.Value);
 
         var response = await client.GetAsync("/odata/v4");
         response.StatusCode.ShouldBe(HttpStatusCode.OK);

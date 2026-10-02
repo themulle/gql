@@ -36,16 +36,17 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
     }
 
     public McpSessionContext CreateSession(string servicePrincipalId, string tenantId)
-        => CreateSession(servicePrincipalId, tenantId, null, null, null);
+        => CreateSession(servicePrincipalId, tenantId, null, null, null, null);
 
     public McpSessionContext CreateSession(
         string servicePrincipalId,
         string tenantId,
         string? userSid = null,
         IReadOnlyList<string>? roles = null,
-        IReadOnlyList<string>? groupSids = null)
+        IReadOnlyList<string>? groupSids = null,
+        string? clientIp = null)
     {
-        return _sessionStore.CreateSession(servicePrincipalId, tenantId, userSid, roles, groupSids);
+        return _sessionStore.CreateSession(servicePrincipalId, tenantId, userSid, roles, groupSids, clientIp);
     }
 
     public McpSessionContext? GetSession(string sessionId)

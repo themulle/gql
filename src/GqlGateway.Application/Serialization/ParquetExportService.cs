@@ -61,14 +61,6 @@ public sealed partial class ParquetExportService : IParquetExportService
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    public ParquetExportResult ExportToParquet(
-        ParquetExportRequest request,
-        IReadOnlyList<IReadOnlyDictionary<string, object?>> rows)
-    {
-        // The Parquet file is produced in a MemoryStream; the async path completes synchronously.
-        return ExportToParquetAsync(request, rows, CancellationToken.None).GetAwaiter().GetResult();
-    }
-
     public async Task<ParquetExportResult> ExportToParquetAsync(
         ParquetExportRequest request,
         IReadOnlyList<IReadOnlyDictionary<string, object?>> rows,

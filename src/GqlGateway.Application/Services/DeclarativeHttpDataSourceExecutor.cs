@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.Security;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using Microsoft.Extensions.Hosting;
@@ -431,146 +432,17 @@ public sealed class DeclarativeHttpDataSourceExecutor : IDataSourceExecutor
         return ValidateDestinationUrlAsync(uri, isDev, ct);
     }
 
-    public static async Task ValidateDestinationUrlAsync(Uri uri, bool isDev, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(uri);
-
-        var host = uri.Host.TrimEnd('.').ToLowerInvariant();
-
-        // 1. Explicitly forbidden cloud metadata and cluster internal service hosts
-        if (IsForbiddenMetadataHost(host))
-        {
-            throw new SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
-        }
-
-        // 2. Validate IP addresses (against Loopback, LinkLocal, RFC 1918, IPv6 equivalents)
-        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "169.254.169.254")
-        {
-            throw new SecurityException($"Outbound access to private/loopback/metadata address '{host}' is strictly forbidden.");
-        }
-
-        if (IPAddress.TryParse(host, out var directIp) && IsRestrictedIp(directIp))
-        {
-            throw new SecurityException($"Outbound access to restricted IP address '{directIp}' is strictly forbidden.");
-        }
-
-        if (!isDev)
-        {
-            if (!string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
-            {
-                throw new SecurityException($"Insecure HTTP scheme '{uri.Scheme}' not permitted for outbound data sources in non-development environments.");
-            }
-
-            IPAddress[] addresses;
-            if (directIp != null)
-            {
-                addresses = [directIp];
-            }
-            else
-            {
-                try
-                {
-                    addresses = await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
-                }
-                catch (SocketException)
-                {
-                    addresses = [];
-                }
-            }
-
-            foreach (var ip in addresses)
-            {
-                if (IsRestrictedIp(ip))
-                {
-                    throw new SecurityException($"Outbound access to private/loopback/restricted address '{ip}' is strictly forbidden.");
-                }
-            }
-        }
-    }
+    public static Task ValidateDestinationUrlAsync(Uri uri, bool isDev, CancellationToken ct = default)
+        => EgressUrlPolicy.ValidateResolvedAsync(uri, isDev, ct);
 
     public static void ValidateUrl(Uri uri)
-    {
-        ArgumentNullException.ThrowIfNull(uri);
-        var host = uri.Host.TrimEnd('.').ToLowerInvariant();
-        if (IsForbiddenMetadataHost(host))
-        {
-            throw new SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
-        }
-
-        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "169.254.169.254")
-        {
-            throw new SecurityException($"Outbound access to private/loopback/metadata address '{host}' is strictly forbidden.");
-        }
-
-        if (IPAddress.TryParse(host, out var directIp) && IsRestrictedIp(directIp))
-        {
-            throw new SecurityException($"Outbound access to restricted IP address '{directIp}' is strictly forbidden.");
-        }
-    }
+        => EgressUrlPolicy.ValidateStatic(uri, isDev: false, enforceHttps: false);
 
     public static bool IsForbiddenMetadataHost(string host)
-    {
-        var h = host.TrimEnd('.').ToLowerInvariant();
-        return h == "metadata.google.internal" ||
-               h.EndsWith(".metadata.google.internal", StringComparison.OrdinalIgnoreCase) ||
-               h == "kubernetes.default.svc" ||
-               h.EndsWith(".kubernetes.default.svc", StringComparison.OrdinalIgnoreCase) ||
-               h.StartsWith("kubernetes.default.svc.", StringComparison.OrdinalIgnoreCase);
-    }
+        => EgressAddressRules.IsForbiddenHost(host);
 
     public static bool IsRestrictedIp(IPAddress ip)
-    {
-        if (ip.IsIPv4MappedToIPv6)
-        {
-            ip = ip.MapToIPv4();
-        }
-
-        if (IPAddress.IsLoopback(ip))
-        {
-            return true;
-        }
-
-        if (ip.AddressFamily == AddressFamily.InterNetwork)
-        {
-            var bytes = ip.GetAddressBytes();
-            // RFC 1918: 10.0.0.0/8
-            if (bytes[0] == 10) return true;
-            // RFC 1918: 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
-            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
-            // RFC 1918: 192.168.0.0/16
-            if (bytes[0] == 192 && bytes[1] == 168) return true;
-            // LinkLocal: 169.254.0.0/16
-            if (bytes[0] == 169 && bytes[1] == 254) return true;
-            // RFC 6598: 100.64.0.0/10 (Carrier-Grade NAT / Alibaba Cloud IMDS 100.100.100.200)
-            if (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127) return true;
-            // Current network: 0.0.0.0/8
-            if (bytes[0] == 0) return true;
-            // Broadcast: 255.255.255.255
-            if (bytes[0] == 255 && bytes[1] == 255 && bytes[2] == 255 && bytes[3] == 255) return true;
-        }
-        else if (ip.AddressFamily == AddressFamily.InterNetworkV6)
-        {
-            if (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || ip.IsIPv6Multicast)
-            {
-                return true;
-            }
-
-            var bytes = ip.GetAddressBytes();
-            // Unique Local Address (ULA) fc00::/7 (RFC 4193: fc00:: to fdff::)
-            if ((bytes[0] & 0xFE) == 0xFC)
-            {
-                return true;
-            }
-
-            // Unspecified address ::
-            if (ip.Equals(IPAddress.IPv6Any))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+        => EgressAddressRules.IsAlwaysForbidden(ip) || EgressAddressRules.IsPrivate(ip);
 
     private void ApplyHeadersAndAuth(
         HttpRequestMessage request,

@@ -324,7 +324,6 @@ public sealed class AuditWormExportService : IAuditWormExportService
         }
 
         var dataUri = new Uri($"{endpoint}/{bucket}/{prefix}{fileName}");
-        GqlGateway.Application.Services.DeclarativeHttpDataSourceExecutor.ValidateUrl(dataUri);
         using var putRequest = new HttpRequestMessage(HttpMethod.Put, dataUri);
         putRequest.Content = new ByteArrayContent(payloadBytes);
         putRequest.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
@@ -345,7 +344,6 @@ public sealed class AuditWormExportService : IAuditWormExportService
 
         // Also upload manifest
         var manifestUri = new Uri($"{endpoint}/{bucket}/{prefix}{manifestFileName}");
-        GqlGateway.Application.Services.DeclarativeHttpDataSourceExecutor.ValidateUrl(manifestUri);
         using var putManifestRequest = new HttpRequestMessage(HttpMethod.Put, manifestUri);
         var manifestBytes = Encoding.UTF8.GetBytes(manifestJson);
         putManifestRequest.Content = new ByteArrayContent(manifestBytes);

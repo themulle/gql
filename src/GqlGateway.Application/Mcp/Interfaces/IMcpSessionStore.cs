@@ -15,7 +15,8 @@ public interface IMcpSessionStore
         string tenantId,
         string? userSid = null,
         System.Collections.Generic.IReadOnlyList<string>? roles = null,
-        System.Collections.Generic.IReadOnlyList<string>? groupSids = null);
+        System.Collections.Generic.IReadOnlyList<string>? groupSids = null,
+        string? clientIp = null);
 
     /// <summary>
     /// Retrieves an active session by ID.

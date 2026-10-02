@@ -193,7 +193,7 @@ public static class SqlEndpointRoutes
                 rawInputs[k] = v.ToString();
             }
 
-            var tenantId = ResolveTenantId(httpContext);
+            var tenantId = EndpointSecurity.GetRequestTenant(httpContext);
             var result = await executionService.ExecuteEndpointAsync(
                 name,
                 rawInputs,
@@ -264,7 +264,7 @@ public static class SqlEndpointRoutes
                 }
             }
 
-            var tenantId = ResolveTenantId(httpContext);
+            var tenantId = EndpointSecurity.GetRequestTenant(httpContext);
             var result = await executionService.ExecuteEndpointAsync(
                 name,
                 rawInputs,
@@ -325,16 +325,5 @@ public static class SqlEndpointRoutes
         httpContext.Response.ContentType = "application/json; charset=utf-8";
         httpContext.Response.StatusCode = StatusCodes.Status200OK;
         await JsonSerializer.SerializeAsync(httpContext.Response.Body, result.Rows, JsonOptions, ct).ConfigureAwait(false);
-    }
-
-    private static TenantId ResolveTenantId(HttpContext httpContext)
-    {
-        var tenantClaim = httpContext.User.FindFirst("tenant_id")?.Value
-                       ?? httpContext.User.FindFirst("tid")?.Value
-                       ?? httpContext.Request.Headers["X-Tenant-ID"].ToString();
-
-        return !string.IsNullOrWhiteSpace(tenantClaim)
-            ? new TenantId(tenantClaim)
-            : new TenantId("default");
     }
 }

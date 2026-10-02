@@ -3,7 +3,7 @@
 **Rolle:** Principal Enterprise Product Manager & Platform Strategist  
 **Marktumfeld:** 2025/2026 Enterprise API & GraphQL Federation (Apollo GraphOS / Router v2.17+, Hasura DDN v3, WunderGraph Cosmo, PostgREST, StepZen, Immuta, hasura/graphql-bench)  
 **Status:** Aktualisiert nach vollständiger Umsetzung aller Initiativen aus **Wave 1**, **Wave 2** und **Wave 3** (100% GA). Umgesetzte Features sind in dieser Marktanalyse als `[Done]` referenziert; ihre detaillierte Dokumentation befindet sich in [`docs/features/`](file:///root/lis-git/gql/gql/docs/features/).  
-**Ziel:** Strategische Markt- und Wettbewerbsbewertung, Dokumentation von Differenzierungs-Moats und Priorisierung der verbleibenden Roadmap-Themen nach dem RICE-C-Modell.  
+**Ziel:** Strategische Markt- und Wettbewerbsbewertung, Dokumentation von Differenzierungs-Moats und Priorisierung der verbleibenden Roadmap-Themen entlang des RICE-C-Modells.  
 **Feature-Dokumentation:** [`docs/features/README.md`](file:///root/lis-git/gql/gql/docs/features/README.md)  
 
 ---
@@ -81,7 +81,7 @@ Der Markt für Enterprise GraphQL und API Gateways wird 2025/2026 durch fundamen
 | **WORM Audit Logging & Consent Sealing (`P8`)** | **100% (GA)** | ✅ **[Done]** | [p08-worm-audit-sealing.md](file:///root/lis-git/gql/gql/docs/features/p08-worm-audit-sealing.md) |
 | **Native C# Ingress/Egress Pipeline (`P9`)** | **100% (GA)** | ✅ **[Done]** | [p09-native-csharp-pipeline.md](file:///root/lis-git/gql/gql/docs/features/p09-native-csharp-pipeline.md) |
 | **Enterprise Mutations & 4-Eyes SoD (`P10`)** | **100% (GA)** | ✅ **[Done]** | [p10-governance-mutations-sod.md](file:///root/lis-git/gql/gql/docs/features/p10-governance-mutations-sod.md) |
-| **Management Studio & UI (`P6`)** | **0%** | 🔴 **Offen** | Visuelles Web-Dashboard für Data Stewards (Policy Simulator, Audit-Viewer, Schema Explorer). In Wave 3/4 geplant. |
+| **Management Studio & UI (`P6`)** | **0%** | 🔴 **Roadmap** | Visuelles Web-Dashboard für Data Stewards (Policy Simulator, Audit-Viewer, Schema Explorer). |
 
 ---
 
@@ -137,14 +137,6 @@ GqlGateway überbrückt den Bruch zwischen Data Engineering und Datenkonsumenten
 - [x] **F-DBT-4 Orchestrator & dbt Cloud Webhooks**: [Done] → Details siehe [`f-dbt-04-orchestrator-webhooks.md`](file:///root/lis-git/gql/gql/docs/features/f-dbt-04-orchestrator-webhooks.md)
 - [x] **F-DBT-6 Policy & RLS Auto-Sync**: [Done] → Details siehe [`f-dbt-06-policy-rls-sync.md`](file:///root/lis-git/gql/gql/docs/features/f-dbt-06-policy-rls-sync.md)
 
-#### Verbleibende Roadmap-Gaps:
-1. **dbt Semantic Layer / Metrics Auto-Mapping (`F-DBT-5` - Wave 2 Roadmap):**
-   - *Problem:* Aggregationen müssen manuell in GraphQL-Resolvern nachprogrammiert werden.
-   - *Marktlösung:* Automatische Generierung typisierter analytischer GraphQL-Abfragen direkt aus dbt `semantic_models` und `metrics`.
-2. **dbt Mesh Multi-Project Cross-Model Federation (`F-DBT-7` - Wave 2 Roadmap):**
-   - *Problem:* Dezentrale Mesh-Organisationen verwalten getrennte dbt-Projekte.
-   - *Marktlösung:* Cross-Project Lineage Stitching über mehrere dbt-Manifeste (`manifest_finance.json`, `manifest_sales.json`).
-
 ---
 
 ### 3.3 Strategische Differenzierung: Enterprise AI Agent Suite
@@ -157,14 +149,6 @@ GqlGateway etabliert das Gateway als autoritative semantische Schicht für auton
 - [x] **F-AI-04 Pre-Flight Query Simulator & Safety Limits**: [Done] → Details siehe [`f-ai-04-preflight-simulator.md`](file:///root/lis-git/gql/gql/docs/features/f-ai-04-preflight-simulator.md)
 - [x] **F-AI-05 Human-in-the-Loop Step-Up Approval**: [Done] → Details siehe [`f-ai-05-hitl-step-up-approval.md`](file:///root/lis-git/gql/gql/docs/features/f-ai-05-hitl-step-up-approval.md)
 - [x] **F-AI-06 Explainable AI & Provenance Footnotes**: [Done] → Details siehe [`f-ai-06-provenance-footnoting.md`](file:///root/lis-git/gql/gql/docs/features/f-ai-06-provenance-footnoting.md)
-
-#### Verbleibende Roadmap-Gaps:
-1. **Vektor-unterstütztes Dynamic Tool Pruning (`F-AI-07` - Wave 2 Roadmap):**
-   - *Problem:* Große Enterprise-Datenmodelle (500+ Tabellen) führen bei Tool-Mounting zu Context-Overflow bei LLMs.
-   - *Marktlösung:* Zweistufige Discovery via Vektor-Index: LLM formuliert Absicht (`discover_tools(intent)`), Gateway mountet exakt die 3-5 relevanten Tools.
-2. **Closed-Loop Agent Feedback & Drift Detection (`F-AI-08` - Wave 3 Roadmap):**
-   - *Problem:* Dokumentationen driften von realen Datenwerten ab.
-   - *Marktlösung:* Agent meldet Diskrepanzen via `report_documentation_drift`; Gateway erzeugt automatische PR-Entwürfe in dbt oder OpenMetadata.
 
 ---
 
@@ -205,23 +189,84 @@ GqlGateway transferiert bewährte Konzepte aus Trino/Presto in die GraphQL- und 
 
 ---
 
-## 4. Priorisierungs-Framework: Aktualisierte RICE-C Matrix
+## 4. Strategische Priorisierung: Die wichtigsten noch benötigten Features
 
-Priorisierung der noch **offenen / zukünftigen** Roadmap-Themen:
+Aus Sicht des Enterprise Product Managements ergeben sich die wichtigsten noch benötigten Features aus der Schnittmenge aus Kundenanforderungen (Fortune-500, regulierte Industrien), akuten Schmerzpunkten im Betrieb und Marktdifferenzierung gegenüber Apollo GraphOS und Hasura DDN.
 
-| Feature-ID | Feature Name | Reach | Impact | Confidence | Cost | Risk / Compliance (C) | RICE-C Score | Empfohlene Phase |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **P6** | Management Studio & Data Steward UI | 9 | 8 | 90% | 4 | 1 | **16.20** | Wave 3/4 |
-| **F-DBT-5** | dbt Semantic Layer / MetricFlow Auto-Mapping | 8 | 8 | 80% | 3 | 2 | **17.07** | Wave 3 |
-| **F-DBT-7** | dbt Mesh Multi-Project Cross-Model Federation | 7 | 8 | 85% | 4 | 2 | **11.90** | Wave 3 |
-| **F-AI-07** | Vektor-unterstütztes Dynamic Tool Pruning | 9 | 9 | 80% | 4 | 2 | **16.20** | Wave 3 |
-| **F-AI-08** | Closed-Loop Agent Feedback & Drift Detection | 7 | 7 | 75% | 3 | 1 | **12.25** | Wave 4 |
-| **P14** | Zero-Trust Lakehouse Query Governor (Arrow Flight) | 7 | 8 | 80% | 5 | 2 | **8.96** | Wave 4 |
-| **P15** | Air-Gapped Sovereign Cloud & Confidential Compute | 5 | 9 | 75% | 6 | 3 | **5.63** | Wave 4 |
-| **P13** | Automated Data Contract & FinOps Engine | 8 | 7 | 80% | 4 | 1 | **11.20** | Wave 4 |
-| **P16** | Quantum-Resilient Transport & Key Exchange | 4 | 8 | 70% | 5 | 3 | **4.48** | 2027 |
+Die Priorisierung unterteilt sich entlang des RICE-C-Modells in drei strategische Reifegrade:
 
-*Formel:* $\text{RICE-C} = \frac{\text{Reach} \times \text{Impact} \times \text{Confidence}}{\text{Cost}} \times \left(1 + \frac{\text{Risk}}{10}\right)$
+---
+
+### 4.1 Top-Priorität: Sofortige Hebel & Differenzierung (Phase 1)
+
+* **`F-AI-07` Dynamic Semantic Schema Pruning & Just-in-Time MCP Tools**
+  * **Schmerzpunkt:** Große Enterprise-Supergraphs mit hunderten Typen sprengen das Token-Budget im System-Prompt von LLMs (30.000 bis 60.000 Tokens nur für Werkzeugsignaturen). Dies führt zu hohen Inferenzkosten, Latenzen und Fehlentscheidungen der Agenten.
+  * **Lösung:** Vektorbasierte Vorfilterung zur Laufzeit. Das Gateway vergleicht den Benutzer-Prompt mit Metadaten aus dbt und OpenMetadata und injiziert dem LLM dynamisch nur die 5 bis 10 Werkzeuge, die für die Anfrage relevant sind.
+  * **Business-Value:** Bis zu 80 % Ersparnis bei System-Prompt-Tokens und signifikant höhere Erfolgsquote autonomer Agenten.
+
+* **`F-CDC-03` Zero-Kafka PostgreSQL CDC via Logical Streaming Replication**
+  * **Schmerzpunkt:** Echtzeit-Streaming über Apache Kafka und Debezium scheitert in vielen Abteilungen an den hohen Infrastruktur- und Betriebskosten. Bisher deckt das Gateway diesen Bypass nur für MSSQL ab.
+  * **Lösung:** Direkter PostgreSQL Logical Replication Client im Gateway über das native `pgoutput`-Streaming-Protokoll. WAL-Änderungen werden ohne Message-Broker direkt in mandantengefilterte GraphQL-Subscriptions oder Server-Sent Events überführt.
+  * **Business-Value:** Schließt die Lücke für Cloud-native PostgreSQL- und Supabase-Umgebungen bei minimaler TCO.
+
+* **`F-OPS-01` AST-Aware Production Traffic Shadowing & Dark Replay**
+  * **Schmerzpunkt:** Statische Schema-Checks erkennen syntaktische Fehler, aber keine Performance-Regressionen, DB-Locking-Probleme oder semantische Datenabweichungen unter Last.
+  * **Lösung:** Asynchrones Spiegeln eines konfigurierbaren Anteils des produktiven Lese-Traffics auf Canary- oder Subgraph-Testversionen mit automatisiertem Diff-Reporting von Latenzen und Fehlerquoten. Mutationen werden im Shadowing-Pfad unterdrückt.
+  * **Business-Value:** Risikofreie Zero-Downtime-Releases für geschäftskritische Core-Banking- und Enterprise-Systeme.
+
+---
+
+### 4.2 Strategische Skalierung & Enterprise Governance (Phase 2)
+
+* **`F-AI-08` FOCUS-konformes FinOps Accounting für Token & Compute**
+  * **Schmerzpunkt:** Plattform-Teams können die durch kaskadierende Agenten-Abfragen verursachten Kosten für Backend-I/O und LLM-Inferenz weder transparent nachvollziehen noch intern verrechnen.
+  * **Lösung:** Standardisiertes Kosten-Accounting nach der FinOps Open Cost and Usage Specification (FOCUS v1.2/v1.4). Granulare Erfassung von CPU-Zeit, DB-I/O und Token-Verbrauch pro API-Key, Tenant oder Agent-Session.
+  * **Business-Value:** Präzise Unit Economics und automatisierte Budget-Caps für KI-Workloads.
+
+* **`F-GOV-08` Dynamic Schema Contracts & Tag-basierte Projektion (`@tag`)**
+  * **Schmerzpunkt:** Für unterschiedliche Zielgruppen (interne Teams, Mobil-Apps, B2B-Partner, öffentliche APIs) müssen oft parallele Gateways gewartet werden, was zu Drift und Doppelaufwand führt.
+  * **Lösung:** Ableitung maßgeschneiderter Schemavarianten aus einem zentralen Supergraph mittels Direktiven wie `@tag(name: "...")` und `@inaccessible` direkt im Gateway. Nicht-autorisierte Typen und Felder werden für die jeweilige Gruppe vollständig aus dem Schema und der AST-Validierung getilgt.
+  * **Business-Value:** Single Source of Truth bei vollständiger Schnittstellen-Isolation für externe Partner.
+
+* **`F-PERF-12` Incremental Delivery via `@defer` & `@stream`**
+  * **Schmerzpunkt:** Langsame Subgraphs oder rechenintensive Datenanreicherungen blockieren die gesamte GraphQL-Antwort (Latenz-Bottleneck).
+  * **Lösung:** Unterstützung der Spezifikationen für `@defer` und `@stream`. Schnelle Primärdaten werden sofort ausgeliefert; langsame Teilbäume werden über dieselbe HTTP-Verbindung asynchron nachgestreamt.
+  * **Business-Value:** Deutlich verbesserte wahrgenommene Time-to-First-Byte (TTFB) in Web- und Mobile-Frontends.
+
+* **`F-SEC-04` Relationship-Based Access Control (ReBAC via OpenFGA / SpiceDB)**
+  * **Schmerzpunkt:** Rollenbasierte Modelle (RBAC/ABAC) scheitern an komplexen B2B-Hierarchien (verschachtelte Organisationen, dynamische Teamfreigaben).
+  * **Lösung:** Zanzibar-basierte Autorisierungsprüfungen mit nativem DataLoader-Batching im Gateway-Interceptor, um $N+1$-Abfragen bei verschachtelten Objektlisten zu eliminieren.
+  * **Business-Value:** Skalierbare Mandanten- und Dokumentenfreigaben im Sub-Millisekundenbereich.
+
+---
+
+### 4.3 Datenvirtualisierung & High-Performance Analytics (Phase 3)
+
+* **`F-DATA-04` Native Apache Arrow Flight SQL Egress**
+  * **Schmerzpunkt:** JSON- und REST-Serialisierungen belasten CPU und Speicher bei großen analytischen Exporten massiv.
+  * **Lösung:** Spaltenorientiertes Binärstreaming via gRPC und Apache Arrow IPC direkt aus dem Gateway an Python/Polars, DuckDB und BI-Clients unter strikter Beibehaltung der Casbin-ABAC-Regeln.
+  * **Business-Value:** Multi-GB/s-Durchsatz für Data-Science-Pipelines ohne Serialisierungs-Overhead.
+
+* **`F-DATA-03` Embedded In-Memory OLAP via DuckDB.NET**
+  * **Schmerzpunkt:** Heterogene Cross-Domain Joins über getrennte Systeme (z. B. CRM-Datenbank + REST-Billing) belasten den .NET-Heap bei komplexen Aggregationen.
+  * **Lösung:** Einbettung einer spaltenorientierten In-Memory-Engine direkt im Gateway-Prozess zur Vektor-Verarbeitung von Teilresultaten.
+  * **Business-Value:** Ersetzt externe Virtualisierungscluster (wie Trino oder Denodo) für Ad-hoc-Analysen im Mittelstand.
+
+---
+
+### 4.4 Zusammenfassende Priorisierungsübersicht (RICE-C Matrix)
+
+| Feature | Primäre Zielgruppe | RICE-C Rang | Strategischer Kernnutzen |
+| :--- | :--- | :---: | :--- |
+| **`F-AI-07` Dynamic Schema Pruning** | KI- & Agentic-Plattform-Teams | **1** | Beseitigt Token-Explosion & Halluzinationen bei MCP. |
+| **`F-CDC-03` PostgreSQL Native CDC** | Cloud-Native & App-Entwickler | **2** | Sub-Sekunden-Streaming ohne Kafka-Infrastruktur. |
+| **`F-OPS-01` AST Traffic Shadowing** | Site Reliability Engineers / DevOps | **3** | Verifiziert Schema-Rollouts unter realer Produktionslast. |
+| **`F-AI-08` FOCUS FinOps Accounting** | FinOps & Plattform-Leitung | **4** | Klare Kostenzuordnung und Budget-Limits für Agenten. |
+| **`F-GOV-08` Schema Contracts (`@tag`)** | API Governance & Partner-Management | **5** | Ein Supergraph, mehrere passgenaue Schnittstellenansichten. |
+| **`F-PERF-12` Incremental Delivery** | Frontend- & Mobile-Teams | **6** | Schnelle Time-to-First-Byte via `@defer`. |
+| **`F-SEC-04` ReBAC (OpenFGA)** | Security & Enterprise Identity | **7** | Google-Zanzibar-Rechteverwaltung ohne $N+1$-Latenzen. |
+| **`F-DATA-04` Arrow Flight SQL** | Data Science & BI-Teams | **8** | Zero-Copy Binärstreaming für tabellarische Massendaten. |
+| **`F-DATA-03` DuckDB.NET Virtualization** | Data Engineering | **9** | In-Process Cross-Domain Joins ohne externe Trino-Cluster. |
 
 ---
 
@@ -235,10 +280,18 @@ gantt
     Wave 1 GA (F-DOC-01, F-DBT-1..4, F-DBT-6, F-API-03/04, F-AI-02/04/06) :done, 2025-10, 2026-03
     Wave 2 GA (F-DATA-02, F-SQL-01, F-PERF-08, F-API-07, F-AI-03, F-ARCH-10, F-CDC-02, F-OPEN-01, F-DX-01) :done, 2026-03, 2026-07
     Wave 3 GA (F-DATA-01, F-AI-05, F-PERF-09, F-GOV-06, F-PERF-10, F-PERF-11) :done, 2026-07, 2026-10
-    section Offene Roadmap
-    Wave 3.5 (F-DBT-5 MetricFlow, F-AI-07 Dynamic Tool Pruning, F-DBT-7 dbt Mesh) :active, 2026-11, 2027-02
-    Wave 4 (P6 Management Studio UI, F-AI-08 Drift Detection, P14 Lakehouse Arrow Flight, P13 FinOps) : 2027-02, 2027-06
-    Wave 5 (P15 Confidential Compute, P16 Quantum-Resilient PQC) : 2027-06, 2027-12
+    section Phase 1: Sofortige Hebel
+    F-AI-07 Dynamic Schema Pruning & JIT MCP Tools :active, 2026-11, 2027-01
+    F-CDC-03 PostgreSQL Native CDC (Zero-Kafka) :active, 2026-11, 2027-02
+    F-OPS-01 AST-Aware Traffic Shadowing & Dark Replay :active, 2026-12, 2027-02
+    section Phase 2: Skalierung & Governance
+    F-AI-08 FOCUS FinOps Accounting : 2027-02, 2027-04
+    F-GOV-08 Schema Contracts & @tag Projektion : 2027-02, 2027-04
+    F-PERF-12 Incremental Delivery (@defer & @stream) : 2027-03, 2027-05
+    F-SEC-04 ReBAC via OpenFGA / SpiceDB : 2027-04, 2027-06
+    section Phase 3: Analytics & Virtualisierung
+    F-DATA-04 Native Apache Arrow Flight SQL Egress : 2027-06, 2027-08
+    F-DATA-03 Embedded In-Memory OLAP (DuckDB.NET) : 2027-07, 2027-09
 ```
 
 ### Konkrete Handlungsempfehlungen für das Produktmanagement:
@@ -248,7 +301,7 @@ gantt
    - **Governed WebSQL & Declarative SQL (`F-DATA-02`, `F-SQL-01`):** Als TCO-starke, vendor-lockin-freie Alternative zu Hasura DDN vermarkten.
    - **Hierarchischer Parquet Egress (`F-DATA-01`):** Als Zero-ETL Beschleuniger für Data-Science- und Analytics-Teams platzieren.
    - **Native MSSQL CDC (`F-CDC-02`):** Als "Zero-Infrastructure Realtime"-Lösung für konservative Enterprise-Kunden präsentieren.
-2. **Nächste Entwicklungs-Initiative (Wave 3.5):**
-   - **`F-AI-07` Dynamic Tool Pruning**: Ermöglicht KI-Agenten das Navigieren in Enterprise-Katalogen mit > 1.000 Modellen ohne Context-Overflow.
-   - **`F-DBT-5` MetricFlow Auto-Mapping**: Direkte Exposition analytischer Kennzahlen aus dbt Semantic Models.
-   - **`P6` Management Studio UI**: Visuelles Dashboard für Data Stewards zur Absicherung von Non-Developer-Zielgruppen.
+2. **Fokus der nächsten Entwicklungs-Initiative (Phase 1):**
+   - **`F-AI-07` Dynamic Schema Pruning & Just-in-Time MCP Tools**: Beseitigt Token-Explosion und Halluzinationen bei autonomen Agenten in Enterprise-Supergraphs.
+   - **`F-CDC-03` Zero-Kafka PostgreSQL CDC**: Schließt die Realtime-Streaming-Lücke für Cloud-native PostgreSQL- und Supabase-Umgebungen bei minimaler TCO.
+   - **`F-OPS-01` AST Traffic Shadowing**: Ermöglicht risikofreie Releases für Core-Banking- und Enterprise-Systeme durch Dark Replay unter realer Last.

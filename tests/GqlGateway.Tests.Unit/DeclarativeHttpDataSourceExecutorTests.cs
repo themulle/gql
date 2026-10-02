@@ -449,7 +449,7 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
     [InlineData("https://[fd12:3456:789a::1]/api/data")]
     public async Task ExecuteAsync_ThrowsSecurityException_WhenUrlTargetsPrivateOrLoopbackIp(string destinationUrl)
     {
-        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK), isDev: false);
         var descriptor = new HttpEndpointDescriptor
         {
             BaseUrl = destinationUrl,

@@ -99,9 +99,6 @@ public static class GatewayApplicationBuilderExtensions
                     context.Response.StatusCode = StatusCodes.Status200OK;
                     return;
                 }
-
-                await next();
-                return;
             }
 
             bool isGraphQLEndpoint = (HttpMethods.IsPost(context.Request.Method) ||
@@ -161,8 +158,8 @@ public static class GatewayApplicationBuilderExtensions
 
                 if (!string.IsNullOrWhiteSpace(originHeader))
                 {
-                    bool isOriginTrusted = false;
-                    if (Uri.TryCreate(originHeader, UriKind.Absolute, out var originUri))
+                    bool isOriginTrusted = gatewayOptions.IsAllCorsAllowed;
+                    if (!isOriginTrusted && Uri.TryCreate(originHeader, UriKind.Absolute, out var originUri))
                     {
                         if (string.Equals(originUri.Authority, context.Request.Host.Value, StringComparison.OrdinalIgnoreCase))
                         {
@@ -209,7 +206,7 @@ public static class GatewayApplicationBuilderExtensions
                         return;
                     }
                 }
-                else if (gatewayOptions.GraphQL.TrustedOrigins.Count > 0 && !app.Environment.IsDevelopment())
+                else if (!gatewayOptions.IsAllCorsAllowed && gatewayOptions.GraphQL.TrustedOrigins.Count > 0 && !app.Environment.IsDevelopment())
                 {
                     // If browser-originating request omits Origin/Referer in production with trusted origins configured, reject
                     var secFetchSite = context.Request.Headers["Sec-Fetch-Site"].FirstOrDefault();
@@ -231,6 +228,7 @@ public static class GatewayApplicationBuilderExtensions
         app.UseHttpMetrics();
         app.UseMiddleware<PreAuthIpRateLimitingMiddleware>();
         app.UseAuthentication();
+        app.UseMiddleware<TokenRevocationMiddleware>();
         app.UseAuthorization();
         app.UseMiddleware<PostAuthSidRateLimitingMiddleware>();
         app.UseMiddleware<TenantResolutionMiddleware>();
@@ -325,7 +323,6 @@ public static class GatewayApplicationBuilderExtensions
         app.MapMcpEndpoints(gatewayOptions);
         app.MapSchemaRegistryEndpoints();
         app.MapBackstageEndpoints(gatewayOptions);
-        app.MapExportEndpoints();
         app.MapHitLEndpoints();
         app.MapTokenRevocationEndpoints(); // SEC M-14 (GAP-B)
         app.MapWebSqlEndpoints();

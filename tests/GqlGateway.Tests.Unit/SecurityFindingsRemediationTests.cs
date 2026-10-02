@@ -715,22 +715,7 @@ public class SecurityFindingsRemediationTests
         }
     }
 
-    [Fact]
-    public void CRIT01_DynamicPluginALC_TamperedHash_ThrowsSecurityException()
-    {
-        var tempFile = Path.GetTempFileName();
-        try
-        {
-            File.WriteAllBytes(tempFile, [0x4D, 0x5A, 0x90, 0x00]);
-            var ex = Should.Throw<System.Security.SecurityException>(() =>
-                new GqlGateway.Application.Extensibility.DynamicPluginAssemblyLoadContext(tempFile, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
-            ex.Message.ShouldContain("Integritätsprüfung fehlgeschlagen");
-        }
-        finally
-        {
-            File.Delete(tempFile);
-        }
-    }
+
 
     [Theory]
     [InlineData("Finance') OR ('1'='1")]

@@ -28,14 +28,15 @@ public sealed class McpSessionStore : IMcpSessionStore
     private readonly object _createLock = new();
 
     public McpSessionContext CreateSession(string servicePrincipalId, string tenantId)
-        => CreateSession(servicePrincipalId, tenantId, null, null, null);
+        => CreateSession(servicePrincipalId, tenantId, null, null, null, null);
 
     public McpSessionContext CreateSession(
         string servicePrincipalId,
         string tenantId,
         string? userSid = null,
         IReadOnlyList<string>? roles = null,
-        IReadOnlyList<string>? groupSids = null)
+        IReadOnlyList<string>? groupSids = null,
+        string? clientIp = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(servicePrincipalId);
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
@@ -78,7 +79,8 @@ public sealed class McpSessionStore : IMcpSessionStore
                 now,
                 userSid,
                 roles,
-                groupSids);
+                groupSids,
+                clientIp);
             _sessions[sessionId] = session;
         }
 

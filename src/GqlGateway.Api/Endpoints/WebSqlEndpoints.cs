@@ -9,6 +9,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using GqlGateway.Api.Extensions;
 using GqlGateway.Api.Serialization;
 using GqlGateway.Application.Serialization;
 using GqlGateway.Application.Sql;
@@ -40,11 +41,13 @@ public static class WebSqlEndpoints
         app.MapPost("/api/v1/sql", HandleWebSqlRequest)
            .WithName("ExecuteGovernedWebSqlV1")
            .WithMetadata(new ParquetOutputSupportedMetadata())
+           .WithRequestBodyLimit(2 * 1024 * 1024)
            .RequireAuthorization();
 
         app.MapPost("/api/sql", HandleWebSqlRequest)
            .WithName("ExecuteGovernedWebSql")
            .WithMetadata(new ParquetOutputSupportedMetadata())
+           .WithRequestBodyLimit(2 * 1024 * 1024)
            .RequireAuthorization();
 
         return app;
@@ -60,6 +63,12 @@ public static class WebSqlEndpoints
         var ct = httpContext.RequestAborted;
 
         // Content Length validation
+        var maxBodySizeFeature = httpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+        if (maxBodySizeFeature != null && !maxBodySizeFeature.IsReadOnly)
+        {
+            maxBodySizeFeature.MaxRequestBodySize = 2 * 1024 * 1024;
+        }
+
         if (httpContext.Request.ContentLength > 2 * 1024 * 1024)
         {
             httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -108,15 +117,9 @@ public static class WebSqlEndpoints
             return;
         }
 
-        // Resolve Tenant
+        // Resolve Tenant canonically
         var user = httpContext.User;
-        var tenantClaim = user.FindFirst("tenant_id")?.Value
-            ?? user.FindFirst("tid")?.Value
-            ?? user.FindFirst("tenant")?.Value;
-
-        var tenantId = TenantId.TryParse(tenantClaim, out var tid)
-            ? tid
-            : TenantId.LegacySingleTenant;
+        var tenantId = EndpointSecurity.GetRequestTenant(httpContext);
 
         // Check if array format requested (?format=arrays)
         bool formatArrays = httpContext.Request.Query.TryGetValue("format", out var formatVal) &&
@@ -222,52 +225,9 @@ public static class WebSqlEndpoints
             await writer.FlushAsync(ct);
             await httpContext.Response.Body.FlushAsync(ct);
         }
-        catch (SecurityException secEx)
-        {
-            // SEC M-10: Only curated policy messages (WebSqlPolicyException) are returned to the client
-            logger.LogWarning(secEx, "WebSQL Security Violation. TraceId={TraceId}", httpContext.TraceIdentifier);
-            if (!httpContext.Response.HasStarted)
-            {
-                httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
-                httpContext.Response.ContentType = "application/json; charset=utf-8";
-                await httpContext.Response.WriteAsJsonAsync(new
-                {
-                    error = "Forbidden",
-                    message = secEx is WebSqlPolicyException ? secEx.Message : GenericForbiddenMessage,
-                    traceId = httpContext.TraceIdentifier
-                }, ct);
-            }
-        }
-        catch (ArgumentException argEx)
-        {
-            logger.LogWarning(argEx, "WebSQL Bad Request. TraceId={TraceId}", httpContext.TraceIdentifier);
-            if (!httpContext.Response.HasStarted)
-            {
-                httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                httpContext.Response.ContentType = "application/json; charset=utf-8";
-                await httpContext.Response.WriteAsJsonAsync(new
-                {
-                    error = "BadRequest",
-                    message = GenericBadRequestMessage,
-                    traceId = httpContext.TraceIdentifier
-                }, ct);
-            }
-        }
         catch (Exception ex)
         {
-            // SEC M-10: Never echo exception/database messages (schema, table or server names) to the client
-            logger.LogError(ex, "WebSQL Execution Failed. TraceId={TraceId}", httpContext.TraceIdentifier);
-            if (!httpContext.Response.HasStarted)
-            {
-                httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                httpContext.Response.ContentType = "application/json; charset=utf-8";
-                await httpContext.Response.WriteAsJsonAsync(new
-                {
-                    error = "InternalServerError",
-                    message = GenericServerErrorMessage,
-                    traceId = httpContext.TraceIdentifier
-                }, ct);
-            }
+            await WriteWebSqlErrorAsync(httpContext, ex, logger, ct);
         }
         finally
         {
@@ -333,11 +293,27 @@ public static class WebSqlEndpoints
             // An empty result (or no result set) is a Parquet file with zero rows and the result columns.
             await ParquetResponseWriter.WriteAsync(httpContext, parquetService!, "websql", rows, columnNames, ct);
         }
-        catch (SecurityException secEx)
+        catch (Exception ex)
         {
-            logger.LogWarning(secEx, "WebSQL Security Violation. TraceId={TraceId}", httpContext.TraceIdentifier);
-            if (!httpContext.Response.HasStarted)
-            {
+            await WriteWebSqlErrorAsync(httpContext, ex, logger, ct);
+        }
+    }
+
+    private static async Task WriteWebSqlErrorAsync(
+        HttpContext httpContext,
+        Exception ex,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        if (httpContext.Response.HasStarted)
+        {
+            return;
+        }
+
+        switch (ex)
+        {
+            case SecurityException secEx:
+                logger.LogWarning(secEx, "WebSQL Security Violation. TraceId={TraceId}", httpContext.TraceIdentifier);
                 httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
                 httpContext.Response.ContentType = "application/json; charset=utf-8";
                 await httpContext.Response.WriteAsJsonAsync(new
@@ -346,13 +322,10 @@ public static class WebSqlEndpoints
                     message = secEx is WebSqlPolicyException ? secEx.Message : GenericForbiddenMessage,
                     traceId = httpContext.TraceIdentifier
                 }, ct);
-            }
-        }
-        catch (ArgumentException argEx)
-        {
-            logger.LogWarning(argEx, "WebSQL Bad Request. TraceId={TraceId}", httpContext.TraceIdentifier);
-            if (!httpContext.Response.HasStarted)
-            {
+                break;
+
+            case ArgumentException argEx:
+                logger.LogWarning(argEx, "WebSQL Bad Request. TraceId={TraceId}", httpContext.TraceIdentifier);
                 httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
                 httpContext.Response.ContentType = "application/json; charset=utf-8";
                 await httpContext.Response.WriteAsJsonAsync(new
@@ -361,14 +334,11 @@ public static class WebSqlEndpoints
                     message = GenericBadRequestMessage,
                     traceId = httpContext.TraceIdentifier
                 }, ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            // SEC M-10: Never echo exception/database messages to the client
-            logger.LogError(ex, "WebSQL Execution Failed. TraceId={TraceId}", httpContext.TraceIdentifier);
-            if (!httpContext.Response.HasStarted)
-            {
+                break;
+
+            default:
+                // SEC M-10: Never echo exception/database messages to the client
+                logger.LogError(ex, "WebSQL Execution Failed. TraceId={TraceId}", httpContext.TraceIdentifier);
                 httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 httpContext.Response.ContentType = "application/json; charset=utf-8";
                 await httpContext.Response.WriteAsJsonAsync(new
@@ -377,7 +347,7 @@ public static class WebSqlEndpoints
                     message = GenericServerErrorMessage,
                     traceId = httpContext.TraceIdentifier
                 }, ct);
-            }
+                break;
         }
     }
 
