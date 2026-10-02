@@ -708,6 +708,18 @@ public sealed class OpenMetadataOptions
     /// aktiv. Standard: false – neue Tabellen werden inaktiv angelegt, bis ein Gateway-Admin sie freigibt.
     /// </summary>
     public bool ActivateNewTables { get; init; } = false;
+
+    /// <summary>
+    /// EX-03: Default tenant assigned to OpenMetadata imported consents and catalog entries.
+    /// Standard: "legacy-single-tenant". Kann auf einen konkreten Mandanten gesetzt werden.
+    /// </summary>
+    public string DefaultTenantId { get; init; } = TenantId.LegacySingleTenant.Value;
+
+    /// <summary>
+    /// EX-03: Explizite Zuordnung "service.database" oder "service" (OpenMetadata) → Gateway-Tenant.
+    /// Ist die Map gesetzt, werden Tabellen primär über diese Zuordnung dem Mandanten zugewiesen.
+    /// </summary>
+    public Dictionary<string, string> ServiceDatabaseToTenantMap { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public sealed class SqlDataSourceOptions
