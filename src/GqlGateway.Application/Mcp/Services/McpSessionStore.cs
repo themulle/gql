@@ -14,10 +14,12 @@ public sealed class McpSessionStore : IMcpSessionStore
     private readonly ConcurrentDictionary<string, McpSessionContext> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Func<string, string, Task>> _sseSenders = new(StringComparer.Ordinal);
     private readonly ILogger<McpSessionStore> _logger;
+    private readonly GqlGateway.Application.State.IDistributedClusterStateProvider? _clusterState;
 
-    public McpSessionStore(ILogger<McpSessionStore> logger)
+    public McpSessionStore(ILogger<McpSessionStore> logger, GqlGateway.Application.State.IDistributedClusterStateProvider? clusterState = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _clusterState = clusterState;
     }
 
     internal const int MaxAllowedSessions = 10000;
@@ -84,6 +86,18 @@ public sealed class McpSessionStore : IMcpSessionStore
             _sessions[sessionId] = session;
         }
 
+        if (_clusterState != null)
+        {
+            try
+            {
+                _clusterState.SetAsync($"mcp:session:{sessionId}", session, DefaultSessionTtl).AsTask().GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to persist MCP session {SessionId} in cluster state.", sessionId);
+            }
+        }
+
         _logger.LogInformation("Created new MCP session {SessionId} for principal {PrincipalId} (UserSid: {UserSid}) in tenant {TenantId}.",
             sessionId, servicePrincipalId, userSid ?? "none", validatedTenant.Value);
 
@@ -93,7 +107,27 @@ public sealed class McpSessionStore : IMcpSessionStore
     public McpSessionContext? GetSession(string sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return null;
-        if (!_sessions.TryGetValue(sessionId, out var session)) return null;
+        if (!_sessions.TryGetValue(sessionId, out var session))
+        {
+            if (_clusterState != null)
+            {
+                try
+                {
+                    var remote = _clusterState.GetAsync<McpSessionContext>($"mcp:session:{sessionId}").AsTask().GetAwaiter().GetResult();
+                    if (remote != null)
+                    {
+                        session = remote;
+                        _sessions[sessionId] = session;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to retrieve remote MCP session {SessionId} from cluster state.", sessionId);
+                }
+            }
+
+            if (session == null) return null;
+        }
 
         var now = DateTimeOffset.UtcNow;
         if (now - session.LastActiveAt > DefaultSessionTtl)
@@ -105,6 +139,14 @@ public sealed class McpSessionStore : IMcpSessionStore
 
         var updated = session with { LastActiveAt = now };
         _sessions[sessionId] = updated;
+        if (_clusterState != null)
+        {
+            try
+            {
+                _clusterState.SetAsync($"mcp:session:{sessionId}", updated, DefaultSessionTtl).AsTask().GetAwaiter().GetResult();
+            }
+            catch { /* non-critical */ }
+        }
         return updated;
     }
 
@@ -120,6 +162,14 @@ public sealed class McpSessionStore : IMcpSessionStore
             var updated = current with { Roles = roles, GroupSids = groupSids };
             if (_sessions.TryUpdate(sessionId, updated, current))
             {
+                if (_clusterState != null)
+                {
+                    try
+                    {
+                        _clusterState.SetAsync($"mcp:session:{sessionId}", updated, DefaultSessionTtl).AsTask().GetAwaiter().GetResult();
+                    }
+                    catch { /* non-critical */ }
+                }
                 return updated;
             }
         }
@@ -170,6 +220,14 @@ public sealed class McpSessionStore : IMcpSessionStore
     {
         if (string.IsNullOrWhiteSpace(sessionId)) return false;
         _sseSenders.TryRemove(sessionId, out _);
+        if (_clusterState != null)
+        {
+            try
+            {
+                _clusterState.RemoveAsync($"mcp:session:{sessionId}").AsTask().GetAwaiter().GetResult();
+            }
+            catch { /* non-critical */ }
+        }
         var removed = _sessions.TryRemove(sessionId, out _);
         if (removed)
         {
@@ -183,6 +241,32 @@ public sealed class McpSessionStore : IMcpSessionStore
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentNullException.ThrowIfNull(sendEventAsync);
         _sseSenders[sessionId] = sendEventAsync;
+
+        // K-K14: Subscribe to cross-node SSE broadcast events for this session
+        if (_clusterState != null)
+        {
+            try
+            {
+                _clusterState.SubscribeAsync<McpSsePayload>($"mcp:sse:{sessionId}", async payload =>
+                {
+                    if (_sseSenders.TryGetValue(payload.SessionId, out var localSender))
+                    {
+                        try
+                        {
+                            await localSender(payload.EventType, payload.EventData).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogDebug(ex, "Failed to dispatch routed cross-node SSE event to MCP session {SessionId}.", payload.SessionId);
+                        }
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to subscribe to cross-node SSE events for MCP session {SessionId}.", sessionId);
+            }
+        }
     }
 
     public async Task<bool> SendEventAsync(string sessionId, string eventType, string eventData)
@@ -202,6 +286,23 @@ public sealed class McpSessionStore : IMcpSessionStore
                 return false;
             }
         }
+
+        // K-K14: Cross-node SSE routing
+        if (_clusterState != null)
+        {
+            try
+            {
+                await _clusterState.PublishEventAsync($"mcp:sse:{sessionId}", new McpSsePayload(sessionId, eventType, eventData)).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to publish cross-node SSE event for MCP session {SessionId}.", sessionId);
+            }
+        }
+
         return false;
     }
 }
+
+public sealed record McpSsePayload(string SessionId, string EventType, string EventData);

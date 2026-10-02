@@ -32,3 +32,10 @@ public sealed record HitLApprovalResult(
     HitLApprovalTicket Ticket,
     string? Message = null
 );
+
+public sealed record HitLApprovalBroadcast(
+    string ApprovalId,
+    string ApproverSid,
+    bool IsApproved,
+    string? Reason = null
+);

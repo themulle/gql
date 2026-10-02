@@ -220,6 +220,7 @@ public static class GatewayServiceCollectionExtensions
             services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
             services.AddSingleton<ITokenRevocationService, RedisTokenRevocationService>(); // SEC M-14 (GAP-B)
+            services.AddSingleton<GqlGateway.Application.State.IDistributedClusterStateProvider, GqlGateway.Infrastructure.State.RedisClusterStateProvider>();
         }
         else if (gatewayOptions.Caching.Redis.Enabled)
         {
@@ -233,6 +234,7 @@ public static class GatewayServiceCollectionExtensions
             services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
             services.AddSingleton<ITokenRevocationService, RedisTokenRevocationService>(); // SEC M-14 (GAP-B)
+            services.AddSingleton<GqlGateway.Application.State.IDistributedClusterStateProvider, GqlGateway.Infrastructure.State.RedisClusterStateProvider>();
         }
         else
         {
@@ -240,6 +242,7 @@ public static class GatewayServiceCollectionExtensions
             services.AddSingleton<IRateLimiterService, InMemoryRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
             services.AddSingleton<ITokenRevocationService, InMemoryTokenRevocationService>(); // SEC M-14 (GAP-B)
+            services.AddSingleton<GqlGateway.Application.State.IDistributedClusterStateProvider, GqlGateway.Infrastructure.State.InMemoryClusterStateProvider>();
         }
 
         services.AddSingleton<IEpochValidationService, EpochValidationService>();
@@ -665,6 +668,7 @@ public static class GatewayServiceCollectionExtensions
 
         // SEC M-03: Authenticated-user fallback policy and named role policies.
         services.AddAuthorization(GatewayPolicies.Configure);
+        services.AddSingleton<GqlGateway.Application.Interfaces.IGatewayRoleEvaluator, GqlGateway.Application.Security.GatewayRoleEvaluator>();
         services.AddHttpContextAccessor();
 
         return services;

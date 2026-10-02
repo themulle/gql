@@ -1,15 +1,21 @@
 namespace GqlGateway.Api.Security;
 
 using System.Security.Claims;
+using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.Security;
+using GqlGateway.Domain.Security;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
 
 /// <summary>
-/// SEC M-03: Named authorization policies. Endpoints attach them declaratively via
-/// <c>.RequireAuthorization(GatewayPolicies.GovernanceAdmin)</c> instead of hand-written role checks.
-/// Role names are taken verbatim from the existing handler checks.
+/// SEC M-03 & K-K10: Enterprise Named Authorization Policies and RBAC integration.
+/// Standardizes declarative policy attachment via <c>.RequireAuthorization(GatewayPolicies.GovernanceAdmin)</c>
+/// and typed role requirements via <c>.RequireGatewayRole(GatewayRole.DataSteward)</c>.
 /// </summary>
 public static class GatewayPolicies
 {
+    private static readonly IGatewayRoleEvaluator Evaluator = new GatewayRoleEvaluator();
+
     public const string GovernanceAdmin = "GovernanceAdmin";
     public const string Approver = "Approver";
     public const string ClusterAdmin = "ClusterAdmin";
@@ -18,7 +24,7 @@ public static class GatewayPolicies
     public const string SchemaPublisher = "SchemaPublisher";
 
     public static readonly string[] GovernanceAdminRoles = ["GovernanceAdmin", "ClusterAdmin"];
-    public static readonly string[] ApproverRoles = ["DataSteward", "DataOwner", "GovernanceAdmin"];
+    public static readonly string[] ApproverRoles = ["DataSteward", "DataOwner", "GovernanceAdmin", "ClusterAdmin"];
     public static readonly string[] ClusterAdminRoles = ["ClusterAdmin"];
     public static readonly string[] PrivacyAdminRoles = ["GovernanceAdmin", "PrivacyAdmin", "DataProtectionOfficer", "ClusterAdmin"];
     public static readonly string[] SchemaAdminRoles = ["GovernanceAdmin", "SchemaAdmin", "GatewayAdmin", "PlatformAdmin", "ClusterAdmin"];
@@ -27,8 +33,21 @@ public static class GatewayPolicies
     private static readonly string[] RoleClaimTypes = [ClaimTypes.Role, "role", "roles"];
 
     /// <summary>
-    /// True when the principal carries any of the given roles, either via <see cref="ClaimsPrincipal.IsInRole"/>
-    /// (identity role claim type) or via a raw "role"/"roles" claim as issued by Entra ID / ADFS.
+    /// K-K10: Checks if principal satisfies any of the strongly-typed GatewayRole requirements,
+    /// respecting role hierarchy (e.g. ClusterAdmin implies GovernanceAdmin/DataSteward).
+    /// </summary>
+    public static bool HasRole(ClaimsPrincipal? principal, GatewayRole role, string? tenantId = null)
+        => Evaluator.HasRole(principal, role, tenantId);
+
+    /// <summary>
+    /// K-K10: Checks if principal satisfies any of the strongly-typed GatewayRoles.
+    /// </summary>
+    public static bool HasAnyRole(ClaimsPrincipal? principal, IEnumerable<GatewayRole> roles, string? tenantId = null)
+        => Evaluator.HasAnyRole(principal, roles, tenantId);
+
+    /// <summary>
+    /// True when the principal carries any of the given roles, checking hierarchy,
+    /// <see cref="ClaimsPrincipal.IsInRole"/>, or raw "role"/"roles" claims.
     /// </summary>
     public static bool HasAnyRole(ClaimsPrincipal? principal, IReadOnlyList<string> roles)
     {
@@ -39,6 +58,7 @@ public static class GatewayPolicies
             return false;
         }
 
+        // 1. Direct claim or IsInRole check
         foreach (var role in roles)
         {
             if (principal.IsInRole(role))
@@ -47,9 +67,26 @@ public static class GatewayPolicies
             }
         }
 
-        return principal.Claims.Any(c =>
+        if (principal.Claims.Any(c =>
             RoleClaimTypes.Contains(c.Type, StringComparer.Ordinal) &&
-            roles.Contains(c.Value, StringComparer.Ordinal));
+            roles.Contains(c.Value, StringComparer.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        // 2. K-K10: Hierarchy evaluation for typed role names
+        foreach (var roleName in roles)
+        {
+            if (GatewayRoleExtensions.TryParseRole(roleName, out var targetRole))
+            {
+                if (Evaluator.HasRole(principal, targetRole))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -60,7 +97,6 @@ public static class GatewayPolicies
         ArgumentNullException.ThrowIfNull(options);
 
         // SEC M-03: Endpoints without explicit metadata require an authenticated user.
-        // Public endpoints must opt out explicitly via .AllowAnonymous().
         options.FallbackPolicy = new AuthorizationPolicyBuilder()
             .RequireAuthenticatedUser()
             .Build();
@@ -76,6 +112,19 @@ public static class GatewayPolicies
     private static void AddRolePolicy(AuthorizationOptions options, string name, string[] roles)
     {
         options.AddPolicy(name, policy => policy
+            .RequireAuthenticatedUser()
+            .RequireAssertion(ctx => HasAnyRole(ctx.User, roles)));
+    }
+
+    /// <summary>
+    /// K-K10: Fluent route helper to enforce strongly-typed GatewayRole requirements on Minimal API endpoints.
+    /// </summary>
+    public static RouteHandlerBuilder RequireGatewayRole(this RouteHandlerBuilder builder, params GatewayRole[] roles)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(roles);
+
+        return builder.RequireAuthorization(policy => policy
             .RequireAuthenticatedUser()
             .RequireAssertion(ctx => HasAnyRole(ctx.User, roles)));
     }

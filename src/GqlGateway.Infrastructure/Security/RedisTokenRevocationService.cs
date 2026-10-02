@@ -43,6 +43,26 @@ public sealed class RedisTokenRevocationService : ITokenRevocationService
         }
 
         _prefix = instance + "revoked:";
+
+        try
+        {
+            var sub = _multiplexer.GetSubscriber();
+            sub.Subscribe(RedisChannel.Literal(_prefix + "events:revoked"), (ch, msg) =>
+            {
+                if (msg.IsNullOrEmpty) return;
+                var parts = msg.ToString().Split('|');
+                if (parts.Length >= 3 &&
+                    long.TryParse(parts[1], out var revokedAtMs) &&
+                    long.TryParse(parts[2], out var untilMs))
+                {
+                    _local.Revoke(parts[0], DateTimeOffset.FromUnixTimeMilliseconds(revokedAtMs), DateTimeOffset.FromUnixTimeMilliseconds(untilMs));
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to subscribe to Redis token revocation channel.");
+        }
     }
 
     internal string BuildKey(string normalizedKey) => _prefix + normalizedKey;
@@ -115,5 +135,16 @@ public sealed class RedisTokenRevocationService : ITokenRevocationService
         var db = _multiplexer.GetDatabase();
         var value = now.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
         await db.StringSetAsync((RedisKey)BuildKey(key), value, ttl, When.Always).ConfigureAwait(false);
+
+        try
+        {
+            var sub = _multiplexer.GetSubscriber();
+            var payload = $"{key}|{now.ToUnixTimeMilliseconds()}|{until.ToUnixTimeMilliseconds()}";
+            await sub.PublishAsync(RedisChannel.Literal(_prefix + "events:revoked"), (RedisValue)payload).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to publish token revocation event to Redis cluster.");
+        }
     }
 }

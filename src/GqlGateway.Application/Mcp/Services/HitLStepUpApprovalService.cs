@@ -21,6 +21,7 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
     private readonly IOptions<GatewayOptions> _options;
     private readonly IServiceScopeFactory? _scopeFactory;
     private readonly ILogger<HitLStepUpApprovalService> _logger;
+    private readonly GqlGateway.Application.State.IDistributedClusterStateProvider? _clusterState;
 
     private sealed class TicketEntry
     {
@@ -38,11 +39,13 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
     public HitLStepUpApprovalService(
         IOptions<GatewayOptions> options,
         ILogger<HitLStepUpApprovalService> logger,
-        IServiceScopeFactory? scopeFactory = null)
+        IServiceScopeFactory? scopeFactory = null,
+        GqlGateway.Application.State.IDistributedClusterStateProvider? clusterState = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _scopeFactory = scopeFactory;
+        _clusterState = clusterState;
     }
 
     public async Task<HitLApprovalResult> RequestStepUpApprovalAsync(
@@ -118,6 +121,38 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
         var entry = new TicketEntry(ticket);
         _tickets[approvalId] = entry;
 
+        IAsyncDisposable? clusterSubscription = null;
+        if (_clusterState != null)
+        {
+            try
+            {
+                await _clusterState.SetAsync($"hitl:ticket:{approvalId}", ticket, TimeSpan.FromSeconds(timeoutSeconds + 900), ct).ConfigureAwait(false);
+                clusterSubscription = _clusterState.SubscribeAsync<HitLApprovalBroadcast>($"hitl:events:{approvalId}", broadcast =>
+                {
+                    lock (entry.Lock)
+                    {
+                        if (entry.Ticket.Status == HitLApprovalStatus.Pending)
+                        {
+                            entry.Ticket = entry.Ticket with
+                            {
+                                Status = broadcast.IsApproved ? HitLApprovalStatus.Approved : HitLApprovalStatus.Rejected,
+                                ApproverSid = broadcast.ApproverSid,
+                                RejectionReason = broadcast.IsApproved ? null : (broadcast.Reason ?? "Rejected by cluster decision.")
+                            };
+                            entry.CompletedAt = DateTimeOffset.UtcNow;
+                            var result = new HitLApprovalResult(broadcast.IsApproved, entry.Ticket, broadcast.IsApproved ? "Approval granted." : (broadcast.Reason ?? "Approval rejected."));
+                            entry.Tcs.TrySetResult(result);
+                        }
+                    }
+                    return ValueTask.CompletedTask;
+                }, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to register HitL ticket '{ApprovalId}' in cluster state.", approvalId);
+            }
+        }
+
         _logger.LogInformation("HitL Step-Up approval requested. ID: {ApprovalId}, Table: {Table}, Requester: {RequesterSid}, Timeout: {Timeout}s",
             approvalId, targetTable, requesterSid, timeoutSeconds);
 
@@ -165,6 +200,10 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
         }
         finally
         {
+            if (clusterSubscription != null)
+            {
+                try { await clusterSubscription.DisposeAsync().ConfigureAwait(false); } catch { /* ignore */ }
+            }
             // SEC M-09: Mark the ticket as finished so it is purged after the retention window (no unbounded growth).
             lock (entry.Lock)
             {
@@ -257,6 +296,19 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
             };
             entry.CompletedAt = DateTimeOffset.UtcNow;
 
+            if (_clusterState != null)
+            {
+                try
+                {
+                    _clusterState.SetAsync($"hitl:ticket:{approvalId}", entry.Ticket, CompletedTicketRetention).AsTask().GetAwaiter().GetResult();
+                    _clusterState.PublishEventAsync($"hitl:events:{approvalId}", new HitLApprovalBroadcast(approvalId, approver.ApproverSid, true)).AsTask().GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to broadcast HitL approval for ticket '{ApprovalId}' to cluster.", approvalId);
+                }
+            }
+
             var approvedResult = new HitLApprovalResult(true, entry.Ticket, "Approval granted.");
             entry.Tcs.TrySetResult(approvedResult);
 
@@ -305,6 +357,19 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
             };
             entry.CompletedAt = DateTimeOffset.UtcNow;
 
+            if (_clusterState != null)
+            {
+                try
+                {
+                    _clusterState.SetAsync($"hitl:ticket:{approvalId}", entry.Ticket, CompletedTicketRetention).AsTask().GetAwaiter().GetResult();
+                    _clusterState.PublishEventAsync($"hitl:events:{approvalId}", new HitLApprovalBroadcast(approvalId, approver.ApproverSid, false, entry.Ticket.RejectionReason)).AsTask().GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to broadcast HitL rejection for ticket '{ApprovalId}' to cluster.", approvalId);
+                }
+            }
+
             var rejectedResult = new HitLApprovalResult(false, entry.Ticket, entry.Ticket.RejectionReason);
             entry.Tcs.TrySetResult(rejectedResult);
 
@@ -322,6 +387,25 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
         PurgeStaleTickets(DateTimeOffset.UtcNow);
 
         if (!_tickets.TryGetValue(approvalId, out entry))
+        {
+            if (_clusterState != null)
+            {
+                try
+                {
+                    var remoteTicket = _clusterState.GetAsync<HitLApprovalTicket>($"hitl:ticket:{approvalId}").AsTask().GetAwaiter().GetResult();
+                    if (remoteTicket != null)
+                    {
+                        entry = _tickets.GetOrAdd(approvalId, _ => new TicketEntry(remoteTicket));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to fetch remote HitL ticket '{ApprovalId}' from cluster state.", approvalId);
+                }
+            }
+        }
+
+        if (entry == null)
         {
             return false;
         }
@@ -374,7 +458,24 @@ public sealed class HitLStepUpApprovalService : IHitLStepUpApprovalService
 
     public HitLApprovalTicket? GetTicket(string approvalId)
     {
-        return _tickets.TryGetValue(approvalId, out var entry) ? entry.Ticket : null;
+        if (_tickets.TryGetValue(approvalId, out var entry))
+        {
+            return entry.Ticket;
+        }
+
+        if (_clusterState != null)
+        {
+            try
+            {
+                return _clusterState.GetAsync<HitLApprovalTicket>($"hitl:ticket:{approvalId}").AsTask().GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to fetch remote HitL ticket '{ApprovalId}' from cluster state.", approvalId);
+            }
+        }
+
+        return null;
     }
 
     public IReadOnlyList<HitLApprovalTicket> GetPendingTickets(string? tenantId = null)
