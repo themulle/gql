@@ -13,7 +13,7 @@
 [![Architecture](https://img.shields.io/badge/Architecture-Clean%20%2F%20Onion-blue)](docs/architecture/arc42.md)
 [![Features](https://img.shields.io/badge/Features-Enterprise%20Catalog-blueviolet)](featurelist.md)
 [![Comparison](https://img.shields.io/badge/Comparison-Market%20Moats-orange)](featurecomparison.md)
-[![License](https://img.shields.io/badge/License-Proprietary%20%2F%20Enterprise-lightgrey)](#)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1%20%2F%20Commercial-blue)](#-license)
 
 GqlGateway is a high-performance, secure, centralized enterprise GraphQL gateway built with **.NET 10** and **Hot Chocolate 16.6.7**. It provides unified GraphQL access to heterogeneous enterprise databases (**Microsoft SQL Server / MSSQL, SQLite, PostgreSQL, Databricks, Oracle**), modern **Apache Iceberg Lakehouses**, REST APIs, and federated **Hot Chocolate Fusion Subgraphs** while enforcing a strict **Zero-Trust Data-Owner-Consent** governance model.
 
@@ -633,4 +633,10 @@ For comprehensive engineering and operational guides, consult the `docs/` direct
 
 ## 📄 License
 
-Internal Enterprise Application. All rights reserved.
+This repository follows a dual-licensing / Open-Core model:
+
+- **GqlGateway Core (`gql/` & `gql_sqlparser/`)**: Licensed under the **[Business Source License 1.1 (BSL 1.1)](LICENSE)**.
+  - **Free for Internal Use**: Free to use in development, testing, and internal enterprise production environments.
+  - **Cloud Hosting & Managed Services**: Offering GqlGateway as a hosted service, managed API gateway, or cloud service to third parties is strictly subject to a commercial license.
+  - **Change License**: Transitions automatically to the **Apache License, Version 2.0** on **2029-10-01**.
+- **Enterprise Extensions (`gql_extensions/`)**: Proprietary enterprise modules (Apache Iceberg Lakehouse, Data Catalog Sync for Microsoft Purview/Collibra, ServiceNow/Jira ITSM, WORM S3 Compliance Export) are subject to a **[Commercial Enterprise License](../gql_extensions/LICENSE)**. Commercial distribution and reselling are reserved exclusively for the copyright holders.
