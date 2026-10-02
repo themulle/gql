@@ -239,5 +239,39 @@ public sealed class FocusCostAccountingTests
         context.Response.StatusCode.ShouldBe(StatusCodes.Status200OK);
         context.Response.Headers.ContainsKey("X-FinOps-Budget-Warning").ShouldBeTrue();
     }
+
+    [Fact]
+    public void BuildFocusCsv_NeutralizesFormulaInjection_AndEscapesQuotes()
+    {
+        // Arrange
+        var records = new List<FocusCostRecord>
+        {
+            new(
+                ChargePeriodStart: "2026-10-01T00:00:00Z",
+                ChargePeriodEnd: "2026-10-02T00:00:00Z",
+                BilledCost: 1.25m,
+                EffectiveCost: 1.25m,
+                Currency: "EUR",
+                ConsumedQuantity: 1000,
+                ConsumedUnit: "Tokens",
+                SubAccountId: "=cmd|' /C calc'!A0",
+                ResourceId: "Query\"WithQuotes",
+                ServiceName: "+@maliciousService",
+                PricingCategory: "AI-Inference"
+            )
+        };
+
+        // Act (using reflection to invoke private BuildFocusCsv method on FinOpsEndpoints)
+        var buildMethod = typeof(GqlGateway.Api.Endpoints.FinOpsEndpoints)
+            .GetMethod("BuildFocusCsv", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        buildMethod.ShouldNotBeNull();
+
+        var csv = (string)buildMethod.Invoke(null, new object[] { records })!;
+
+        // Assert: formula prefixes must be neutralized with leading single quote
+        csv.ShouldContain("\"'=cmd|' /C calc'!A0\"");
+        csv.ShouldContain("\"Query\"\"WithQuotes\"");
+        csv.ShouldContain("\"'+@maliciousService\"");
+    }
 #pragma warning restore CA2012
 }

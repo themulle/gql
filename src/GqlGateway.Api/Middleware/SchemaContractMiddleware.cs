@@ -73,7 +73,7 @@ public sealed class SchemaContractMiddleware
                 {
                     new
                     {
-                        message = $"Unknown schema contract '{contractName}'. Available contracts: [{string.Join(", ", contractManager.GetAvailableContracts())}]",
+                        message = $"Unknown schema contract '{contractName}'.",
                         extensions = new { code = "INVALID_SCHEMA_CONTRACT", contract = contractName }
                     }
                 }

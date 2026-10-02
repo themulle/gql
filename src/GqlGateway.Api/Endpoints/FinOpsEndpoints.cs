@@ -80,6 +80,16 @@ public static class FinOpsEndpoints
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
+            var callerTenant = user.FindFirst("tenant_id")?.Value
+                               ?? user.FindFirst("tid")?.Value;
+
+            // Non-cluster admins can only query their own tenant budget (IDOR prevention)
+            var isClusterAdmin = GatewayPolicies.HasAnyRole(user, ["ClusterAdmin", "GovernanceAdmin"]);
+            if (!isClusterAdmin && (string.IsNullOrWhiteSpace(callerTenant) || !string.Equals(callerTenant, tenantId, StringComparison.OrdinalIgnoreCase)))
+            {
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            }
+
             var status = await accountingService.CheckBudgetAsync(tenantId, request.HttpContext.RequestAborted);
             return Results.Ok(status);
         });
@@ -94,19 +104,35 @@ public static class FinOpsEndpoints
 
         foreach (var r in records)
         {
-            sb.Append('\"').Append(r.ChargePeriodStart).Append("\",");
-            sb.Append('\"').Append(r.ChargePeriodEnd).Append("\",");
+            sb.Append(EscapeCsvField(r.ChargePeriodStart)).Append(',');
+            sb.Append(EscapeCsvField(r.ChargePeriodEnd)).Append(',');
             sb.Append(r.BilledCost).Append(',');
             sb.Append(r.EffectiveCost).Append(',');
-            sb.Append('\"').Append(r.Currency).Append("\",");
+            sb.Append(EscapeCsvField(r.Currency)).Append(',');
             sb.Append(r.ConsumedQuantity).Append(',');
-            sb.Append('\"').Append(r.ConsumedUnit).Append("\",");
-            sb.Append('\"').Append(r.SubAccountId).Append("\",");
-            sb.Append('\"').Append(r.ResourceId).Append("\",");
-            sb.Append('\"').Append(r.ServiceName).Append("\",");
-            sb.Append('\"').Append(r.PricingCategory).AppendLine("\"");
+            sb.Append(EscapeCsvField(r.ConsumedUnit)).Append(',');
+            sb.Append(EscapeCsvField(r.SubAccountId)).Append(',');
+            sb.Append(EscapeCsvField(r.ResourceId)).Append(',');
+            sb.Append(EscapeCsvField(r.ServiceName)).Append(',');
+            sb.AppendLine(EscapeCsvField(r.PricingCategory));
         }
 
         return sb.ToString();
+    }
+
+    private static string EscapeCsvField(string? val)
+    {
+        if (string.IsNullOrEmpty(val))
+        {
+            return "\"\"";
+        }
+
+        // Neutralize CSV formula injection (CWE-1236)
+        if (val.StartsWith('=') || val.StartsWith('+') || val.StartsWith('-') || val.StartsWith('@') || val.StartsWith('\t') || val.StartsWith('\r'))
+        {
+            val = "'" + val;
+        }
+
+        return "\"" + val.Replace("\"", "\"\"") + "\"";
     }
 }

@@ -13,10 +13,8 @@ using System.Text.RegularExpressions;
 /// </summary>
 public static class SchemaContractFilter
 {
-    private static readonly Regex TagRegex = new(@"@tag\s*\(\s*name\s*:\s*""([^""]+)""\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex InaccessibleRegex = new(@"@inaccessible\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex TypeBlockRegex = new(@"(type|interface|input|enum|union)\s+([A-Za-z0-9_]+)(?:\s+implements\s+[A-Za-z0-9_&,\s]+)?(?:\s+@[A-Za-z0-9_()""\s:,]+)?\s*\{([^}]*)\}", RegexOptions.Compiled);
-    private static readonly Regex FieldLineRegex = new(@"^\s*([A-Za-z0-9_]+)(?:\([^)]*\))?\s*:\s*([^@\r\n]+)(.*)$", RegexOptions.Multiline | RegexOptions.Compiled);
+    private static readonly Regex TagRegex = new(@"@tag\s*\(\s*name\s*:\s*""([^""]+)""\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
+    private static readonly Regex InaccessibleRegex = new(@"@inaccessible\b", RegexOptions.Compiled | RegexOptions.IgnoreCase, TimeSpan.FromSeconds(1));
 
     public static string FilterSchema(string sdl, SchemaContractDefinition contract)
     {
