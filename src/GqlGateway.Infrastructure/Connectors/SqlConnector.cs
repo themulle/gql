@@ -11,6 +11,7 @@ using GqlGateway.Application.Services;
 using GqlGateway.Application.Sql;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Connectors;
+using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Logging;
@@ -34,7 +35,8 @@ public sealed class SqlConnector : IGqlGatewayConnector
         IOptions<GatewayOptions>? options = null,
         ILogger<SqlConnector>? logger = null,
         Microsoft.Extensions.Hosting.IHostEnvironment? environment = null,
-        ConnectorCapabilities? customCapabilities = null)
+        ConnectorCapabilities? customCapabilities = null,
+        IColumnMaskingProvider? maskingProvider = null)
     {
         ConnectorId = string.IsNullOrWhiteSpace(connectorId) ? "sql" : connectorId;
         Capabilities = customCapabilities ?? ConnectorCapabilities.DefaultSql;
@@ -45,7 +47,8 @@ public sealed class SqlConnector : IGqlGatewayConnector
             options,
             logger,
             environment,
-            ConnectorId);
+            ConnectorId,
+            maskingProvider);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -115,9 +118,11 @@ public sealed class SqlConnector : IGqlGatewayConnector
             IOptions<GatewayOptions>? options,
             ILogger<SqlConnector>? logger,
             Microsoft.Extensions.Hosting.IHostEnvironment? environment,
-            string connectorId)
+            string connectorId,
+            IColumnMaskingProvider? maskingProvider)
         {
-            _executor = new SqlDataSourceExecutor(connectionFactory, options, null, environment);
+            // SEC H-13: Without the masking provider HMAC columns would only be redacted instead of pseudonymized.
+            _executor = new SqlDataSourceExecutor(connectionFactory, options, null, environment, maskingProvider);
             _connectorId = connectorId;
         }
 

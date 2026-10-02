@@ -201,7 +201,8 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
 
         // 2. Pre-Execution Policy Check: Casbin ABAC Enforcement
         var effectiveTable = resolvedTable ?? new TableIdentifier("mcp", "tool", tool.Name.ToLowerInvariant());
-        bool isSchemaTool = _options.Value.IsOpenSchemaAllowed &&
+        // SEC H-02: OpenSchema no longer exempts MCP schema tools from ABAC; only the explicit MCP auth bypass does.
+        bool isSchemaTool = _options.Value.IsMcpAuthBypassed &&
             (string.Equals(tool.Name, "query_data_catalog", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(tool.Name, "get_golden_queries", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(effectiveTable.Domain, "governance", StringComparison.OrdinalIgnoreCase) ||
@@ -385,6 +386,31 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
             _logger.LogWarning("SECURITY ALERT [WARN]: AI tool execution for tool '{ToolName}' is running unmasked (warn_allow_unmasked_ai_access is ACTIVE).", tool.Name);
         }
 
+        // SEC M-17: Structured executor error results (deny / execution failure / not available) are reported as
+        // tool errors (MCP isError:true) and are not audited as ALLOW. GAP07: the audit vocabulary is ALLOW/DENY
+        // (PolicySimulationService treats every non-DENY value as ALLOW), so errors are recorded as DENY with the code in the details.
+        if (TryGetExecutorError(rawDataJson, out var errorCode))
+        {
+            activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+            McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, wasMasked, false);
+
+            await RecordAuditEventAsync(
+                tool.Name,
+                sessionContext,
+                decision: "DENY",
+                details: $"Tool execution returned an error result ({errorCode ?? "UNKNOWN"}).",
+                isMasked: wasMasked,
+                truncated: false,
+                estimatedTokens: 0,
+                cancellationToken).ConfigureAwait(false);
+
+            return new McpToolCallResult(
+                IsSuccess: false,
+                ContentJson: scrubbedJson,
+                ErrorMessage: scrubbedJson,
+                IsMasked: wasMasked);
+        }
+
         // 6. Token-Budgeting & Context Window Safeguards
         int maxTokens = _options.Value.Mcp.MaxTokensPerCall > 0 ? _options.Value.Mcp.MaxTokensPerCall : 4096;
         int estimatedTokens = Math.Max(1, scrubbedJson.Length / 4);
@@ -477,10 +503,49 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to record audit event for MCP tool execution '{ToolName}'.", toolName);
-            if (!_options.Value.IsMcpAuthBypassed && !_options.Value.IsOpenSchemaAllowed)
+            if (!_options.Value.IsMcpAuthBypassed)
             {
                 throw new System.Security.SecurityException($"Zero-Trust: Audit-Protokollierung für MCP-Tool '{toolName}' fehlgeschlagen. Ausführung abgebrochen (Fail-Closed).", ex);
             }
+        }
+    }
+
+    /// <summary>
+    /// SEC M-17: Detects the structured error payload produced by the MCP query executor
+    /// (<c>{"isError":true,"error":{"code":...,"message":...}}</c>).
+    /// </summary>
+    internal static bool TryGetExecutorError(string? resultJson, out string? errorCode)
+    {
+        errorCode = null;
+        if (string.IsNullOrWhiteSpace(resultJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(resultJson);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("isError", out var isErrorProp) ||
+                isErrorProp.ValueKind != JsonValueKind.True)
+            {
+                return false;
+            }
+
+            if (root.TryGetProperty("error", out var errorProp) &&
+                errorProp.ValueKind == JsonValueKind.Object &&
+                errorProp.TryGetProperty("code", out var codeProp) &&
+                codeProp.ValueKind == JsonValueKind.String)
+            {
+                errorCode = codeProp.GetString();
+            }
+
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

@@ -500,7 +500,7 @@ public sealed class Wave3MarketFeaturesTests
     // =========================================================================
 
     [Fact]
-    public void ParquetExportService_SerializesValidParquetBinary()
+    public async Task ParquetExportService_SerializesValidParquetBinary()
     {
         var options = Options.Create(new GatewayOptions
         {
@@ -520,7 +520,7 @@ public sealed class Wave3MarketFeaturesTests
             Columns: ["id", "name", "is_active", "score"]
         );
 
-        var result = service.ExportToParquet(request, rows);
+        var result = await service.ExportToParquetAsync(request, rows);
 
         Assert.NotNull(result);
         Assert.Equal(2, result.RowCount);
@@ -535,10 +535,17 @@ public sealed class Wave3MarketFeaturesTests
         var footerMagic = Encoding.ASCII.GetString(result.Data[^4..]);
         Assert.Equal("PAR1", headerMagic);
         Assert.Equal("PAR1", footerMagic);
+
+        // Real Parquet: readable with a Parquet reader, typed columns
+        var columns = await ReadParquetColumnsAsync(result.Data);
+        Assert.Equal(new object?[] { 1L, 2L }, columns["id"]);
+        Assert.Equal(new object?[] { "Alice", "Bob" }, columns["name"]);
+        Assert.Equal(new object?[] { true, false }, columns["is_active"]);
+        Assert.Equal(new object?[] { 99.5, 82.0 }, columns["score"]);
     }
 
     [Fact]
-    public void ParquetExportService_HierarchicalNestedStructures_SerializesToListOrStruct()
+    public async Task ParquetExportService_HierarchicalNestedStructures_SerializesToListOrStruct()
     {
         var options = Options.Create(new GatewayOptions
         {
@@ -563,7 +570,7 @@ public sealed class Wave3MarketFeaturesTests
             Columns: ["customer_id", "nested_order"]
         );
 
-        var result = service.ExportToParquet(request, rows);
+        var result = await service.ExportToParquetAsync(request, rows);
 
         Assert.NotNull(result);
         Assert.Equal(1, result.RowCount);
@@ -573,10 +580,16 @@ public sealed class Wave3MarketFeaturesTests
         var footerMagic = Encoding.ASCII.GetString(result.Data[^4..]);
         Assert.Equal("PAR1", headerMagic);
         Assert.Equal("PAR1", footerMagic);
+
+        // Nested object flattened into "parent.child" columns, list serialized as JSON string
+        var columns = await ReadParquetColumnsAsync(result.Data);
+        Assert.Equal(new object?[] { 101L }, columns["customer_id"]);
+        Assert.Equal(new object?[] { "ORD-99" }, columns["nested_order.order_id"]);
+        Assert.Equal(new object?[] { "[\"item1\",\"item2\"]" }, columns["nested_order.items"]);
     }
 
     [Fact]
-    public void ParquetExportService_VULN_01_PreservesMaskedColumnsVerbatim_NoMaskingBypass()
+    public async Task ParquetExportService_VULN_01_PreservesMaskedColumnsVerbatim_NoMaskingBypass()
     {
         var options = Options.Create(new GatewayOptions());
         var service = new ParquetExportService(options, NullLogger<ParquetExportService>.Instance);
@@ -599,12 +612,39 @@ public sealed class Wave3MarketFeaturesTests
             Columns: ["id", "iban", "email"]
         );
 
-        var result = service.ExportToParquet(request, rows);
+        var result = await service.ExportToParquetAsync(request, rows);
 
-        // Verify that masked strings are present verbatim in the binary Parquet file
-        var binaryText = Encoding.UTF8.GetString(result.Data);
-        Assert.Contains(maskedIban, binaryText);
-        Assert.Contains(maskedEmail, binaryText);
+        // Verify that masked strings are read back verbatim from the (compressed) Parquet file
+        var columns = await ReadParquetColumnsAsync(result.Data);
+        Assert.Equal(new object?[] { maskedIban }, columns["iban"]);
+        Assert.Equal(new object?[] { maskedEmail }, columns["email"]);
+        Assert.Equal(new object?[] { 1001L }, columns["id"]);
+    }
+
+    private static async Task<Dictionary<string, object?[]>> ReadParquetColumnsAsync(byte[] data)
+    {
+        using var stream = new System.IO.MemoryStream(data);
+        using var reader = await Parquet.ParquetReader.CreateAsync(stream);
+        var result = new Dictionary<string, object?[]>(StringComparer.Ordinal);
+        var fields = reader.Schema.GetDataFields();
+        foreach (var field in fields)
+        {
+            result[field.Name] = [];
+        }
+
+        if (reader.RowGroupCount == 0)
+        {
+            return result;
+        }
+
+        using var rowGroup = reader.OpenRowGroupReader(0);
+        foreach (var field in fields)
+        {
+            var column = await rowGroup.ReadColumnAsync(field);
+            result[field.Name] = column.Data.Cast<object?>().ToArray();
+        }
+
+        return result;
     }
 
     [Theory]
@@ -612,22 +652,22 @@ public sealed class Wave3MarketFeaturesTests
     [InlineData("table\r\nSet-Cookie: evil=1")]
     [InlineData("table; DROP TABLE users;--")]
     [InlineData("schema/table")]
-    public void ParquetExportService_VULN_02_PathTraversalAndCrlf_StrictlyRejected(string maliciousTableName)
+    public async Task ParquetExportService_VULN_02_PathTraversalAndCrlf_StrictlyRejected(string maliciousTableName)
     {
         var options = Options.Create(new GatewayOptions());
         var service = new ParquetExportService(options, NullLogger<ParquetExportService>.Instance);
 
         // TableIdentifier constructor itself or ParquetExportService validation prevents path traversal & invalid characters
-        Assert.ThrowsAny<ArgumentException>(() =>
+        await Assert.ThrowsAnyAsync<ArgumentException>(async () =>
         {
             var table = new TableIdentifier("analytics", "public", maliciousTableName);
             var req = new ParquetExportRequest(table, ["id"]);
-            service.ExportToParquet(req, []);
+            await service.ExportToParquetAsync(req, []);
         });
     }
 
     [Fact]
-    public void ParquetExportService_VULN_03_ParquetBomb_EnforcesMaxRowsAndTruncation()
+    public async Task ParquetExportService_VULN_03_ParquetBomb_EnforcesMaxRowsAndTruncation()
     {
         var options = Options.Create(new GatewayOptions
         {
@@ -647,10 +687,13 @@ public sealed class Wave3MarketFeaturesTests
             Limit: 1000 // Client requested 1000, but Gateway max is 50
         );
 
-        var result = service.ExportToParquet(request, rows);
+        var result = await service.ExportToParquetAsync(request, rows);
 
         Assert.Equal(50, result.RowCount);
         Assert.True(result.IsTruncated);
+
+        var columns = await ReadParquetColumnsAsync(result.Data);
+        Assert.Equal(50, columns["id"].Length);
     }
 
     // =========================================================================

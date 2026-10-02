@@ -2,7 +2,7 @@ namespace GqlGateway.Tests.Unit;
 
 using System;
 using GqlGateway.Domain.Model;
-using GqlGateway.Infrastructure.Streaming;
+using GqlGateway.Extensions.Cdc;
 using Shouldly;
 using Xunit;
 

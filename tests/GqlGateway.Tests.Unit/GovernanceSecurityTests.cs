@@ -607,12 +607,14 @@ public class GovernanceSecurityTests : IDisposable
     }
 
     [Fact]
-    public async Task ServiceNowClient_InProductionWithoutBaseAddress_ReturnsError()
+    public async Task ServiceNowClient_WithoutConfiguredBaseUrl_ReturnsError()
     {
-        var prodEnv = new DummyHostEnvironment("Production");
-        using var httpClient = new System.Net.Http.HttpClient(); // BaseAddress is null
-        var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<GqlGateway.Extensions.Itsm.ServiceNowClient>.Instance;
-        var client = new GqlGateway.Extensions.Itsm.ServiceNowClient(httpClient, logger, prodEnv);
+        // EXT-MOVE: the former extension duplicate ServiceNowClient was removed; the remaining ServiceNowTableApiClient
+        // must fail closed (no request, no invented ticket) when no ServiceNow base URL is configured.
+        using var httpClient = new System.Net.Http.HttpClient();
+        var options = Microsoft.Extensions.Options.Options.Create(new GqlGateway.Domain.Options.GatewayOptions());
+        var logger = Microsoft.Extensions.Logging.Abstractions.NullLogger<GqlGateway.Extensions.Itsm.ServiceNowTableApiClient>.Instance;
+        var client = new GqlGateway.Extensions.Itsm.ServiceNowTableApiClient(httpClient, options, logger);
 
         var result = await client.CreateAccessTicketAsync(new ItsmTicketRequest(
             new TenantId("tenant-a"),
@@ -624,7 +626,8 @@ public class GovernanceSecurityTests : IDisposable
             null));
 
         result.Success.ShouldBeFalse();
-        result.ErrorCode.ShouldBe("ITSM_NOT_CONFIGURED");
+        result.TicketReference.ShouldBeNull();
+        result.ErrorCode.ShouldBe("CONFIGURATION_ERROR");
     }
 
     [Theory]

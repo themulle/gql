@@ -68,21 +68,39 @@ public sealed class PluginManager : IPluginManager, IDisposable
             return 0;
         }
 
-        // CRIT-01: Cryptographic Integrity Verification via manifest.json
+        // SEC M-27: the trust anchor are the SHA-256 hashes in configuration (Plugins:TrustedPluginHashes,
+        // ideally sourced from Key Vault / a read-only config map). manifest.json next to the DLLs is writable by
+        // the same party that can drop DLLs and is therefore only accepted as an additional, consistent statement.
+        var env = _serviceProvider?.GetService(typeof(Microsoft.Extensions.Hosting.IHostEnvironment)) as Microsoft.Extensions.Hosting.IHostEnvironment;
+        bool isDev = string.Equals(env?.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
+        var configuredHashes = _options?.Value.Plugins.TrustedPluginHashes;
+
         var manifestPath = Path.Combine(fullDirectoryPath, "manifest.json");
-        Dictionary<string, string>? manifest = null;
-        if (File.Exists(manifestPath))
+        Dictionary<string, string>? manifest = File.Exists(manifestPath) ? LoadManifest(manifestPath) : null;
+
+        PluginTrustList? trustList = null;
+        if (configuredHashes != null && configuredHashes.Count > 0)
         {
-            manifest = LoadManifest(manifestPath);
+            trustList = new PluginTrustList(fullDirectoryPath, configuredHashes);
+            if (manifest != null)
+            {
+                trustList.EnsureManifestConsistent(manifest);
+            }
+        }
+        else if (_options?.Value.Plugins.RequireIntegrityManifest == true || !isDev)
+        {
+            throw new SecurityException(
+                $"Sicherheitsfehler: Für das Plugin-Verzeichnis '{fullDirectoryPath}' sind keine vertrauenswürdigen Hashes (Plugins:TrustedPluginHashes) konfiguriert. manifest.json wird nicht als Vertrauensanker akzeptiert.");
+        }
+        else if (manifest != null)
+        {
+            // Development convenience only: verify against the local manifest when no configuration exists.
+            _logger.LogWarning("Plugins:TrustedPluginHashes is empty; verifying plugins against the local manifest.json (Development only).");
+            trustList = new PluginTrustList(fullDirectoryPath, manifest);
         }
         else
         {
-            var env = _serviceProvider?.GetService(typeof(Microsoft.Extensions.Hosting.IHostEnvironment)) as Microsoft.Extensions.Hosting.IHostEnvironment;
-            bool isDev = string.Equals(env?.EnvironmentName, "Development", StringComparison.OrdinalIgnoreCase);
-            if (_options?.Value.Plugins.RequireIntegrityManifest == true || !isDev)
-            {
-                throw new SecurityException($"Sicherheitsfehler: Kein Integrity-Manifest (manifest.json) in '{fullDirectoryPath}' vorhanden.");
-            }
+            _logger.LogWarning("Loading plugins from '{Directory}' WITHOUT integrity verification (Development only).", fullDirectoryPath);
         }
 
         int loadedCount = 0;
@@ -97,16 +115,19 @@ public sealed class PluginManager : IPluginManager, IDisposable
                 continue;
             }
 
-            // Verify integrity against manifest if present or required
-            if (manifest != null)
-            {
-                VerifyPluginIntegrity(fullDllPath, manifest);
-            }
+            // SEC M-27: hash and load the SAME bytes (no TOCTOU window between verification and load).
+            var verifiedBytes = trustList != null
+                ? trustList.ReadVerifiedBytes(fullDllPath)
+                : File.ReadAllBytes(fullDllPath);
 
             try
             {
-                var alc = new PluginAssemblyLoadContext(fullDllPath);
-                var assembly = alc.LoadFromAssemblyPath(fullDllPath);
+                var alc = new PluginAssemblyLoadContext(fullDllPath, trustList);
+                Assembly assembly;
+                using (var assemblyStream = new MemoryStream(verifiedBytes, writable: false))
+                {
+                    assembly = alc.LoadFromStream(assemblyStream);
+                }
 
                 var pluginTypes = assembly.GetTypes()
                     .Where(t => typeof(IHttpDataSourcePlugin).IsAssignableFrom(t) && !t.IsAbstract && !t.IsInterface);
@@ -143,6 +164,10 @@ public sealed class PluginManager : IPluginManager, IDisposable
                         _logger.LogError(ex, "Failed to instantiate plugin type '{Type}' from {DllPath}", type.FullName, dllFile);
                     }
                 }
+            }
+            catch (SecurityException)
+            {
+                throw;
             }
             catch (BadImageFormatException)
             {
@@ -205,24 +230,5 @@ public sealed class PluginManager : IPluginManager, IDisposable
         }
 
         return result;
-    }
-
-    private static void VerifyPluginIntegrity(string dllPath, Dictionary<string, string> manifest)
-    {
-        var filename = Path.GetFileName(dllPath);
-
-        if (!manifest.TryGetValue(filename, out var expectedHash) || string.IsNullOrWhiteSpace(expectedHash))
-        {
-            throw new SecurityException($"Sicherheitsfehler: Plugin '{filename}' ist nicht im Integrity-Manifest verzeichnet.");
-        }
-
-        var actualBytes = File.ReadAllBytes(dllPath);
-        var actualHash = Convert.ToHexString(SHA256.HashData(actualBytes));
-        if (!CryptographicOperations.FixedTimeEquals(
-                Convert.FromHexString(expectedHash.Trim()),
-                Convert.FromHexString(actualHash)))
-        {
-            throw new SecurityException($"Sicherheitsfehler: Integritätsprüfung fehlgeschlagen für Plugin '{filename}'. Erwarteter SHA-256: {expectedHash}, Tatsächlich: {actualHash}");
-        }
     }
 }

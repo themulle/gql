@@ -20,7 +20,7 @@ using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
-using GqlGateway.Infrastructure.Itsm;
+using GqlGateway.Extensions.Itsm;
 using GqlGateway.Infrastructure.Persistence;
 using GqlGateway.Infrastructure.Security;
 using Microsoft.AspNetCore.Http;

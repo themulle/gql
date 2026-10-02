@@ -58,6 +58,20 @@ public sealed class EnterpriseClaimsTransformation : IClaimsTransformation
             if (!existingRoles.Contains(role))
             {
                 identity.AddClaim(new Claim(ClaimTypes.Role, role));
+                existingRoles.Add(role);
+            }
+
+            // K-K10: Add canonical GatewayRole claim if role is an alias.
+            // Security Guard: Only add bare canonical name if the role was NOT tenant-prefixed,
+            // preventing tenant-scoped roles (e.g. "tenant-1:DataOwner") from escalating to global roles.
+            if (!role.Contains(':') && GqlGateway.Domain.Security.GatewayRoleExtensions.TryParseRole(role, out var canonicalRole))
+            {
+                var canonicalName = canonicalRole.ToString();
+                if (!existingRoles.Contains(canonicalName))
+                {
+                    identity.AddClaim(new Claim(ClaimTypes.Role, canonicalName));
+                    existingRoles.Add(canonicalName);
+                }
             }
         }
 

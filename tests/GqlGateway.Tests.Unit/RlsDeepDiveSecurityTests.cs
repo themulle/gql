@@ -213,12 +213,27 @@ public sealed class RlsDeepDiveSecurityTests
                 }
             }));
 
+        // SEC H-09: Consent is the primary decision; Casbin (with RLS filter) acts as additional gate when policies exist.
+        policyEnforcement.HasPolicies(Arg.Any<TenantId>()).Returns(true);
+        var consentRepo = Substitute.For<IConsentRepository>();
+        consentRepo.GetActiveConsentsForSubjectsAsync(
+                Arg.Any<IEnumerable<Sid>>(), Arg.Any<TableIdentifier>(), Arg.Any<DateTimeOffset>(), Arg.Any<TenantId?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<Consent>>(Array.Empty<Consent>()));
+        var resolution = Substitute.For<IConsentResolutionService>();
+        resolution.ResolveAccess(
+                Arg.Any<Sid>(), Arg.Any<IReadOnlySet<Sid>>(), Arg.Any<IReadOnlySet<string>>(),
+                Arg.Any<TableIdentifier>(), Arg.Any<IReadOnlyList<Consent>>(), Arg.Any<DatabaseDialect>())
+            .Returns(TableAccessDecision.Allowed(_testTable, new Dictionary<string, ColumnAccessLevel>(), hasUnconstrainedColumnAllow: true));
+
         var enforcer = new StreamRlsPolicyEnforcer(
             policyEnforcement,
             metadataRepo,
             maskingProvider,
             epochService,
-            NullLogger<StreamRlsPolicyEnforcer>.Instance);
+            NullLogger<StreamRlsPolicyEnforcer>.Instance,
+            consentRepo,
+            resolution,
+            Substitute.For<IConsentCacheService>());
 
         var cdcEvent = new CdcEvent(
             EventId: "evt-us-1",

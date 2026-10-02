@@ -7,11 +7,12 @@ using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace GqlGateway.Infrastructure.Persistence;
 
-public partial class SqliteGovernanceRepository
+public partial class SqliteGovernanceRepository : IAuditChainExportSource
 {
     public async Task RecordAuditEventAsync(AuditLogEntry entry, CancellationToken ct = default)
     {
@@ -26,34 +27,54 @@ public partial class SqliteGovernanceRepository
         }
     }
 
+    private const string AuditGenesisHash = "GENESIS_0000000000000000000000000000000000000000000000000000000000000000";
+
     private async Task RecordAuditEventInternalAsync(AuditLogEntry entry, CancellationToken ct)
     {
         using var tx = _connection.BeginTransaction(System.Data.IsolationLevel.Serializable);
 
-        // Atomically query latest entry_hash from DB to prevent drift across instances or reconnections
-        using (var prevCmd = _connection.CreateCommand())
+        // SEC H-17: the DB tail is compared with the in-memory reference instead of being adopted blindly.
+        var (dbTailHash, dbTailSeq) = ReadAuditTail(tx);
+        var effectiveDbHash = dbTailHash ?? AuditGenesisHash;
+        if (!FixedTimeEqualsString(effectiveDbHash, _lastAuditHash) || dbTailSeq != _lastAuditSeq)
         {
-            prevCmd.Transaction = tx;
-            prevCmd.CommandText = "SELECT entry_hash FROM AUDIT_LOG_ENTRIES ORDER BY rowid DESC LIMIT 1";
-            var latestDbHash = await prevCmd.ExecuteScalarAsync(ct);
-            if (latestDbHash != null && latestDbHash != DBNull.Value)
+            var anchor = TryLoadVerifiedAnchor(out _);
+            var explainedByAnchor = anchor != null
+                                    && dbTailSeq > _lastAuditSeq
+                                    && anchor.Sequence == dbTailSeq
+                                    && FixedTimeEqualsString(anchor.EntryHash, effectiveDbHash);
+            if (!explainedByAnchor)
             {
-                _lastAuditHash = (string)latestDbHash;
+                FlagAuditChainViolation(
+                    $"Audit chain tail in DB (seq {dbTailSeq}) diverges from the in-memory reference (seq {_lastAuditSeq}) without a matching signed anchor - possible truncation or rewrite.");
             }
+
+            // Keep the chain linear; verification stays failed while a violation is flagged.
+            _lastAuditHash = effectiveDbHash;
+            _lastAuditSeq = dbTailSeq;
         }
 
-        // Compute cryptographic HMAC-SHA256 hash chain
+        var sequence = _lastAuditSeq + 1;
         entry.PrevHash = _lastAuditHash;
-        var payload = $"{entry.Id}|{entry.PrevHash}|{entry.OccurredAt:O}|{EscapeField(entry.EventType)}|{EscapeField(entry.ActorSid.Value)}|{EscapeField(entry.TargetTable)}|{EscapeField(entry.TargetColumn)}|{EscapeField(entry.Decision)}|{EscapeField(entry.TraceId)}|{EscapeField(entry.DetailsJson)}|{EscapeField(entry.TenantId.Value)}";
-        Span<byte> hashBytes = stackalloc byte[32];
-        HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload), hashBytes);
-        entry.EntryHash = Convert.ToHexString(hashBytes);
+        entry.EntryHash = ComputeAuditEntryHash(
+            sequence,
+            entry.Id.ToString(),
+            entry.PrevHash,
+            entry.OccurredAt,
+            entry.EventType,
+            entry.ActorSid.Value,
+            entry.TargetTable,
+            entry.TargetColumn,
+            entry.Decision,
+            entry.TraceId,
+            entry.DetailsJson,
+            entry.TenantId.Value);
 
         using (var cmd = _connection.CreateCommand())
         {
             cmd.Transaction = tx;
-            cmd.CommandText = @"INSERT INTO AUDIT_LOG_ENTRIES (id, occurred_at, event_type, actor_sid, target_table, target_column, decision, trace_id, details_json, prev_hash, entry_hash, tenant_id)
-                                VALUES (@id, @occ, @event, @actor, @target, @col, @dec, @trace, @det, @prev, @hash, @tenantId)";
+            cmd.CommandText = @"INSERT INTO AUDIT_LOG_ENTRIES (id, occurred_at, event_type, actor_sid, target_table, target_column, decision, trace_id, details_json, prev_hash, entry_hash, tenant_id, seq)
+                                VALUES (@id, @occ, @event, @actor, @target, @col, @dec, @trace, @det, @prev, @hash, @tenantId, @seq)";
             cmd.Parameters.AddWithValue("@id", entry.Id.ToString());
             cmd.Parameters.AddWithValue("@occ", entry.OccurredAt.ToString("O"));
             cmd.Parameters.AddWithValue("@event", entry.EventType);
@@ -66,12 +87,50 @@ public partial class SqliteGovernanceRepository
             cmd.Parameters.AddWithValue("@prev", entry.PrevHash);
             cmd.Parameters.AddWithValue("@hash", entry.EntryHash);
             cmd.Parameters.AddWithValue("@tenantId", entry.TenantId.Value);
+            cmd.Parameters.AddWithValue("@seq", sequence);
 
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
-        await tx.CommitAsync(ct);
+        // SEC H-17: advance the external signed anchor while the write lock is still held. An anchor is never
+        // advanced while a violation is flagged (it would otherwise "launder" a truncated chain).
+        var anchorAdvanced = false;
+        if (Volatile.Read(ref _auditChainViolation) == null)
+        {
+            try
+            {
+                _auditAnchorStore.Save(CreateSignedAnchor(sequence, entry.EntryHash));
+                anchorAdvanced = true;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to persist the external audit chain anchor (seq {Sequence}).", sequence);
+            }
+        }
+
+        try
+        {
+            await tx.CommitAsync(ct);
+        }
+        catch
+        {
+            if (anchorAdvanced)
+            {
+                try
+                {
+                    // Roll the anchor back to the last committed state.
+                    _auditAnchorStore.Save(CreateSignedAnchor(_lastAuditSeq, _lastAuditHash));
+                }
+                catch (Exception restoreEx)
+                {
+                    _logger?.LogError(restoreEx, "Failed to restore the previous audit chain anchor after a failed commit.");
+                }
+            }
+            throw;
+        }
+
         _lastAuditHash = entry.EntryHash;
+        _lastAuditSeq = sequence;
     }
 
     public async Task<IReadOnlyList<AuditLogEntry>> GetAuditLogEntriesAsync(int limit = 100, TenantId? tenantId = null, CancellationToken ct = default)
@@ -195,17 +254,35 @@ public partial class SqliteGovernanceRepository
         await _lock.WaitAsync(ct);
         try
         {
+            var violation = Volatile.Read(ref _auditChainViolation);
+            if (violation != null)
+            {
+                _logger?.LogCritical("Audit hash chain verification failed: {Violation}", violation);
+                return false;
+            }
+
+            var anchor = TryLoadVerifiedAnchor(out var anchorInvalid);
+            if (anchorInvalid)
+            {
+                FlagAuditChainViolation("External audit chain anchor has an invalid signature or format.");
+                return false;
+            }
+
             using var cmd = _connection.CreateCommand();
             cmd.CommandText = @"SELECT id, occurred_at, event_type, actor_sid, target_table, target_column,
-                                       decision, trace_id, details_json, prev_hash, entry_hash, tenant_id
+                                       decision, trace_id, details_json, prev_hash, entry_hash, tenant_id, seq
                                 FROM AUDIT_LOG_ENTRIES
                                 ORDER BY rowid ASC";
 
             using var reader = await cmd.ExecuteReaderAsync(ct);
-            var expectedPrevHash = "GENESIS_0000000000000000000000000000000000000000000000000000000000000000";
+            var expectedPrevHash = AuditGenesisHash;
+            long position = 0;
+            var sequencedSectionStarted = false;
+            var anchorEntryMatched = anchor == null || anchor.Sequence == 0;
 
             while (await reader.ReadAsync(ct))
             {
+                position++;
                 var id = reader.GetString(0);
                 var occurredAt = reader.GetString(1);
                 var eventType = reader.GetString(2);
@@ -218,30 +295,73 @@ public partial class SqliteGovernanceRepository
                 var prevHash = reader.GetString(9);
                 var entryHash = reader.GetString(10);
                 var tenantId = reader.IsDBNull(11) ? TenantId.LegacySingleTenant.Value : reader.GetString(11);
+                long? seq = reader.IsDBNull(12) ? null : reader.GetInt64(12);
 
-                if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(prevHash), Encoding.UTF8.GetBytes(expectedPrevHash)))
+                if (!FixedTimeEqualsString(prevHash, expectedPrevHash))
                 {
                     return false; // Broken chain!
                 }
 
-                var parsedOccurredAt = DateTimeOffset.Parse(occurredAt);
-                var payload = $"{id}|{prevHash}|{parsedOccurredAt:O}|{EscapeField(eventType)}|{EscapeField(actorSid)}|{EscapeField(targetTable)}|{EscapeField(targetColumn)}|{EscapeField(decision)}|{EscapeField(traceId)}|{EscapeField(detailsJson)}|{EscapeField(tenantId)}";
-                var computedBytes = HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload));
-                var computedHash = Convert.ToHexString(computedBytes);
+                // SEC H-17: sequence numbers must be gap-free and equal the ordinal position.
+                if (seq.HasValue)
+                {
+                    if (seq.Value != position)
+                    {
+                        return false;
+                    }
+                    sequencedSectionStarted = true;
+                }
+                else if (sequencedSectionStarted)
+                {
+                    return false; // Unsequenced (legacy-format) row injected after the sequenced section
+                }
 
-                if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(entryHash), Encoding.UTF8.GetBytes(computedHash)))
+                var parsedOccurredAt = DateTimeOffset.Parse(occurredAt);
+                var computedHash = ComputeAuditEntryHash(seq, id, prevHash, parsedOccurredAt, eventType, actorSid, targetTable, targetColumn, decision, traceId, detailsJson, tenantId);
+
+                if (!FixedTimeEqualsString(entryHash, computedHash))
                 {
                     return false; // Tampered payload!
+                }
+
+                if (anchor != null && anchor.Sequence == position)
+                {
+                    anchorEntryMatched = FixedTimeEqualsString(entryHash, anchor.EntryHash);
                 }
 
                 expectedPrevHash = entryHash;
             }
 
-            // Tail truncation detection (H-2): Ensure final entry hash matches expected last audit hash
-            if (_lastAuditHash != "GENESIS_0000000000000000000000000000000000000000000000000000000000000000" &&
-                !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(expectedPrevHash), Encoding.UTF8.GetBytes(_lastAuditHash)))
+            // SEC H-17: compare with the external signed anchor (detects tail truncation and total deletion,
+            // also across restarts).
+            if (anchor != null)
             {
-                return false; // Tail truncation detected!
+                if (position < anchor.Sequence)
+                {
+                    FlagAuditChainViolation($"Audit chain truncated: DB ends at seq {position}, signed anchor at seq {anchor.Sequence}.");
+                    return false;
+                }
+
+                if (!anchorEntryMatched)
+                {
+                    FlagAuditChainViolation($"Audit chain entry at anchored seq {anchor.Sequence} does not match the signed anchor hash.");
+                    return false;
+                }
+            }
+
+            // Tail truncation detection against the in-memory reference of this process.
+            if (_lastAuditHash != AuditGenesisHash &&
+                (!FixedTimeEqualsString(expectedPrevHash, _lastAuditHash) || position != _lastAuditSeq))
+            {
+                var explainedByAnchor = anchor != null
+                                        && position > _lastAuditSeq
+                                        && anchor.Sequence == position
+                                        && FixedTimeEqualsString(anchor.EntryHash, expectedPrevHash);
+                if (!explainedByAnchor)
+                {
+                    FlagAuditChainViolation($"Audit chain tail (seq {position}) does not match the in-memory reference (seq {_lastAuditSeq}).");
+                    return false; // Tail truncation detected!
+                }
             }
 
             return true;
@@ -251,6 +371,274 @@ public partial class SqliteGovernanceRepository
             _lock.Release();
         }
     }
+
+    public async Task<AuditChainRange?> GetAuditChainRangeAsync(DateTimeOffset windowFrom, DateTimeOffset windowTo, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            long firstRowId;
+            long lastRowId;
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = @"SELECT MIN(rowid), MAX(rowid) FROM AUDIT_LOG_ENTRIES
+                                    WHERE occurred_at >= @from AND occurred_at <= @to";
+                cmd.Parameters.AddWithValue("@from", windowFrom.ToUniversalTime().ToString("O"));
+                cmd.Parameters.AddWithValue("@to", windowTo.ToUniversalTime().ToString("O"));
+                using var reader = await cmd.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct) || reader.IsDBNull(0) || reader.IsDBNull(1))
+                {
+                    return null;
+                }
+                firstRowId = reader.GetInt64(0);
+                lastRowId = reader.GetInt64(1);
+            }
+
+            using var countCmd = _connection.CreateCommand();
+            countCmd.CommandText = "SELECT COUNT(*) FROM AUDIT_LOG_ENTRIES WHERE rowid BETWEEN @a AND @b";
+            countCmd.Parameters.AddWithValue("@a", firstRowId);
+            countCmd.Parameters.AddWithValue("@b", lastRowId);
+            var count = Convert.ToInt64(await countCmd.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
+            return new AuditChainRange(firstRowId, lastRowId, count);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<AuditChainRecord>> GetAuditChainPageAsync(long afterRowId, long lastRowIdInclusive, int pageSize, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            var list = new List<AuditChainRecord>();
+            using var cmd = _connection.CreateCommand();
+            cmd.CommandText = @"SELECT rowid, seq, id, occurred_at, event_type, actor_sid, target_table, target_column,
+                                       decision, trace_id, details_json, prev_hash, entry_hash, tenant_id
+                                FROM AUDIT_LOG_ENTRIES
+                                WHERE rowid > @after AND rowid <= @last
+                                ORDER BY rowid ASC
+                                LIMIT @lim";
+            cmd.Parameters.AddWithValue("@after", afterRowId);
+            cmd.Parameters.AddWithValue("@last", lastRowIdInclusive);
+            cmd.Parameters.AddWithValue("@lim", Math.Clamp(pageSize, 1, 10000));
+
+            using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                long? seq = reader.IsDBNull(1) ? null : reader.GetInt64(1);
+                var entry = new AuditLogEntry
+                {
+                    Id = Guid.Parse(reader.GetString(2)),
+                    OccurredAt = DateTimeOffset.Parse(reader.GetString(3)),
+                    EventType = reader.GetString(4),
+                    ActorSid = new Sid(reader.GetString(5)),
+                    TargetTable = reader.GetString(6),
+                    TargetColumn = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    Decision = reader.GetString(8),
+                    TraceId = reader.GetString(9),
+                    DetailsJson = reader.GetString(10),
+                    PrevHash = reader.GetString(11),
+                    EntryHash = reader.GetString(12),
+                    TenantId = reader.IsDBNull(13) ? TenantId.LegacySingleTenant : (TenantId.TryParse(reader.GetString(13), out var tid) ? tid : TenantId.LegacySingleTenant)
+                };
+                list.Add(new AuditChainRecord(reader.GetInt64(0), seq, entry));
+            }
+            return list;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public AuditChainAnchor? GetVerifiedChainAnchor() => TryLoadVerifiedAnchor(out _);
+
+    /// <summary>Last entry hash and its (explicit or ordinal) sequence number; hash is null for an empty log.</summary>
+    private (string? Hash, long Sequence) ReadAuditTail(SqliteTransaction? tx)
+    {
+        string? hash = null;
+        long? seq = null;
+        using (var cmd = _connection.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = "SELECT entry_hash, seq FROM AUDIT_LOG_ENTRIES ORDER BY rowid DESC LIMIT 1";
+            using var reader = cmd.ExecuteReader();
+            if (reader.Read())
+            {
+                hash = reader.GetString(0);
+                seq = reader.IsDBNull(1) ? null : reader.GetInt64(1);
+            }
+        }
+
+        if (hash == null)
+        {
+            return (null, 0);
+        }
+
+        if (seq.HasValue)
+        {
+            return (hash, seq.Value);
+        }
+
+        using var countCmd = _connection.CreateCommand();
+        countCmd.Transaction = tx;
+        countCmd.CommandText = "SELECT COUNT(*) FROM AUDIT_LOG_ENTRIES";
+        var count = Convert.ToInt64(countCmd.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+        return (hash, count);
+    }
+
+    private string ComputeAuditEntryHash(
+        long? sequence,
+        string id,
+        string prevHash,
+        DateTimeOffset occurredAt,
+        string? eventType,
+        string? actorSid,
+        string? targetTable,
+        string? targetColumn,
+        string? decision,
+        string? traceId,
+        string? detailsJson,
+        string? tenantId)
+    {
+        var payload = $"{id}|{prevHash}|{occurredAt:O}|{EscapeField(eventType)}|{EscapeField(actorSid)}|{EscapeField(targetTable)}|{EscapeField(targetColumn)}|{EscapeField(decision)}|{EscapeField(traceId)}|{EscapeField(detailsJson)}|{EscapeField(tenantId)}";
+        if (sequence.HasValue)
+        {
+            // SEC H-17: v2 payload binds the gap-free sequence number into the HMAC.
+            payload = $"v2|{sequence.Value}|{payload}";
+        }
+
+        Span<byte> hashBytes = stackalloc byte[32];
+        HMACSHA256.HashData(_auditHmacKey, Encoding.UTF8.GetBytes(payload), hashBytes);
+        return Convert.ToHexString(hashBytes);
+    }
+
+    private AuditChainAnchor CreateSignedAnchor(long sequence, string entryHash)
+    {
+        var updatedAt = DateTimeOffset.UtcNow;
+        return new AuditChainAnchor(sequence, entryHash, updatedAt, ComputeAnchorSignature(sequence, entryHash, updatedAt));
+    }
+
+    private string ComputeAnchorSignature(long sequence, string entryHash, DateTimeOffset updatedAt)
+    {
+        var data = Encoding.UTF8.GetBytes($"anchor-v1|{sequence}|{entryHash}|{updatedAt.ToUniversalTime():O}");
+        return Convert.ToHexString(HMACSHA256.HashData(_auditAnchorKey, data));
+    }
+
+    private AuditChainAnchor? TryLoadVerifiedAnchor(out bool invalid)
+    {
+        invalid = false;
+        AuditChainAnchor? anchor;
+        try
+        {
+            anchor = _auditAnchorStore.Load();
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Failed to read the external audit chain anchor.");
+            invalid = true;
+            return null;
+        }
+
+        if (anchor == null)
+        {
+            return null;
+        }
+
+        if (anchor.Sequence < 0 || string.IsNullOrEmpty(anchor.EntryHash) || string.IsNullOrEmpty(anchor.Signature))
+        {
+            invalid = true;
+            return null;
+        }
+
+        var expected = ComputeAnchorSignature(anchor.Sequence, anchor.EntryHash, anchor.UpdatedAt);
+        if (!FixedTimeEqualsString(expected, anchor.Signature))
+        {
+            invalid = true;
+            return null;
+        }
+
+        return anchor;
+    }
+
+    private void InitializeAuditChainAnchor(bool isDevOrTest)
+    {
+        var anchor = TryLoadVerifiedAnchor(out var invalid);
+        if (invalid)
+        {
+            FlagAuditChainViolation("External audit chain anchor has an invalid signature or format at startup.");
+            return;
+        }
+
+        if (anchor == null)
+        {
+            if (_lastAuditSeq > 0)
+            {
+                _logger?.LogWarning("No external audit chain anchor found; initialising it from the current DB tail (seq {Sequence}). Trust-on-first-use.", _lastAuditSeq);
+            }
+            if (!isDevOrTest && _auditAnchorStore is InMemoryAuditChainAnchorStore)
+            {
+                _logger?.LogWarning("Audit chain anchor is only held in memory; configure Audit:ChainAnchorPath on a separate volume.");
+            }
+
+            try
+            {
+                _auditAnchorStore.Save(CreateSignedAnchor(_lastAuditSeq, _lastAuditHash));
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to initialise the external audit chain anchor.");
+            }
+            return;
+        }
+
+        if (_lastAuditSeq < anchor.Sequence)
+        {
+            FlagAuditChainViolation($"Audit DB tail (seq {_lastAuditSeq}) is behind the signed anchor (seq {anchor.Sequence}): truncation or deletion of audit entries detected.");
+        }
+        else if (_lastAuditSeq == anchor.Sequence && !FixedTimeEqualsString(_lastAuditHash, anchor.EntryHash))
+        {
+            FlagAuditChainViolation($"Audit DB tail hash at seq {anchor.Sequence} does not match the signed anchor.");
+        }
+    }
+
+    private static IAuditChainAnchorStore CreateDefaultAuditAnchorStore(string connectionString, bool isMemory, string? configuredPath)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredPath))
+        {
+            return new FileAuditChainAnchorStore(configuredPath);
+        }
+
+        string dataSource;
+        try
+        {
+            dataSource = new SqliteConnectionStringBuilder(connectionString).DataSource;
+        }
+        catch
+        {
+            dataSource = connectionString;
+        }
+
+        if (isMemory || string.IsNullOrWhiteSpace(dataSource) || dataSource == ":memory:")
+        {
+            return new InMemoryAuditChainAnchorStore();
+        }
+
+        return new FileAuditChainAnchorStore(dataSource + ".audit-anchor.json");
+    }
+
+    private void FlagAuditChainViolation(string reason)
+    {
+        if (Interlocked.CompareExchange(ref _auditChainViolation, reason, null) == null)
+        {
+            _logger?.LogCritical("SECURITY ALERT - audit hash chain integrity violation: {Reason}", reason);
+        }
+    }
+
+    private static bool FixedTimeEqualsString(string? a, string? b) =>
+        CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a ?? string.Empty), Encoding.UTF8.GetBytes(b ?? string.Empty));
 
     private static string EscapeField(string? s)
     {

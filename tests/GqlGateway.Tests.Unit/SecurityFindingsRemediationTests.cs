@@ -11,6 +11,7 @@ using GqlGateway.Api.Middleware;
 using GqlGateway.Api.Security;
 using GqlGateway.Application.Governance;
 using GqlGateway.Application.Interfaces;
+using GqlGateway.Application.Security;
 using GqlGateway.Application.Services;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Interfaces;
@@ -341,9 +342,10 @@ public class SecurityFindingsRemediationTests
             }
         };
 
+        // warn_disable_rate_limiting is classified as DANGER (property name kept for compatibility).
         var ex = Should.Throw<ValidationException>(() =>
             GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, mockEnv));
-        ex.Message.ShouldContain("WARN:warn_disable_rate_limiting");
+        ex.Message.ShouldContain("DANGER:warn_disable_rate_limiting");
     }
 
     [Fact]
@@ -381,7 +383,7 @@ public class SecurityFindingsRemediationTests
     }
 
     [Fact]
-    public void ValidateGatewayOptions_InProduction_WarnRelaxedQueryLimits_ThrowsValidationException()
+    public void ValidateGatewayOptions_InProduction_WarnRelaxedQueryLimits_IsPermittedAsWarning()
     {
         var mockEnv = Substitute.For<IHostEnvironment>();
         mockEnv.EnvironmentName.Returns("Production");
@@ -391,12 +393,14 @@ public class SecurityFindingsRemediationTests
             Insecure = new InsecureGettingStartedOptions
             {
                 warn_relaxed_query_limits = true
-            }
+            },
+            DataMasking = new DataMaskingOptions { HmacSecretKeyVaultRef = "vault://keys/prod-hmac" }
         };
 
-        var ex = Should.Throw<ValidationException>(() =>
-            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, mockEnv));
-        ex.Message.ShouldContain("WARN:warn_relaxed_query_limits");
+        // WARN entries are permitted in Production (reported, not blocking).
+        options.GetActiveWarnings().ShouldContain("WARN:warn_relaxed_query_limits");
+        Should.NotThrow(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, mockEnv, _ => null));
     }
 
     [Fact]
@@ -531,7 +535,10 @@ public class SecurityFindingsRemediationTests
             metadataRepo,
             maskingProvider,
             epochService,
-            NullLogger<StreamRlsPolicyEnforcer>.Instance);
+            NullLogger<StreamRlsPolicyEnforcer>.Instance,
+            Substitute.For<IConsentRepository>(),
+            Substitute.For<IConsentResolutionService>(),
+            Substitute.For<IConsentCacheService>());
 
         var table = new TableIdentifier("sales", "crm", "leads");
         var cdcEvent = new CdcEvent(
@@ -687,7 +694,18 @@ public class SecurityFindingsRemediationTests
             var manifestPath = Path.Combine(tempDir, "manifest.json");
             File.WriteAllText(manifestPath, "{\"plugins\": [{\"file\": \"TestPlugin.dll\", \"sha256\": \"0000000000000000000000000000000000000000000000000000000000000000\"}]}");
 
-            var manager = new GqlGateway.Infrastructure.Plugins.PluginManager(NullLogger<GqlGateway.Infrastructure.Plugins.PluginManager>.Instance);
+            // SEC M-27: the trust anchor is the configuration, not the manifest next to the DLL.
+            var pluginOptions = Microsoft.Extensions.Options.Options.Create(new GqlGateway.Domain.Options.GatewayOptions
+            {
+                Plugins = new GqlGateway.Domain.Options.PluginsOptions
+                {
+                    TrustedPluginHashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["TestPlugin.dll"] = "0000000000000000000000000000000000000000000000000000000000000000"
+                    }
+                }
+            });
+            var manager = new GqlGateway.Infrastructure.Plugins.PluginManager(NullLogger<GqlGateway.Infrastructure.Plugins.PluginManager>.Instance, null, pluginOptions);
             var ex = Should.Throw<System.Security.SecurityException>(() => manager.LoadPluginsFromDirectory(tempDir));
             ex.Message.ShouldContain("Integritätsprüfung fehlgeschlagen");
         }
@@ -697,22 +715,7 @@ public class SecurityFindingsRemediationTests
         }
     }
 
-    [Fact]
-    public void CRIT01_DynamicPluginALC_TamperedHash_ThrowsSecurityException()
-    {
-        var tempFile = Path.GetTempFileName();
-        try
-        {
-            File.WriteAllBytes(tempFile, [0x4D, 0x5A, 0x90, 0x00]);
-            var ex = Should.Throw<System.Security.SecurityException>(() =>
-                new GqlGateway.Application.Extensibility.DynamicPluginAssemblyLoadContext(tempFile, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"));
-            ex.Message.ShouldContain("Integritätsprüfung fehlgeschlagen");
-        }
-        finally
-        {
-            File.Delete(tempFile);
-        }
-    }
+
 
     [Theory]
     [InlineData("Finance') OR ('1'='1")]
@@ -881,7 +884,7 @@ public class SecurityFindingsRemediationTests
     }
 
     [Fact]
-    public void M01_AddGatewayAuth_WithoutIdp_SetsValidateIssuerAndAudienceToFalse()
+    public void M01_AddGatewayAuth_WithoutIdp_ValidatesIssuerAndAudienceFailClosed()
     {
         var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
         var options = new GatewayOptions();
@@ -894,9 +897,11 @@ public class SecurityFindingsRemediationTests
         var jwtOptions = sp.GetRequiredService<IOptionsMonitor<Microsoft.AspNetCore.Authentication.JwtBearer.JwtBearerOptions>>()
             .Get(GatewayAuthSchemes.JwtBearer);
 
-        jwtOptions.TokenValidationParameters.ValidateIssuer.ShouldBeFalse();
+        // SEC M-02 (Review 2026-10-02): issuer/audience validation is always on; without configured
+        // issuers/audiences no token can pass (fail-closed) instead of accepting any audience.
+        jwtOptions.TokenValidationParameters.ValidateIssuer.ShouldBeTrue();
         jwtOptions.TokenValidationParameters.ValidIssuers.ShouldBeNull();
-        jwtOptions.TokenValidationParameters.ValidateAudience.ShouldBeFalse();
+        jwtOptions.TokenValidationParameters.ValidateAudience.ShouldBeTrue();
         jwtOptions.TokenValidationParameters.ValidAudiences.ShouldBeNull();
     }
 

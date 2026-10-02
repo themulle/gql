@@ -56,7 +56,8 @@ public static class ConnectorSecurityPolicyEvaluator
                 var matchingCol = metadata.Columns.FirstOrDefault(c => string.Equals(c.ColumnName, argKey, StringComparison.OrdinalIgnoreCase));
                 if (matchingCol != null)
                 {
-                    var access = session.AccessDecision.GetColumnAccess(matchingCol.ColumnName);
+                    // SEC H-10: Filter only on effectively Clear columns (catalog-sensitive/masked columns need an explicit Clear).
+                    var access = session.AccessDecision.GetEffectiveColumnAccess(matchingCol.ColumnName, metadata);
                     if (access != ColumnAccessLevel.Clear)
                     {
                         throw new SecurityException($"Zero-Trust-Verletzung: Filtern auf Spalte '{matchingCol.ColumnName}' in Tabelle '{metadata.Identifier}' ist nicht gestattet (Zugriffsebene: {access}).");

@@ -15,7 +15,7 @@ using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using GqlGateway.GraphQL.Types;
-using GqlGateway.Infrastructure.Streaming;
+using GqlGateway.Extensions.Cdc;
 using HotChocolate;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;

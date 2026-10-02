@@ -1,4 +1,7 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using GqlGateway.Application.Caching.Interfaces;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
@@ -6,6 +9,7 @@ using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 
@@ -23,6 +27,13 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
     private readonly IDisposable? _subscription;
 
     private readonly object _syncLock = new();
+    private readonly byte[] _l2IntegrityKey;
+    private readonly ILogger<ConsentCacheService>? _logger;
+
+    // SEC H-01: L2 entries are framed as [version(1)][expiresAtUnixMs(8, BE)][HMAC-SHA256(32)][payload].
+    private const byte L2FormatVersion = 0x01;
+    private const int L2HeaderLength = 1 + 8 + 32;
+    private static readonly byte[] L2MacDomain = "GqlGateway:ConsentCacheL2:v1"u8.ToArray();
 
     private sealed record CacheEntryEnvelope(TableAccessDecision Decision, long Epoch);
 
@@ -32,13 +43,17 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         IEventBus eventBus,
         IOptions<GatewayOptions>? options = null,
         IBinaryCacheSerializer? serializer = null,
-        IConnectionMultiplexer? multiplexer = null)
+        IConnectionMultiplexer? multiplexer = null,
+        IKeyVaultSecretProvider? secretProvider = null,
+        ILogger<ConsentCacheService>? logger = null)
     {
         _memoryCache = memoryCache;
         _epochValidationService = epochValidationService;
         _serializer = serializer;
         _multiplexer = multiplexer;
         _redisDb = multiplexer?.GetDatabase();
+        _logger = logger;
+        _l2IntegrityKey = ResolveL2IntegrityKey(options?.Value, secretProvider, logger, multiplexer != null && serializer != null);
         _prefix = options?.Value?.Caching?.Redis?.InstanceName ?? "GqlGateway:";
         if (!_prefix.EndsWith(':'))
         {
@@ -105,8 +120,21 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
             try
             {
                 var l2Key = (RedisKey)$"{_prefix}consent:l2:{cacheKey}";
-                var rawBytes = await _redisDb.StringGetAsync(l2Key).ConfigureAwait(false);
-                if (!rawBytes.IsNullOrEmpty && _serializer.TryDeserialize<CachedConsentEnvelope>(rawBytes, out var l2Env) && l2Env != null)
+                var rawValue = await _redisDb.StringGetAsync(l2Key).ConfigureAwait(false);
+                byte[]? payloadBytes = null;
+                byte[]? rawBytes = rawValue.IsNullOrEmpty ? null : (byte[]?)rawValue;
+                if (rawBytes != null && rawBytes.Length > 0)
+                {
+                    payloadBytes = UnprotectL2Payload(l2Key.ToString(), rawBytes);
+                    if (payloadBytes == null)
+                    {
+                        // SEC H-01: forged, replayed-after-expiry or corrupted L2 entry -> treat as miss and drop it.
+                        _logger?.LogWarning("Consent L2 cache entry failed integrity verification and was discarded (table {Table}).", table.ToString());
+                        await _redisDb.KeyDeleteAsync(l2Key).ConfigureAwait(false);
+                    }
+                }
+
+                if (payloadBytes != null && _serializer.TryDeserialize<CachedConsentEnvelope>(payloadBytes, out var l2Env) && l2Env != null && MatchesTable(l2Env, table))
                 {
                     var isL2EpochValid = await _epochValidationService.IsEpochValidAsync(table, l2Env.Epoch, ct).ConfigureAwait(false);
                     if (isL2EpochValid)
@@ -166,7 +194,8 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
                 var l2Key = (RedisKey)$"{_prefix}consent:l2:{cacheKey}";
                 var l2Dto = CachedConsentEnvelope.FromDecision(decision, currentEpoch);
                 var binaryPayload = _serializer.Serialize(l2Dto);
-                await _redisDb.StringSetAsync(l2Key, binaryPayload, ttl).ConfigureAwait(false);
+                var protectedPayload = ProtectL2Payload(l2Key.ToString(), binaryPayload, DateTimeOffset.UtcNow.Add(ttl));
+                await _redisDb.StringSetAsync(l2Key, protectedPayload, ttl).ConfigureAwait(false);
             }
             catch
             {
@@ -272,6 +301,106 @@ public sealed class ConsentCacheService : IConsentCacheService, IDisposable
         var safeSid = Uri.EscapeDataString(userSid.Value.ToUpperInvariant());
         var safeContext = Uri.EscapeDataString(string.IsNullOrWhiteSpace(contextHash) ? "default" : contextHash);
         return $"{tenant.Value}:consent:{safeSid}:{safeContext}:{table.Domain.ToLowerInvariant()}:{table.Schema.ToLowerInvariant()}:{table.TableName.ToLowerInvariant()}";
+    }
+
+    private static bool MatchesTable(CachedConsentEnvelope env, TableIdentifier table)
+    {
+        var envDomain = string.IsNullOrWhiteSpace(env.Domain) ? "default" : env.Domain;
+        var tableDomain = string.IsNullOrWhiteSpace(table.Domain) ? "default" : table.Domain;
+        return string.Equals(envDomain, tableDomain, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(env.Schema ?? string.Empty, table.Schema ?? string.Empty, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(env.TableName ?? string.Empty, table.TableName ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal byte[] ProtectL2Payload(string l2Key, byte[] payload, DateTimeOffset expiresAt)
+    {
+        var framed = new byte[L2HeaderLength + payload.Length];
+        framed[0] = L2FormatVersion;
+        BinaryPrimitives.WriteInt64BigEndian(framed.AsSpan(1, 8), expiresAt.ToUnixTimeMilliseconds());
+        payload.CopyTo(framed.AsSpan(L2HeaderLength));
+        var mac = ComputeL2Mac(l2Key, framed.AsSpan(1, 8), payload);
+        mac.CopyTo(framed.AsSpan(9, 32));
+        return framed;
+    }
+
+    internal byte[]? UnprotectL2Payload(string l2Key, byte[] framed)
+    {
+        if (framed.Length <= L2HeaderLength || framed[0] != L2FormatVersion)
+        {
+            return null;
+        }
+
+        var expiresBytes = framed.AsSpan(1, 8);
+        var payload = framed.AsSpan(L2HeaderLength).ToArray();
+        var expected = ComputeL2Mac(l2Key, expiresBytes, payload);
+        if (!CryptographicOperations.FixedTimeEquals(expected, framed.AsSpan(9, 32)))
+        {
+            return null;
+        }
+
+        var expiresAtMs = BinaryPrimitives.ReadInt64BigEndian(expiresBytes);
+        if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > expiresAtMs)
+        {
+            return null;
+        }
+
+        return payload;
+    }
+
+    private byte[] ComputeL2Mac(string l2Key, ReadOnlySpan<byte> expiresBytes, byte[] payload)
+    {
+        var keyBytes = Encoding.UTF8.GetBytes(l2Key);
+        Span<byte> lengthPrefix = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(lengthPrefix, keyBytes.Length);
+
+        using var hmac = IncrementalHash.CreateHMAC(HashAlgorithmName.SHA256, _l2IntegrityKey);
+        hmac.AppendData(L2MacDomain);
+        hmac.AppendData(lengthPrefix);
+        hmac.AppendData(keyBytes);
+        hmac.AppendData(expiresBytes);
+        hmac.AppendData(payload);
+        return hmac.GetHashAndReset();
+    }
+
+    private static byte[] ResolveL2IntegrityKey(
+        GatewayOptions? options,
+        IKeyVaultSecretProvider? secretProvider,
+        ILogger? logger,
+        bool l2Enabled)
+    {
+        var secretRef = options?.Caching?.Redis?.L2IntegrityKeyVaultRef;
+        if (string.IsNullOrWhiteSpace(secretRef))
+        {
+            secretRef = options?.DataMasking?.HmacSecretKeyVaultRef;
+        }
+
+        if (secretProvider != null && !string.IsNullOrWhiteSpace(secretRef))
+        {
+            try
+            {
+                var masterKey = secretProvider.GetSecretBytes(secretRef);
+                if (masterKey != null && masterKey.Length > 0)
+                {
+                    // SEC H-01: dedicated HKDF sub-key, cryptographically separated from masking and audit keys.
+                    return HKDF.DeriveKey(
+                        HashAlgorithmName.SHA256,
+                        masterKey,
+                        32,
+                        info: "GqlGateway:ConsentCacheL2:v1"u8.ToArray());
+                }
+            }
+            catch (Exception ex)
+            {
+                logger?.LogWarning(ex, "Consent L2 integrity key could not be resolved; falling back to an ephemeral per-process key (L2 entries are not shared across nodes).");
+            }
+        }
+        else if (l2Enabled)
+        {
+            logger?.LogWarning("No secret provider/key reference for the consent L2 integrity key; using an ephemeral per-process key (L2 entries are not shared across nodes).");
+        }
+
+        // Fail-safe: an unknown random key keeps L2 entries unforgeable; cross-node sharing simply misses.
+        return RandomNumberGenerator.GetBytes(32);
     }
 
     public void Dispose()

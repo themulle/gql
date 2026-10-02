@@ -2,14 +2,18 @@
 
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Hot Chocolate](https://img.shields.io/badge/GraphQL-Hot%20Chocolate%2016-F00E2B?logo=graphql&logoColor=white)](https://chillicream.com/)
+[![MCP Ready](https://img.shields.io/badge/AI-Model%20Context%20Protocol-8A2BE2?logo=anthropic&logoColor=white)](#-agentic-ai--model-context-protocol-mcp-gateway)
+[![Iceberg](https://img.shields.io/badge/Lakehouse-Apache%20Iceberg%20v2-4B8BBE?logo=apache&logoColor=white)](#)
+[![OData](https://img.shields.io/badge/Protocol-OData%20v4-0078D4)](#)
+[![AuthZ](https://img.shields.io/badge/AuthZ-Casbin%20ABAC-009688)](#)
 [![CI Build & Test](https://img.shields.io/badge/CI-Passing-brightgreen?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/Tests-1%2C666%20Passing-brightgreen)](tests/GqlGateway.Tests.Unit)
+[![Tests](https://img.shields.io/badge/Tests-2%2C261%20Passing-brightgreen)](tests/GqlGateway.Tests.Unit)
+[![Security Review](https://img.shields.io/badge/Security%20Review-2026--10--02%20Remediated-brightgreen)](security-review-2026-10-02.md)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/themulle/gql/pkgs/container/gql)
 [![Architecture](https://img.shields.io/badge/Architecture-Clean%20%2F%20Onion-blue)](docs/architecture/arc42.md)
-[![Security](https://img.shields.io/badge/Security-Zero%20Trust-green)](docs/threat-model/threat-model.md)
 [![Features](https://img.shields.io/badge/Features-Enterprise%20Catalog-blueviolet)](featurelist.md)
 [![Comparison](https://img.shields.io/badge/Comparison-Market%20Moats-orange)](featurecomparison.md)
-[![License](https://img.shields.io/badge/License-Proprietary%20%2F%20Enterprise-lightgrey)](#)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1%20%2F%20Commercial-blue)](#-license)
 
 GqlGateway is a high-performance, secure, centralized enterprise GraphQL gateway built with **.NET 10** and **Hot Chocolate 16.6.7**. It provides unified GraphQL access to heterogeneous enterprise databases (**Microsoft SQL Server / MSSQL, SQLite, PostgreSQL, Databricks, Oracle**), modern **Apache Iceberg Lakehouses**, REST APIs, and federated **Hot Chocolate Fusion Subgraphs** while enforcing a strict **Zero-Trust Data-Owner-Consent** governance model.
 
@@ -77,6 +81,7 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - **Secure HTTP-based SQL Execution**: Execute ad-hoc SQL queries over HTTP (`POST /api/v1/sql`) modeled after Trino/Presto, completely eliminating the need for exposed database ports (1433/5432) or uncontrolled database logins.
   - **AST-Level Security Linter & Rewriter**: Uses the high-performance `TrinoSqlEngine` / ANTLR4 parser to enforce strict read-only semantics (`SELECT` only), prevent multi-statement injection (`;`), block system functions (`@@`, comments), and enforce maximum result pagination limits.
   - **Deep AST Row-Level Security Pushdown**: Injects Casbin ABAC rules and correlated subquery filters (`IN`, `EXISTS`) transparently into the `WHERE` tree before the query hits the database.
+  - **DML guardrails (`WebSql.AllowDml`, regular option)**: DML requires a role from `WebSql.DmlWriterRoles`; `UPDATE`/`DELETE` without `WHERE` or with a trivially true condition (`WHERE 1=1`, `WHERE true`, `… OR 1=1`, `id = id`) are rejected on the original statement (`RlsOptions.RejectUnfilteredDml`, default `true`); each DML statement runs in a transaction and is rolled back if it affects more than `WebSql.MaxAffectedRows` rows (default `1000`, `0` = unlimited); executed, rejected and failed DML is written to the audit chain (`WEBSQL_DML_EXECUTED` / `WEBSQL_DML_REJECTED` / `WEBSQL_DML_FAILED`: statement type, tables, affected rows, actor, tenant, SHA-256 of the SQL – no SQL text or literal values). Per-table write permissions via a Casbin `write` action are planned.
 
 - **Enterprise Governance Mutations & 4-Eyes Segregation of Duties**:
   - **Fail-Closed Mutation Suite**: Granular GraphQL mutations (`requestConsent`, `approveConsent`, `rejectConsent`, `revokeConsent`, `recertifyConsent`) requiring explicit tenant authorization.
@@ -131,10 +136,23 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - **M2M / Batch Service Accounts**: Dedicated Client-Credentials and mutual TLS (mTLS) authentication schema with service principal consents (`SP-<client_id>` SIDs) distinct from interactive user accounts.
 
 - **Developer Onboarding & "Insecure Modes" (Explicit Risk Controls)**:
-  - Pragmatic onboarding for external integrations and incoming webhooks using strictly separated risk-prefixed configurations:
-  - **`warn_` Prefix (Medium Impact)**: `warn_allow_all_cors_origins`, `warn_disable_rate_limiting`, `warn_bypass_query_cost_limits`.
-  - **`danger_` Prefix (Critical Security Impact)**: `danger_allow_anonymous_queries`, `danger_bypass_authorization`, `danger_bypass_webhook_signature_validation`, `danger_allow_untrusted_certificates`, `danger_allow_anonymous_webhooks`.
-  - Fail-closed by default: All insecure flags default to `false` and log conspicuous operational alerts when engaged.
+  - Pragmatic onboarding for external integrations and incoming webhooks. Every security switch defaults to `false` and is classified in `GatewayOptions.GetAllActiveBypasses()` (the configuration property names are kept for compatibility; a historic `warn_*` name may be classified as DANGER):
+  - **DANGER** (genuinely not recommended): outside `Development` the gateway refuses to start (`ValidateGatewayOptions`); the health component `SecurityConfiguration` is unhealthy (outside Development `/health/ready` → 503); startup banner "INSECURE GETTING-STARTED CONFIGURATION".
+  - **WARN** (mildly security-relevant): permitted in Production, but loud: console warning at startup, health component stays healthy with the description `degraded: …`, listed in the Development health details (`activeBypasses`, `activeWarnings`). Production health responses expose no additional details.
+  - **Regular options** (e.g. `WebSql.AllowDml`): no message.
+  - `securityMode` in the Development health details: `INSECURE_DEV_MODE` (any DANGER), `STRICT_WITH_WARNINGS` (only WARN), `STRICT_ZERO_TRUST` (none). The `X-Gateway-Insecure-Mode` header (Development only) lists all DANGER and WARN entries.
+
+  | Switch (configuration property) | Class |
+  |---|---|
+  | `danger_allow_anonymous_access`, `danger_bypass_consent_checks`, `danger_disable_column_masking`, `danger_allow_insecure_transport`, `danger_bypass_webhook_signature_validation` / `danger_allow_anonymous_webhooks`, `danger_allow_untrusted_certificates`, `danger_bypass_mcp_auth`, `danger_bypass_lakehouse_auth`, `danger_bypass_websql_governance` / `WebSql.danger_bypass_sql_governance`, `OpenSchema` / `Catalog.OpenSchema` | DANGER |
+  | `warn_allow_unmasked_ai_access`, `warn_mock_external_systems_if_unreachable`, `warn_auto_approve_access_requests`, `warn_disable_rate_limiting`, `warn_allow_unsigned_s3_requests`, `warn_ignore_webhook_timestamp_tolerance` | DANGER (historic `warn_` name) |
+  | `warn_allow_all_cors_origins`, `warn_relaxed_query_limits`, `warn_enable_introspection`, `warn_fallback_default_tenant_for_webhooks` | WARN |
+  | `Catalog.AllowLegacyPayloadOnlySignature`, `Itsm.LegacyGlobalWebhookSecret`, `OpenMetadata.AutoCreateConsents` | WARN |
+  | `AllowDevelopmentInContainer` | WARN (additionally only effective together with `Development`, see container check) |
+  | `WebSql.warn_allow_dml`, `Insecure.warn_allow_websql_dml` (legacy aliases) | WARN – use `WebSql.AllowDml` |
+  | `WebSql.AllowDml` (+ mandatory `WebSql.DmlWriterRoles`) | regular option, no message |
+
+  - Independent hard checks stay in place in every non-Development environment: Quickstart profile, `EnableTestAuthHandler`, anonymous access, `SeedDemoData`, valid HMAC Key-Vault reference, Development-in-container opt-in; `WebSql.AllowDml` without `DmlWriterRoles` aborts startup in every environment.
 
 - **Two-Phase ITSM Integration & AI-Assisted Governance**:
   - **ITSM Webhook Integration**: Bi-directional integration with **ServiceNow** and **Jira** for approval workflows. Webhooks secured with timing-safe HMAC-SHA256 verification and 5-minute replay prevention.
@@ -183,6 +201,42 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 └────────────────────────────────┘             └───────────────────────────────┘
 ```
 
+### Architektur: Kern vs. Extensions
+
+Der Kern (`src/*`) enthält Schnittstellen, Orchestrierung und Governance-Logik (Consent, RLS, Masking, Ratchet, Outbox, Stream-Backbone). **Alle Anbindungen an Fremdsysteme** liegen in `gql_extensions/src/GqlGateway.Extensions` (ein Ordner je Anbindung) und werden genau einmal über `services.AddGatewayExtensions(gatewayOptions)` in `AddGatewayInfrastructure` eingebunden:
+
+| Anbindung | Extensions-Ordner | Im Kern verbleibend | Hintergrunddienst aktiv bei |
+|---|---|---|---|
+| Datenkataloge (Purview, Collibra, Alation, OpenMetadata) | `DataCatalog/` | Schnittstellen, `CatalogGovernanceRatchet`, OpenAPI-Ingestion | `Gateway:Catalog:Enabled` |
+| ITSM (ServiceNow, Jira, Webhooks) | `Itsm/` | `ItsmWorkflowDispatcher`, Rezertifizierung, Outbox-Worker | `Gateway:Itsm:Enabled` (Kern-Worker) |
+| OpenMetadata Policy-Sync | `OpenMetadata/` | Schnittstellen | `Gateway:OpenMetadata:Enabled` |
+| Lineage-Export (OpenLineage, OpenJEV) | `Lineage/` | `LineageGraphStore`, Impact-Analyse | – |
+| Backstage-Export | `Backstage/` | `IBackstageCatalogExportService`, Endpunkte | – (Endpunkte: `Gateway:Backstage:Enabled`) |
+| CDC-Quellen (MSSQL Change Tracking, Debezium) | `Cdc/` | `InMemoryCdcEventChannel`, Stream-RLS | `Gateway:MssqlChangeTracking:Enabled` |
+| dbt, OData, Iceberg-Lakehouse | `Dbt/`, `OData/`, `Lakehouse/` | Endpunkte/Executor-Pipeline | – |
+
+Abhängigkeitsrichtung: Extensions → Application/Domain; Api → Extensions. Domain/Application/Infrastructure/GraphQL referenzieren die Extensions nicht und enthalten keine Fremdsystem-Clients (Architekturtests `CoreLayers_ShouldNotHaveDependencyOnExtensions`, `CoreLayers_ShouldNotContainForeignSystemClients`). Der gemeinsame `SsrfProtectionHandler` liegt in `GqlGateway.Application.Security`.
+
+**Interne Ziele (On-Premises-Anbindungen):** Alle HttpClients der Extensions laufen durch den `SsrfProtectionHandler`, der private, Loopback- und Metadaten-Adressen standardmäßig blockiert und außerhalb von Development HTTPS verlangt. Für Jira, ServiceNow, OpenMetadata, OpenLineage o. ä. im Firmennetz werden die Ziele explizit freigegeben:
+
+```json
+"Gateway": {
+  "Egress": {
+    "TrustedInternalHosts": [ "jira.corp.local", "servicenow.corp.local" ],
+    "TrustedInternalNetworks": [ "10.20.0.0/16" ]
+  }
+}
+```
+
+Freigegebene Ziele sind nur von der Prüfung auf private Adressen ausgenommen. Metadaten-Endpunkte sowie Loopback- und Link-Local-Adressen bleiben gesperrt, und HTTPS bleibt außerhalb von Development Pflicht.
+
+Ergänzungen (Nachprüfung E-01 bis E-04):
+
+- Die Allowlist gilt nur für die Integrationen in `Egress:TrustedIntegrations` (nicht gesetzt = `Itsm`, `Catalog`, `OpenMetadata`, `Lineage`; zusätzlich erlaubt: `AuditWorm`, `Cdn`). `Lakehouse` kann die Allowlist nie nutzen, weil seine Ziel-URLs aus Iceberg-Manifesten stammen.
+- Die Einträge werden beim Start in jeder Umgebung geprüft: ungültige CIDRs, IPv4-Netze größer als /8, IPv6-Netze größer als /32 und Netze, die 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 100.64.0.0/10, Multicast/Broadcast, `::`, `::1`, fe80::/10, `::ffff:0:0/96` oder fd00:ec2::/32 berühren, brechen den Start ab. ULA-Netze (fc00::/7) einzelner Standorte bleiben freigebbar. Eine aktive Allowlist erscheint als `WARN:` in der Bypass-Liste.
+- Auch für freigegebene Ziele gesperrt: 0.0.0.0/8 und `::`, 100.64.0.0/10, Multicast, Broadcast, IPv4-mapped-Adressen (werden auf IPv4 normalisiert) und die Metadaten-IPs 169.254.169.254, 169.254.170.2, 100.100.100.200, fd00:ec2::254 und 168.63.129.16. Löst ein freigegebener Hostname nicht auf, wird der Aufruf abgelehnt.
+- Alle Integrations-Clients folgen keinen Redirects mehr: eine 3xx-Antwort gilt als Fehler. Die Verbindung wird nur zu einer geprüften IP aufgebaut (Prüfung beim Verbindungsaufbau, Schutz gegen DNS-Rebinding). Verbindungen zum System-Proxy (`HTTPS_PROXY`) sind davon ausgenommen.
+
 ### Projects
 
 | Project | Target | Description |
@@ -192,13 +246,13 @@ The solution adheres strictly to **Clean / Onion Architecture** principles with 
 | [`GqlGateway.Infrastructure`](src/GqlGateway.Infrastructure) | `net10.0` | Persistence (`SqliteGovernanceRepository`, `SqlConnectionFactory`), Caching (`ConsentCacheService`), Multi-Instance Messaging (`RedisEventBus`), Rate Limiting (`RedisRateLimiterService`), Security Handlers (`ForwardAuthAuthenticationHandler`, `BasicAuthenticationHandler`) |
 | [`GqlGateway.GraphQL`](src/GqlGateway.GraphQL) | `net10.0` | Hot Chocolate 16.6.7 GraphQL engine, dynamic schemas, Subscriptions, Fusion Router (`FusionGatewayExtensions`), MCP Server, queries & mutations |
 | [`GqlGateway.Api`](src/GqlGateway.Api) | `net10.0` | ASP.NET Core Host, Basic Auth Login (`/api/auth/login`), ForwardAuth header security, rate limiting, anti-CSRF, health probes, ITSM webhooks, MCP endpoints |
-| [`GqlGateway.Extensions`](/root/gql_extensions/src/GqlGateway.Extensions) | `net10.0` | Apache Iceberg Lakehouse connector, Enterprise Data Catalogs (Purview, Collibra, Alation, OpenMetadata), dbt manifest ingestion, ITSM handlers, OData |
-| [`TrinoSqlEngine`](/root/gql_sqlparser) | `net10.0` | High-performance ANTLR4 SQL Parser, AST Rewriter, WebSQL engine, and parameter extractor (790 parser tests) |
+| [`GqlGateway.Extensions`](/root/gql_extensions/src/GqlGateway.Extensions) | `net10.0` | All connectors to foreign systems: Data Catalogs (Purview, Collibra, Alation, OpenMetadata), ITSM (ServiceNow, Jira, webhooks), OpenMetadata sync, dbt, OData, Iceberg Lakehouse, OpenLineage/OpenJEV, Backstage export, CDC sources (MSSQL Change Tracking, Debezium) |
+| [`TrinoSqlEngine`](/root/gql_sqlparser) | `net10.0` | High-performance ANTLR4 SQL Parser, AST Rewriter, WebSQL engine, and parameter extractor (857 parser tests) |
 | [`GqlGateway.Benchmarks`](benchmarks/GqlGateway.Benchmarks) | `net10.0` | BenchmarkDotNet suites for throughput, cache hit/miss, and masking allocations |
-| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 722 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
-| [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | 5 NetArchTest rules enforcing Clean Architecture dependency directions |
-| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 106 End-to-end integration tests using `WebApplicationFactory<Program>` |
-| [`GqlGateway.Extensions.Tests`](/root/gql_extensions/tests/GqlGateway.Extensions.Tests) | `net10.0` | 43 Unit & Integration tests for Iceberg Lakehouse, Data Catalogs, dbt, ITSM, and OData |
+| [`GqlGateway.Tests.Unit`](tests/GqlGateway.Tests.Unit) | `net10.0` | 1,180 Unit & Property-Based tests (xUnit, Shouldly, FsCheck, NSubstitute) |
+| [`GqlGateway.Tests.Architecture`](tests/GqlGateway.Tests.Architecture) | `net10.0` | 8 NetArchTest/reflection rules enforcing Clean Architecture dependency directions (incl. Kern vs. Extensions) |
+| [`GqlGateway.Tests.Integration`](tests/GqlGateway.Tests.Integration) | `net10.0` | 144 End-to-end integration tests using `WebApplicationFactory<Program>` |
+| [`GqlGateway.Extensions.Tests`](/root/gql_extensions/tests/GqlGateway.Extensions.Tests) | `net10.0` | 75 Unit & Integration tests for Iceberg Lakehouse, Data Catalogs, dbt, ITSM, and OData |
 
 ---
 
@@ -224,23 +278,29 @@ dotnet test GqlGateway.sln -c Release
 dotnet test /root/gql_extensions/GqlExtensions.slnx -c Release
 dotnet test /root/gql_sqlparser/TrinoSqlEngine.csproj -c Release
 ```
-Currently passes **1,666 / 1,666 tests (100% green)** across all test suites:
-- **790 TrinoSqlEngine & WebSQL Parser Tests** (ANTLR4 parsing, AST statement validation, parameter extraction, RLS AST-injection, type inference)
-- **722 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Declarative SQL-to-API Execution, Casbin ABAC Hot-Reload, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure, MCP Guardrails, Differential Privacy)
-- **106 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Declarative SQL Endpoints & OpenAPI 3.0 Generation, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
-- **43 Extensions Tests** (Apache Iceberg v2 Lakehouse connector & partition pruning, Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion & contract validation, ServiceNow/Jira webhooks, OData)
-- **5 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application)
+Currently passes **2,261 / 2,261 tests (100% green)** across all test suites:
+- **857 TrinoSqlEngine & WebSQL Parser Tests** (ANTLR4 parsing, AST statement validation, parameter extraction, RLS AST-injection, type inference)
+- **1,180 Unit Tests** (Authentication & ForwardAuth Security, Multi-Dialect RLS, Declarative SQL-to-API Execution, Casbin ABAC Hot-Reload, Four-Eyes & Delegation Stress, Concurrency & Audit Replication, DataLoader Odd Batching, AST Filter Inference Defense, Zero-Allocation Column Masking, Downstream Lineage BFS, GDPR Art. 15 Disclosure, MCP Guardrails, Differential Privacy)
+- **144 Integration Tests** (End-to-end GraphQL pipeline, Traefik ForwardAuth Ingress, Basic Auth Login & Query Verification, Declarative REST & Plugin Zero-Trust enforcement, Declarative SQL Endpoints & OpenAPI 3.0 Generation, Anti-CSRF, Four-Eyes Multi-Step Approval, Vacation Delegation, Red-Team Prompt Injection Defense, Insecure Mode Guardrails, Subscriptions & In-Stream RLS, Fusion Federation)
+- **75 Extensions Tests** (Apache Iceberg v2 Lakehouse connector & partition pruning, Microsoft Purview, Collibra, Alation, OpenMetadata catalog sync, GDPR Art. 9 tag enforcement, dbt manifest ingestion & contract validation, ServiceNow/Jira webhooks, OData)
+- **8 Architecture Tests** (Clean Architecture layering enforcement via NetArchTest including zero-dependency checks on AspNetCore in Domain and Application and the Kern-vs-Extensions boundary)
 
 ### 3. Run Gateway via Docker Container (Fastest / Getting Started)
 
 Ein schlüsselfertiges Container-Image mit integriertem **Microsoft Garnet .NET Cache**, In-Memory Governance-DB (10 Domänen vorbefüllt) und aktivierter Web-UI steht in der GitHub Container Registry bereit:
 
-```bash
-# Direkt via Docker Run (Ports 8080 HTTP / 8081 HTTPS)
-docker run -d -p 8080:8080 -p 8081:8081 --name gql-gateway ghcr.io/themulle/gql:getting-started
+> **Sicherheitshinweis:** Das Image startet standardmäßig in `Production`. Der unten gezeigte Getting-Started-Modus
+> setzt explizit `ASPNETCORE_ENVIRONMENT=Development` plus das Opt-in `GQL_ALLOW_DEV_IN_CONTAINER=true` und ist
+> ausschließlich für lokale Tests gedacht.
 
-# Oder via Docker Compose
-docker compose up -d
+```bash
+# Direkt via Docker Run (Ports 8080 HTTP / 8081 HTTPS) – lokaler Getting-Started-Modus
+docker run -d -p 8080:8080 -p 8081:8081 \
+  -e ASPNETCORE_ENVIRONMENT=Development -e GQL_ALLOW_DEV_IN_CONTAINER=true \
+  --name gql-gateway ghcr.io/themulle/gql:getting-started
+
+# Oder via Docker Compose (Basis = Production, Override = lokaler Dev-Modus)
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
 #### Sofort verfügbare Endpunkte auf Port 8080:
@@ -549,6 +609,26 @@ query GenerateGdprDisclosureReport {
 }
 ```
 
+## 📦 Parquet-Ausgabe
+
+Alle Daten-Ausgabekanäle liefern ihr Ergebnis auf Wunsch als echte Apache-Parquet-Datei (Parquet.Net, eine Row-Group, Snappy-komprimiert) statt JSON:
+
+```bash
+curl -H "Accept: application/vnd.apache.parquet" -H "GraphQL-Preflight: 1" \
+     -H "Content-Type: application/json" \
+     -d '{"query":"{ table(domain:\"sales\", name:\"orders\") { jsonRows } }"}' \
+     -o orders.parquet http://localhost:8080/graphql
+```
+
+- **Header:** `Accept: application/vnd.apache.parquet` (Alias `application/x-parquet`). Parquet wird nur gewählt, wenn der Typ explizit mit q>0 angegeben ist und kein anderer Typ eine höhere q-Präferenz hat (`*/*` zählt nicht). Antwort: `Content-Type: application/vnd.apache.parquet`, `Content-Disposition: attachment`, `X-Row-Count`, `X-Export-Truncated`, `Vary: Accept`, `Cache-Control: no-store`.
+- **Kanäle:** GraphQL (`/graphql`), WebSQL (`POST /api/sql`, `/api/v1/sql`), SQL-Endpoints (`/api/v1/queries/{name}`), OData-Entity-Sets (`/odata/v4/{domain}/{schema}/{table}`). Andere Routen antworten auf einen reinen Parquet-Accept-Header mit `406 Not Acceptable`; enthält der Header zusätzlich `application/json` oder `*/*`, wird normal JSON geliefert.
+- **Governance:** Die Konvertierung ist eine reine Ausgabe-Transformation nach RLS, Masking, Consent und Egress-Interceptors – Parquet enthält exakt die Daten der JSON-Antwort (maskierte Werte bleiben maskiert).
+- **Grenzen:** `GatewayOptions:ParquetEgress:MaxRowsPerFile` (Default 100000, darüber `X-Export-Truncated: true`), `MaxBufferedSourceBytes` (Default 64 MB für die gepufferte GraphQL-JSON-Antwort, darüber `413`), `Compression` (`None`/`Snappy`/`Gzip`), `FlattenNestedStructures` (verschachtelte Objekte → Spalten `parent.child`, Listen → JSON-String).
+- **GraphQL:** genau ein Root-Feld pro Operation; Zeilenquelle ist `jsonRows`, eine Liste `rows`/`items`/`nodes`, `edges[].node` oder eine Liste von Objekten. Skalare Ergebnisse → `406`.
+- **Fehler bleiben JSON:** GraphQL-`errors` (Header `X-Parquet-Conversion: skipped-errors`), Policy-/Validierungsfehler und alle Status ≠ 200 werden unverändert als JSON geliefert.
+- **Ausgenommen:** MCP (`/mcp`, JSON-RPC-Protokoll), Subscriptions/SSE/WebSockets, Webhooks, Health und Metrics werden nie konvertiert.
+- `GET /api/export/parquet/{domain}/{table}` liefert weiterhin nur ein Schema-Gerüst ohne Zeilen.
+
 ## 📝 Code Review & Export Artifacts
 
 For offline security audits, external architecture reviews, or LLM-assisted code reviews, pre-bundled review and diff files can be generated in the repository root:
@@ -623,4 +703,10 @@ For comprehensive engineering and operational guides, consult the `docs/` direct
 
 ## 📄 License
 
-Internal Enterprise Application. All rights reserved.
+This repository follows a dual-licensing / Open-Core model:
+
+- **GqlGateway Core (`gql/` & `gql_sqlparser/`)**: Licensed under the **[Business Source License 1.1 (BSL 1.1)](LICENSE)**.
+  - **Free for Internal Use**: Free to use in development, testing, and internal enterprise production environments.
+  - **Cloud Hosting & Managed Services**: Offering GqlGateway as a hosted service, managed API gateway, or cloud service to third parties is strictly subject to a commercial license.
+  - **Change License**: Transitions automatically to the **Apache License, Version 2.0** on **2029-10-01**.
+- **Enterprise Extensions (`gql_extensions/`)**: Proprietary enterprise modules (Apache Iceberg Lakehouse, Data Catalog Sync for Microsoft Purview/Collibra, ServiceNow/Jira ITSM, WORM S3 Compliance Export) are subject to a **[Commercial Enterprise License](../gql_extensions/LICENSE)**. Commercial distribution and reselling are reserved exclusively for the copyright holders.

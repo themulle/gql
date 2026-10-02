@@ -7,6 +7,7 @@ using GqlGateway.Api.Hosting;
 using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
+using GqlGateway.Application.Security;
 using GqlGateway.Application.Services;
 using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Options;
@@ -18,8 +19,6 @@ using GqlGateway.Infrastructure.Health;
 using GqlGateway.Infrastructure.Idempotency;
 using GqlGateway.Infrastructure.Messaging;
 using GqlGateway.Extensions;
-using GqlGateway.Extensions.OpenMetadata;
-using GqlGateway.Extensions.Itsm;
 using GqlGateway.Infrastructure.Persistence;
 using GqlGateway.Infrastructure.RateLimiting;
 using GqlGateway.Infrastructure.Security;
@@ -34,7 +33,6 @@ using GqlGateway.Application.Dbt.Interfaces;
 using GqlGateway.Application.Dbt.Services;
 using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.DataCatalog.Services;
-using GqlGateway.Infrastructure.DataCatalog;
 using GqlGateway.Application.Mcp.Interfaces;
 using GqlGateway.Application.Mcp.Services;
 using GqlGateway.Application.ResourceGroups;
@@ -54,7 +52,6 @@ using GqlGateway.Application.Streaming.Services;
 using GqlGateway.Infrastructure.Streaming;
 using GqlGateway.GraphQL.Subscriptions;
 using GqlGateway.Infrastructure.Cdn;
-using GqlGateway.Infrastructure.OpenJev;
 using GqlGateway.Application.SchemaRegistry;
 using GqlGateway.Application.Extensibility;
 using GqlGateway.Application.Extensibility.Interceptors;
@@ -212,14 +209,18 @@ public static class GatewayServiceCollectionExtensions
             var garnetConfig = new ConfigurationOptions
             {
                 EndPoints = { $"{gatewayOptions.Caching.Garnet.Host}:{gatewayOptions.Caching.Garnet.Port}" },
+                Password = garnetManager.ClientPassword, // SEC H-01: Garnet runs with --auth Password
                 ConnectTimeout = gatewayOptions.Caching.Redis.ConnectTimeoutMs,
                 SyncTimeout = gatewayOptions.Caching.Redis.SyncTimeoutMs,
                 AbortOnConnectFail = false
             };
+            RedisConnectionSecurity.ApplyGarnetClientTls(garnetConfig, gatewayOptions.Caching.Garnet); // SEC H-01: optional TLS
             services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(garnetConfig));
             services.AddSingleton<IEventBus, RedisEventBus>();
             services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
+            services.AddSingleton<ITokenRevocationService, RedisTokenRevocationService>(); // SEC M-14 (GAP-B)
+            services.AddSingleton<GqlGateway.Application.State.IDistributedClusterStateProvider, GqlGateway.Infrastructure.State.RedisClusterStateProvider>();
         }
         else if (gatewayOptions.Caching.Redis.Enabled)
         {
@@ -227,16 +228,21 @@ public static class GatewayServiceCollectionExtensions
             redisConfig.ConnectTimeout = gatewayOptions.Caching.Redis.ConnectTimeoutMs;
             redisConfig.SyncTimeout = gatewayOptions.Caching.Redis.SyncTimeoutMs;
             redisConfig.AbortOnConnectFail = false;
-            services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(redisConfig));
+            services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(
+                RedisConnectionSecurity.Apply(redisConfig, gatewayOptions.Caching.Redis, sp.GetService<IKeyVaultSecretProvider>(), sp.GetService<IHostEnvironment>())));
             services.AddSingleton<IEventBus, RedisEventBus>();
             services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
+            services.AddSingleton<ITokenRevocationService, RedisTokenRevocationService>(); // SEC M-14 (GAP-B)
+            services.AddSingleton<GqlGateway.Application.State.IDistributedClusterStateProvider, GqlGateway.Infrastructure.State.RedisClusterStateProvider>();
         }
         else
         {
             services.AddSingleton<IEventBus, InProcessChannelEventBus>();
             services.AddSingleton<IRateLimiterService, InMemoryRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
+            services.AddSingleton<ITokenRevocationService, InMemoryTokenRevocationService>(); // SEC M-14 (GAP-B)
+            services.AddSingleton<GqlGateway.Application.State.IDistributedClusterStateProvider, GqlGateway.Infrastructure.State.InMemoryClusterStateProvider>();
         }
 
         services.AddSingleton<IEpochValidationService, EpochValidationService>();
@@ -267,14 +273,11 @@ public static class GatewayServiceCollectionExtensions
             sp.GetRequiredService<IParameterBudgetProvider>()));
         services.AddSingleton<ISqlFilterProvider>(new SqlFilterProvider(gatewayOptions.GraphQL.MaxInClauseBatchSize));
 
-        // Data Catalog Services & Clients (P1)
-        services.AddTransient<SsrfProtectionHandler>();
-        services.AddHttpClient<IAuditWormExportService, AuditWormExportService>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<PurviewDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<CollibraDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<OpenMetadataDataCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.TryAddSingleton<IDataCatalogClientFactory, DataCatalogClientFactory>();
-        services.TryAddScoped<IDataCatalogSyncService, DataCatalogSyncService>();
+        // Outbound SSRF protection (HIGH-03 / SEC-02) & OpenAPI ingestion (P1).
+        // Data catalog clients, factory and sync are registered by AddGatewayExtensions (GqlGateway.Extensions/DataCatalog).
+        // SEC E-03: hardened primary handler (no redirects, connect-time IP check); allowlist only if "AuditWorm" is listed
+        // in Egress.TrustedIntegrations (SEC E-02).
+        services.AddHttpClient<IAuditWormExportService, AuditWormExportService>().AddSecureOutboundHandlers(EgressIntegrations.AuditWorm);
         services.AddSingleton<IOpenApiIngestionService, OpenApiIngestionService>();
 
         // SQL Connection Factory & Health Checks
@@ -294,77 +297,8 @@ public static class GatewayServiceCollectionExtensions
             });
         }
 
-        services.AddHttpClient();
         services.AddHttpClient(DeclarativeHttpDataSourceExecutor.HttpClientName)
-            .ConfigurePrimaryHttpMessageHandler(sp =>
-            {
-                var env = sp.GetRequiredService<IHostEnvironment>();
-                return new SocketsHttpHandler
-                {
-                    AllowAutoRedirect = false,
-                    SslOptions = gatewayOptions.AreUntrustedCertificatesAllowed
-                        ? new System.Net.Security.SslClientAuthenticationOptions
-                        {
-                            RemoteCertificateValidationCallback = delegate { return true; }
-                        }
-                        : new System.Net.Security.SslClientAuthenticationOptions(),
-                    ConnectCallback = async (context, cancellationToken) =>
-                    {
-                        var host = context.DnsEndPoint.Host.TrimEnd('.').ToLowerInvariant();
-                        if (DeclarativeHttpDataSourceExecutor.IsForbiddenMetadataHost(host))
-                        {
-                            throw new System.Security.SecurityException($"Outbound access to cloud/cluster metadata service '{host}' is strictly forbidden.");
-                        }
-
-                        IPAddress[] addresses;
-                        if (IPAddress.TryParse(host, out var directIp))
-                        {
-                            addresses = [directIp];
-                        }
-                        else
-                        {
-                            addresses = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
-                        }
-
-                        if (addresses.Length == 0)
-                        {
-                            throw new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound);
-                        }
-
-                        bool isDev = env.IsDevelopment();
-                        IPAddress? targetIp = null;
-                        foreach (var ip in addresses)
-                        {
-                            if (isDev || !DeclarativeHttpDataSourceExecutor.IsRestrictedIp(ip))
-                            {
-                                targetIp = ip;
-                                break;
-                            }
-                        }
-
-                        if (targetIp == null)
-                        {
-                            throw new System.Security.SecurityException($"SSRF / DNS Rebinding Defense: Outbound connection to restricted IP address '{addresses[0]}' is strictly forbidden.");
-                        }
-
-                        var socket = new System.Net.Sockets.Socket(targetIp.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp)
-                        {
-                            NoDelay = true
-                        };
-
-                        try
-                        {
-                            await socket.ConnectAsync(new IPEndPoint(targetIp, context.DnsEndPoint.Port), cancellationToken).ConfigureAwait(false);
-                            return new NetworkStream(socket, ownsSocket: true);
-                        }
-                        catch
-                        {
-                            socket.Dispose();
-                            throw;
-                        }
-                    }
-                };
-            });
+            .ConfigurePrimaryHttpMessageHandler(sp => SecureOutboundHttp.CreatePrimaryHandler(sp, "DeclarativeHttp"));
 #pragma warning restore CA5359
         services.AddSingleton<IPluginManager, PluginManager>();
         services.AddSingleton<IDataSourceExecutor, SqlDataSourceExecutor>();
@@ -383,13 +317,9 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ISchemaSunsettingService, SchemaSunsettingService>();
         services.AddSingleton<IDifferentialPrivacyEngine, DifferentialPrivacyEngine>();
 
-        // ITSM Dispatcher, Outbound REST Clients (ServiceNow & Jira) & Inbound Webhooks
-        services.AddHttpClient<ServiceNowTableApiClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<JiraCloudRestClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.TryAddEnumerable(ServiceDescriptor.Scoped<IItsmWorkflowClient, ServiceNowTableApiClient>());
-        services.TryAddEnumerable(ServiceDescriptor.Scoped<IItsmWorkflowClient, JiraCloudRestClient>());
+        // ITSM orchestration (dispatcher, recertification, outbox workers). The outbound REST clients (ServiceNow & Jira)
+        // and the inbound webhook handler are registered by AddGatewayExtensions (GqlGateway.Extensions/Itsm).
         services.AddScoped<ItsmWorkflowDispatcher>();
-        services.AddScoped<IItsmWebhookHandler, ItsmWebhookHandler>();
         services.AddScoped<IConsentRecertificationService, ConsentRecertificationWorkflowService>();
         if (gatewayOptions.Itsm.Enabled)
         {
@@ -398,22 +328,13 @@ public static class GatewayServiceCollectionExtensions
         }
 
 
-        // Lineage Graph Store, Impact Analyzer & External Lineage / GDPR Exporters
+        // Lineage Graph Store, Impact Analyzer & GDPR Exporter. The external OpenLineage export client is registered by
+        // AddGatewayExtensions (GqlGateway.Extensions/Lineage).
         services.AddSingleton<ILineageGraphStore, LineageGraphStore>();
         services.AddScoped<ILineageImpactAnalyzerService, LineageImpactAnalyzerService>();
         services.AddSingleton<IGdprAuditReportExporter, GdprAuditReportPdfExporter>();
-        services.AddHttpClient<OpenLineageClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddScoped<IOpenLineageClient, OpenLineageClient>();
 
-
-        // AI Assisted Governance (OpenJEV & Triage)
-        services.AddHttpClient("OpenJev").AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddSingleton<IOpenJevClient>(sp =>
-        {
-            var factory = sp.GetRequiredService<IHttpClientFactory>();
-            var logger = sp.GetRequiredService<ILogger<OpenJevClient>>();
-            return new OpenJevClient(logger, factory.CreateClient("OpenJev"));
-        });
+        // AI Assisted Governance (Triage). The OpenJEV client is registered by AddGatewayExtensions (GqlGateway.Extensions/Lineage).
         services.AddScoped<IJustificationTriageService, JustificationTriageService>();
 
         // Standardisiertes Connector-SPI (F-ARCH-10 nach Trino-Muster)
@@ -424,6 +345,7 @@ public static class GatewayServiceCollectionExtensions
             var metaRepo = sp.GetService<ITableMetadataRepository>();
             var opts = sp.GetService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>();
             var env = sp.GetService<IHostEnvironment>();
+            var maskingProvider = sp.GetService<IColumnMaskingProvider>();
 
             if (sqlConnFactory != null && metaRepo != null)
             {
@@ -432,7 +354,8 @@ public static class GatewayServiceCollectionExtensions
                     connectionFactory: sqlConnFactory,
                     metadataRepository: metaRepo,
                     options: opts,
-                    environment: env);
+                    environment: env,
+                    maskingProvider: maskingProvider);
                 registry.RegisterConnector("default-sql", defaultSqlConnector);
                 registry.RegisterConnector("sql", defaultSqlConnector);
             }
@@ -469,6 +392,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IMcpProvenanceEnricher, McpProvenanceEnricher>();
         services.AddSingleton<IMcpSessionStore, McpSessionStore>();
         services.AddSingleton<IMcpToolRegistry, McpToolRegistry>();
+        services.AddSingleton<GqlGateway.Application.Mcp.Pruning.ISemanticToolPruner, GqlGateway.Application.Mcp.Pruning.SemanticToolPruner>();
         services.AddScoped<IMcpQueryExecutor, GqlGateway.GraphQL.Mcp.GatewayMcpQueryExecutor>();
         services.AddScoped<IAiDataGuardrailService, AiDataGuardrailService>();
         services.AddScoped<IMcpProtocolHandler, McpProtocolHandler>();
@@ -477,6 +401,9 @@ public static class GatewayServiceCollectionExtensions
 
         // Resource Groups & Workload Isolation (F-PERF-08)
         services.AddSingleton<IResourceGroupManager, ResourceGroupManager>();
+        // SEC H-07: Per-principal / per-tenant limits for long-lived connections (WebSocket, SSE)
+        services.AddSingleton(sp => new PersistentConnectionLimiter(
+            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>().Value.ResourceGroups));
 
         // Canonical System Metadata & Monitoring (F-API-07)
         services.AddSingleton<IGatewaySystemMetricsService, GatewaySystemMetricsService>();
@@ -496,50 +423,37 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ITrafficDrainController, TrafficDrainController>();
         services.AddHostedService<TrafficDrainHostedService>();
 
-        // Foreign System Extensions (ServiceNow, Jira, OpenMetadata, Multi-Catalog)
+        // Connectors to foreign systems (GqlGateway.Extensions): ITSM (ServiceNow, Jira), OpenMetadata, data catalogs
+        // (Purview, Collibra, OpenMetadata, Alation), dbt, OData, Iceberg lakehouse, OpenLineage/OpenJEV, Backstage and
+        // CDC sources (MSSQL Change Tracking, Debezium). Single registration point – see ExtensionsServiceCollectionExtensions.
         services.AddGatewayExtensions(gatewayOptions);
-        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.MicrosoftPurviewCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.CollibraCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.DataCatalog.AlationCatalogClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.Itsm.ServiceNowClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.Itsm.JiraClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<GqlGateway.Extensions.OpenMetadata.OpenMetadataClient>().AddHttpMessageHandler<SsrfProtectionHandler>();
 
-        // Realtime Event Subscriptions & In-Stream RLS (P5)
+        // Realtime Event Subscriptions & In-Stream RLS (P5 & F-CDC-03)
         services.AddSingleton<ICdcEventChannel, InMemoryCdcEventChannel>();
         services.AddSingleton<ICdcEventIngestionService, CdcEventIngestionService>();
         services.AddScoped<IStreamRlsPolicyEnforcer, StreamRlsPolicyEnforcer>();
-
-        // Native MSSQL Change Tracking Ingestion Provider (F-CDC-02)
-        services.AddSingleton<GqlGateway.Application.Streaming.Interfaces.IMssqlWatermarkStore, GqlGateway.Infrastructure.Streaming.InMemoryMssqlWatermarkStore>();
-        services.AddSingleton<GqlGateway.Application.Streaming.Interfaces.IMssqlChangeTrackingPoller, GqlGateway.Infrastructure.Streaming.MssqlChangeTrackingPoller>();
-        if (gatewayOptions.MssqlChangeTracking.Enabled)
+        services.AddSingleton<GqlGateway.Infrastructure.Streaming.PostgreSqlLogicalReplicationService>();
+        services.AddSingleton<GqlGateway.Application.Streaming.Interfaces.IPostgreSqlCdcService>(sp => sp.GetRequiredService<GqlGateway.Infrastructure.Streaming.PostgreSqlLogicalReplicationService>());
+        if (gatewayOptions.PostgreSqlCdc.Enabled)
         {
-            services.AddHostedService<GqlGateway.Infrastructure.Streaming.MssqlChangeTrackingHostedService>();
+            services.AddHostedService(sp => sp.GetRequiredService<GqlGateway.Infrastructure.Streaming.PostgreSqlLogicalReplicationService>());
         }
 
-        // Modern Lakehouse Apache Iceberg Connector (P4 / ADR-015)
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.LocalStorageProvider>();
-        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider))
-            .AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient(nameof(GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider))
-            .AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddSingleton(sp => new GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider(
-            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
-            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
-            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GqlGateway.Extensions.Lakehouse.Services.S3LakehouseStorageProvider>>()));
-        services.AddSingleton(sp => new GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider(
-            sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
-            sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>(),
-            sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<GqlGateway.Extensions.Lakehouse.Services.AzureBlobStorageProvider>>()));
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Services.CompositeLakehouseStorageProvider>();
+        // AST-Aware Traffic Shadowing & Dark Replay (F-OPS-01)
+        services.AddHttpClient<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>();
+        services.AddSingleton<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>();
+        services.AddSingleton<GqlGateway.Application.Diagnostics.Shadowing.ITrafficShadowingService>(sp =>
+            sp.GetRequiredService<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>());
+        if (gatewayOptions.TrafficShadowing.Enabled)
+        {
+            services.AddHostedService(sp => sp.GetRequiredService<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>());
+        }
 
+        // FOCUS FinOps Accounting (F-AI-08)
+        services.AddSingleton<GqlGateway.Application.FinOps.Interfaces.IFinOpsAccountingService, GqlGateway.Application.FinOps.Services.FocusCostAccountingService>();
 
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.ILakehouseStorageProvider>(sp => sp.GetRequiredService<GqlGateway.Extensions.Lakehouse.Services.CompositeLakehouseStorageProvider>());
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.IIcebergMetadataReader, GqlGateway.Extensions.Lakehouse.Services.IcebergMetadataReader>();
-        services.AddSingleton<GqlGateway.Extensions.Lakehouse.Interfaces.IIcebergPartitionPruner, GqlGateway.Extensions.Lakehouse.Services.IcebergPartitionPruner>();
-        services.AddScoped<GqlGateway.Extensions.Lakehouse.Interfaces.ILakehouseDataSourceExecutor, GqlGateway.Extensions.Lakehouse.Services.LakehouseDataSourceExecutor>();
-        services.AddScoped<IDataSourceExecutor, GqlGateway.Extensions.Lakehouse.Services.LakehouseDataSourceExecutor>();
+        // Dynamic Schema Contracts (@tag / @inaccessible) (F-GOV-08)
+        services.AddSingleton<GqlGateway.Application.Governance.Contracts.ISchemaContractManager, GqlGateway.Application.Governance.Contracts.SchemaContractManager>();
 
         // Explicit CORS policy configuration
         services.AddCors(options =>
@@ -593,9 +507,6 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<ISchemaLinter, SchemaLinter>();
         services.AddSingleton<ISchemaRegistryRepository, InMemorySchemaRegistryRepository>();
         services.AddSingleton<ISchemaRegistryService, SchemaRegistryService>();
-
-        // Backstage.io Integration
-        services.AddSingleton<GqlGateway.Application.Integrations.Backstage.IBackstageCatalogExportService, GqlGateway.Application.Integrations.Backstage.BackstageCatalogExportService>();
 
         return services;
     }
@@ -688,11 +599,13 @@ public static class GatewayServiceCollectionExtensions
                 if (!string.IsNullOrWhiteSpace(adfsConfig.Audience)) validAudiences.Add(adfsConfig.Audience);
             }
 
+            // SEC M-02: Issuer and audience are ALWAYS validated (fail-closed). If no issuer/audience is
+            // configured, no token can pass validation; outside Development startup is aborted beforehand.
             options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
             {
-                ValidateIssuer = validIssuers.Count > 0,
+                ValidateIssuer = true,
                 ValidIssuers = validIssuers.Count > 0 ? validIssuers : null,
-                ValidateAudience = validAudiences.Count > 0,
+                ValidateAudience = true,
                 ValidAudiences = validAudiences.Count > 0 ? validAudiences : null,
                 ValidateLifetime = true,
                 ValidateIssuerSigningKey = true,
@@ -776,7 +689,9 @@ public static class GatewayServiceCollectionExtensions
             };
         });
 
-        services.AddAuthorization();
+        // SEC M-03: Authenticated-user fallback policy and named role policies.
+        services.AddAuthorization(GatewayPolicies.Configure);
+        services.AddSingleton<GqlGateway.Application.Interfaces.IGatewayRoleEvaluator, GqlGateway.Application.Security.GatewayRoleEvaluator>();
         services.AddHttpContextAccessor();
 
         return services;
@@ -789,9 +704,10 @@ public static class GatewayServiceCollectionExtensions
         var maxDepth = gatewayOptions.AreQueryLimitsRelaxed ? 100 : gatewayOptions.GraphQL.MaxAllowedExecutionDepth;
         var maxCost = gatewayOptions.AreQueryLimitsRelaxed ? 100000 : gatewayOptions.GraphQL.MaxAllowedComplexity;
 
-        services.AddScoped<IClientTierResolver, ClientTierResolver>();
-        services.AddHttpClient<CloudflareCdnPurgeService>().AddHttpMessageHandler<SsrfProtectionHandler>();
-        services.AddHttpClient<FastlyCdnPurgeService>().AddHttpMessageHandler<SsrfProtectionHandler>();
+        // SEC M-16: Singleton, damit registrierte API-Keys und der Key-Cache über Requests hinweg bestehen.
+        services.AddSingleton<IClientTierResolver, ClientTierResolver>();
+        services.AddHttpClient<CloudflareCdnPurgeService>().AddSecureOutboundHandlers(EgressIntegrations.Cdn);
+        services.AddHttpClient<FastlyCdnPurgeService>().AddSecureOutboundHandlers(EgressIntegrations.Cdn);
         services.AddTransient<ICdnCachePurgeService, CloudflareCdnPurgeService>();
 
         services.AddFusionFederationServices(gatewayOptions);
@@ -805,7 +721,20 @@ public static class GatewayServiceCollectionExtensions
             .UseInstrumentation()
             .UseExceptions()
             .UseTimeout()
-            .UseDocumentCache()
+            .UseDocumentCache();
+
+        // SEC H-08: Trusted-document enforcement must run BEFORE parsing/validation/execution.
+        // HotChocolate's UseOnlyPersistedOperationAllowed() was previously appended after UseOperationExecution
+        // without a document store and without OnlyAllowPersistedDocuments, i.e. it never took effect.
+        // We enforce an allowlist of trusted documents (normalized SHA-256) directly after the document cache.
+        if (gatewayOptions.GraphQL.PersistedQueriesOnly)
+        {
+            var trustedDocuments = TrustedDocumentStore.LoadFromDirectory(gatewayOptions.GraphQL.TrustedDocumentsDirectory);
+            services.AddSingleton(trustedDocuments);
+            gqlBuilder.UseRequest<TrustedDocumentsOnlyMiddleware>();
+        }
+
+        gqlBuilder
             .UseDocumentParser()
             .UseDocumentValidation()
             .UseRequest<GqlGateway.GraphQL.Interceptors.DbtHealthExecutionMiddleware>()
@@ -833,18 +762,15 @@ public static class GatewayServiceCollectionExtensions
                 new GqlGateway.GraphQL.Interceptors.QueryCostAnalyzerRule(
                     maxAllowedCost: maxCost,
                     maxResponseRows: gatewayOptions.GraphQL.MaxResponseRows,
-                    onQueryTooComplex: () => GatewayDiagnostics.QueryTooComplexCounter.Add(1)))
+                    onQueryTooComplex: () => GatewayDiagnostics.QueryTooComplexCounter.Add(1),
+                    maxRootFields: gatewayOptions.AreQueryLimitsRelaxed ? 200 : gatewayOptions.GraphQL.MaxRootFieldsPerOperation))
             .ModifyRequestOptions(opt =>
             {
                 opt.ExecutionTimeout = TimeSpan.FromSeconds(gatewayOptions.HighAvailability.QueryTimeoutSeconds);
             });
 
-        if (gatewayOptions.GraphQL.PersistedQueriesOnly)
-        {
-            gqlBuilder.UseOnlyPersistedOperationAllowed();
-        }
-
-        if (!gatewayOptions.GraphQL.EnableIntrospection && !gatewayOptions.IsIntrospectionForced && !gatewayOptions.IsOpenSchemaAllowed)
+        // SEC H-02: OpenSchema only opens catalog/OpenAPI documentation routes; it no longer enables introspection.
+        if (!gatewayOptions.GraphQL.EnableIntrospection && !gatewayOptions.IsIntrospectionForced)
         {
             gqlBuilder.DisableIntrospection();
         }
@@ -853,18 +779,75 @@ public static class GatewayServiceCollectionExtensions
     }
 
     internal static void ValidateGatewayOptions(GatewayOptions options, IHostEnvironment environment)
+        => ValidateGatewayOptions(options, environment, System.Environment.GetEnvironmentVariable);
+
+    internal static void ValidateGatewayOptions(GatewayOptions options, IHostEnvironment environment, Func<string, string?> getEnvironmentVariable)
     {
+        ArgumentNullException.ThrowIfNull(getEnvironmentVariable);
         ValidateObjectRecursively(options);
 
-        if (options.HasAnySecurityBypassActive)
+        // SEC E-01: the egress allowlist is validated in every environment; invalid or too broad entries abort the start.
+        var egressErrors = EgressAllowlist.Validate(options.Egress);
+        if (egressErrors.Count > 0)
         {
-            var bypasses = string.Join("\n  - ", options.GetAllActiveBypasses());
+            throw new ValidationException(
+                "Konfigurationsfehler Egress-Allowlist (Gateway:Egress): IPv4-Netze mindestens /8, IPv6 mindestens /32, keine Überlappung mit " +
+                "Loopback/Link-Local/Metadaten/CGNAT/Multicast/IPv4-mapped-Bereichen:\n  - " + string.Join("\n  - ", egressErrors));
+        }
+
+        // SEC C-04: Development disables most protections. Inside a container this is almost always an
+        // accidentally shipped image default, so it requires an explicit opt-in.
+        if (environment.IsDevelopment() &&
+            IsTruthy(getEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER")) &&
+            !options.AllowDevelopmentInContainer &&
+            !IsTruthy(getEnvironmentVariable("GQL_ALLOW_DEV_IN_CONTAINER")))
+        {
+            throw new ValidationException(
+                "Sicherheitsverletzung: ASPNETCORE_ENVIRONMENT=Development ist in einem Container (DOTNET_RUNNING_IN_CONTAINER=true) " +
+                "nur mit explizitem Opt-in erlaubt (Gateway:AllowDevelopmentInContainer=true bzw. GQL_ALLOW_DEV_IN_CONTAINER=true). " +
+                "Für Produktion ASPNETCORE_ENVIRONMENT=Production verwenden; für lokale Tests docker-compose.dev.yml nutzen.");
+        }
+
+        // SEC H-08: PersistedQueriesOnly needs a trusted document store; otherwise the switch would be ineffective.
+        if (options.GraphQL.PersistedQueriesOnly)
+        {
+            var dir = options.GraphQL.TrustedDocumentsDirectory;
+            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(System.IO.Path.GetFullPath(dir)))
+            {
+                throw new ValidationException(
+                    "Sicherheitsverletzung: GraphQL.PersistedQueriesOnly=true erfordert ein existierendes GraphQL.TrustedDocumentsDirectory " +
+                    "mit den freigegebenen Operationen (*.graphql / *.gql). Ohne Dokumentenspeicher wäre der Schalter wirkungslos.");
+            }
+        }
+
+        // Security switch semantics: DANGER = blocked outside Development (see below), WARN = permitted everywhere
+        // but reported loudly at startup, regular options = no message (see GatewayOptions.GetAllActiveBypasses).
+        var dangerBypasses = options.GetActiveDangerBypasses();
+        var warnings = options.GetActiveWarnings();
+        if (dangerBypasses.Count > 0)
+        {
+            var bypasses = string.Join("\n  - ", dangerBypasses);
             Console.WriteLine(
                 $"\n================================================================================\n" +
                 $"⚠️⚠️⚠️  INSECURE GETTING-STARTED CONFIGURATION DETECTED  ⚠️⚠️⚠️\n" +
                 $"The following security bypasses are currently ACTIVE:\n  - {bypasses}\n" +
                 $"NEVER USE THESE INSECURE SETTINGS IN PRODUCTION ENVIRONMENTS!\n" +
                 $"================================================================================\n");
+        }
+
+        if (warnings.Count > 0)
+        {
+            // WARN entries are permitted in Production; they are reported but never abort startup.
+            Console.WriteLine(
+                "[GqlGateway] WARNING: security-relevant settings are active (permitted, review regularly):\n  - " +
+                string.Join("\n  - ", warnings));
+        }
+
+        if (options.WebSql.AllowDml && options.WebSql.DmlWriterRoles.Count == 0)
+        {
+            throw new ValidationException(
+                "Konfigurationsfehler: WebSql.AllowDml=true erfordert mindestens eine Rolle in WebSql.DmlWriterRoles " +
+                "(SEC M-20: DML ist nur für explizit berechtigte Rollen zulässig).");
         }
 
         if (!environment.IsDevelopment() && options.IsQuickstartProfile)
@@ -919,17 +902,12 @@ public static class GatewayServiceCollectionExtensions
                 throw new ValidationException("Sicherheitsverletzung: danger_allow_anonymous_access darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
             }
 
-            var activeBypasses = options.GetAllActiveBypasses();
-            var disallowedInProd = activeBypasses
-                .Where(b => b.StartsWith("DANGER:", StringComparison.OrdinalIgnoreCase) ||
-                            b.StartsWith("WARN:", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            if (disallowedInProd.Count > 0)
+            // Only DANGER entries are blocked outside Development; WARN entries are permitted (reported above).
+            if (dangerBypasses.Count > 0)
             {
                 throw new ValidationException(
                     $"Kritische Sicherheitsverletzung: Folgende Sicherheits-Bypasses dürfen AUSSCHLIESSLICH in der Development-Umgebung aktiv sein:\n  - " +
-                    string.Join("\n  - ", disallowedInProd));
+                    string.Join("\n  - ", dangerBypasses));
             }
         }
 
@@ -985,9 +963,12 @@ public static class GatewayServiceCollectionExtensions
                 }
             }
 
-            if (options.Authentication.EntraId.Enabled && (string.IsNullOrWhiteSpace(options.Authentication.EntraId.Audience) || (string.IsNullOrWhiteSpace(options.Authentication.EntraId.TenantId) && string.IsNullOrWhiteSpace(options.Authentication.EntraId.Instance))))
+            // SEC M-02: Fail-closed when JWT is active without audience or issuer.
+            if (options.Authentication.EntraId.Enabled &&
+                ((string.IsNullOrWhiteSpace(options.Authentication.EntraId.Audience) && string.IsNullOrWhiteSpace(options.Authentication.EntraId.ClientId)) ||
+                 string.IsNullOrWhiteSpace(options.Authentication.EntraId.TenantId)))
             {
-                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development müssen EntraId.Audience und TenantId/Instance zwingend konfiguriert sein!");
+                throw new ValidationException("Sicherheitsverletzung: Außerhalb von Development müssen bei aktivem EntraId zwingend Audience oder ClientId sowie TenantId (Issuer) konfiguriert sein!");
             }
 
             if (options.Authentication.Adfs.Enabled && (string.IsNullOrWhiteSpace(options.Authentication.Adfs.Audience) || string.IsNullOrWhiteSpace(options.Authentication.Adfs.Authority)))
@@ -1015,6 +996,13 @@ public static class GatewayServiceCollectionExtensions
         }
     }
 
+    private static bool IsTruthy(string? value)
+    {
+        var trimmed = value?.Trim();
+        return string.Equals(trimmed, "true", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(trimmed, "1", StringComparison.Ordinal);
+    }
+
     private static void ValidateObjectRecursively(object instance)
     {
         var context = new ValidationContext(instance);
@@ -1032,31 +1020,5 @@ public static class GatewayServiceCollectionExtensions
                 }
             }
         }
-    }
-}
-
-/// <summary>
-/// DelegatingHandler enforcing strict SSRF validation with asynchronous DNS resolution
-/// across all outbound HTTP requests made by ITSM, Catalog, Lineage, and CDN purge clients (HIGH-03 / SEC-02).
-/// </summary>
-public sealed class SsrfProtectionHandler : DelegatingHandler
-{
-    private readonly IHostEnvironment? _environment;
-
-    public SsrfProtectionHandler(IHostEnvironment? environment = null)
-    {
-        _environment = environment;
-    }
-
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-    {
-        if (request.RequestUri != null)
-        {
-            await DeclarativeHttpDataSourceExecutor.ValidateDestinationUrlAsync(
-                request.RequestUri,
-                _environment?.IsDevelopment() ?? false,
-                cancellationToken).ConfigureAwait(false);
-        }
-        return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 }

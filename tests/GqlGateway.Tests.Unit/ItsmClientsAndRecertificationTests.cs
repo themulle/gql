@@ -11,7 +11,7 @@ using GqlGateway.Application.Workflows;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
-using GqlGateway.Infrastructure.Itsm;
+using GqlGateway.Extensions.Itsm;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;

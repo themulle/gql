@@ -18,21 +18,10 @@ public sealed class HttpContextClientIpResolver : IClientIpResolver
         var context = _httpContextAccessor.HttpContext;
         if (context == null)
         {
-            return IPAddress.Loopback;
+            return IPAddress.None;
         }
 
-        if (context.Items.TryGetValue("OriginalTcpRemoteIp", out var origIpObj))
-        {
-            if (origIpObj is IPAddress origIp)
-            {
-                return origIp;
-            }
-            if (origIpObj is string origIpStr && IPAddress.TryParse(origIpStr, out var parsedOrig))
-            {
-                return parsedOrig;
-            }
-        }
-
+        // RemoteIpAddress after UseForwardedHeaders() is the canonical client IP.
         if (context.Connection.RemoteIpAddress != null)
         {
             return context.Connection.RemoteIpAddress;
@@ -44,6 +33,6 @@ public sealed class HttpContextClientIpResolver : IClientIpResolver
             return parsedClaim;
         }
 
-        return IPAddress.Loopback;
+        return IPAddress.None;
     }
 }

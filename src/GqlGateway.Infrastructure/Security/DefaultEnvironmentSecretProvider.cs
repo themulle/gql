@@ -11,6 +11,8 @@ namespace GqlGateway.Infrastructure.Security;
 
 public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
 {
+    private const string ItsmWebhookSecretInstancePrefix = "itsm:webhook-secret:";
+
     private readonly IConfiguration _configuration;
     private readonly IHostEnvironment _environment;
     private readonly Microsoft.Extensions.Logging.ILogger<DefaultEnvironmentSecretProvider>? _logger;
@@ -55,7 +57,14 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
         candidates.Add(secretRef.Replace("-", ":"));
 
         // 3. Strictly bounded well-known aliases (exact or prefix match only, preventing accidental cross-secret collisions)
-        if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) ||
+        // SEC H-06: Instance-specific ITSM references ("itsm:<name>:<instance>", e.g. itsm:webhook-secret:{instanceId})
+        // never fall back to the global well-known secret; otherwise every instance would share the global key.
+        var isInstanceSpecificItsmRef = secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) && IsInstanceSpecificReference(secretRef);
+        if (isInstanceSpecificItsmRef)
+        {
+            _logger?.LogDebug("Secret reference '{SecretRef}' is instance-specific; no global alias fallback is applied.", secretRef);
+        }
+        else if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(secretRef, "itsm-webhook-secret", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(secretRef, "ITSM_WEBHOOK_SECRET", StringComparison.OrdinalIgnoreCase))
         {
@@ -98,6 +107,13 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
             }
         }
 
+        // SEC H-06: An unresolved instance-specific ITSM secret is "not found" in every environment. The Development
+        // placeholder (reference name as key) would be a publicly known HMAC key for that instance.
+        if (isInstanceSpecificItsmRef && secretRef.StartsWith(ItsmWebhookSecretInstancePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Sicherheitsfehler: Das instanzspezifische Secret ({DescribeReference(secretRef)}) ist nicht konfiguriert.");
+        }
+
         // In Development, allow using the secret reference itself as dev key
         if (_environment.IsDevelopment())
         {
@@ -105,6 +121,23 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
         }
 
         // Fail-fast in non-development if secret cannot be resolved from Key Vault
-        throw new InvalidOperationException($"Sicherheitsfehler: Das Secret '{secretRef}' konnte weder über Azure Key Vault / Konfiguration noch Umgebungsvariablen aufgelöst werden.");
+        throw new InvalidOperationException($"Sicherheitsfehler: Das Secret ({DescribeReference(secretRef)}) konnte weder über Azure Key Vault / Konfiguration noch Umgebungsvariablen aufgelöst werden.");
+    }
+
+    /// <summary>
+    /// SEC EX-16: Exception messages never contain the secret reference itself – a misconfigured value may be a raw
+    /// token and exception messages end up in logs. Only the length and a short SHA-256 prefix are reported so that
+    /// operators can correlate the reference with their configuration.
+    /// </summary>
+    private static string DescribeReference(string secretRef)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(secretRef));
+        return $"Referenz mit Länge {secretRef.Length}, SHA-256-Präfix {Convert.ToHexStringLower(hash)[..8]}";
+    }
+
+    private static bool IsInstanceSpecificReference(string secretRef)
+    {
+        var segments = secretRef.Split(':');
+        return segments.Length >= 3 && segments.All(segment => segment.Length > 0);
     }
 }

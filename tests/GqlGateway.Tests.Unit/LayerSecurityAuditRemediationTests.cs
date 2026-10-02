@@ -175,14 +175,36 @@ public sealed class LayerSecurityAuditRemediationTests
                 rowFilterSql: "department = 'HR'",
                 hasUnconstrainedColumnAllow: true)));
 
+        // SEC H-09: Consent decision first (allowed, unconstrained), Casbin RLS filter as additional gate.
+        policyMock.HasPolicies(Arg.Any<TenantId>()).Returns(true);
+        metadataMock.GetTableMetadataAsync(table, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<TableMetadata?>(new TableMetadata
+            {
+                Identifier = table,
+                Columns = [new TableColumn { ColumnName = "id" }, new TableColumn { ColumnName = "department" }]
+            }));
+        var consentRepo = Substitute.For<IConsentRepository>();
+        consentRepo.GetActiveConsentsForSubjectsAsync(
+                Arg.Any<IEnumerable<Sid>>(), Arg.Any<TableIdentifier>(), Arg.Any<DateTimeOffset>(), Arg.Any<TenantId?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<Consent>>(Array.Empty<Consent>()));
+        var resolution = Substitute.For<IConsentResolutionService>();
+        resolution.ResolveAccess(
+                Arg.Any<Sid>(), Arg.Any<IReadOnlySet<Sid>>(), Arg.Any<IReadOnlySet<string>>(),
+                Arg.Any<TableIdentifier>(), Arg.Any<IReadOnlyList<Consent>>(), Arg.Any<DatabaseDialect>())
+            .Returns(TableAccessDecision.Allowed(table, new Dictionary<string, ColumnAccessLevel>(), hasUnconstrainedColumnAllow: true));
+
         var enforcer = new StreamRlsPolicyEnforcer(
             policyMock,
             metadataMock,
             maskingMock,
             epochMock,
-            NullLogger<StreamRlsPolicyEnforcer>.Instance);
+            NullLogger<StreamRlsPolicyEnforcer>.Instance,
+            consentRepo,
+            resolution,
+            Substitute.For<IConsentCacheService>());
 
-        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("tenant_id", "tenant-1")], "TestAuth"));
+        // SEC H-09: A subscriber without subject identifier is denied, therefore the principal carries a SID.
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("tenant_id", "tenant-1"), new Claim(ClaimTypes.PrimarySid, "S-1-5-21-STREAM-USER")], "TestAuth"));
 
         // Event 1: Matches department 'HR'
         var matchingEvent = new CdcEvent(

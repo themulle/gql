@@ -7,6 +7,7 @@ using GqlGateway.Domain.Interfaces;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace GqlGateway.Infrastructure.Persistence;
@@ -18,16 +19,24 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
     private readonly IEpochValidationService _epochValidationService;
     private readonly SemaphoreSlim _lock = new(1, 1);
     private string _lastAuditHash = "GENESIS_0000000000000000000000000000000000000000000000000000000000000000";
+    private long _lastAuditSeq;
     private readonly byte[] _auditHmacKey;
+    private readonly byte[] _auditAnchorKey;
+    private readonly IAuditChainAnchorStore _auditAnchorStore;
+    private readonly ILogger<SqliteGovernanceRepository>? _logger;
+    private string? _auditChainViolation;
     private readonly GatewayOptions? _options;
 
     public SqliteGovernanceRepository(
         IEpochValidationService epochValidationService,
         IOptions<GatewayOptions>? options = null,
         Microsoft.Extensions.Hosting.IHostEnvironment? environment = null,
-        IKeyVaultSecretProvider? secretProvider = null)
+        IKeyVaultSecretProvider? secretProvider = null,
+        IAuditChainAnchorStore? auditAnchorStore = null,
+        ILogger<SqliteGovernanceRepository>? logger = null)
     {
         _epochValidationService = epochValidationService;
+        _logger = logger;
         _options = options?.Value;
         var connStr = options?.Value?.GovernanceDb?.ConnectionString ?? $"Data Source=governance_{Guid.NewGuid():N};Mode=Memory;Cache=Shared";
         _connection = new SqliteConnection(connStr);
@@ -113,6 +122,11 @@ public partial class SqliteGovernanceRepository : IGovernanceRepository, IDispos
         {
             _auditHmacKey = key;
         }
+
+        // SEC H-17: dedicated sub-key for signing the external audit chain end anchor.
+        _auditAnchorKey = HKDF.DeriveKey(HashAlgorithmName.SHA256, _auditHmacKey, 32, info: "GqlGateway:AuditChainAnchor:v1"u8.ToArray());
+        _auditAnchorStore = auditAnchorStore ?? CreateDefaultAuditAnchorStore(connStr, isMemory, options?.Value?.Audit?.ChainAnchorPath);
+        InitializeAuditChainAnchor(isDevOrTest);
 
         bool shouldSeed = options?.Value?.GovernanceDb?.SeedDemoData ?? (isMemory && isDevOrTest);
         if (shouldSeed)

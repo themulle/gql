@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -221,6 +222,8 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         enforcer.AddGroupingPolicy(user, role);
     }
 
+    private const string RequestedAction = "read";
+
     public ValueTask<TableAccessDecision> EvaluatePolicyAsync(
         SecurityEvaluationContext context,
         CancellationToken ct = default)
@@ -253,51 +256,94 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
         var sw = Stopwatch.StartNew();
         var enforcer = GetOrCreateEnforcer(context.Tenant);
 
+        List<CasbinRuleMetadata> tenantRulesSnapshot;
+        if (_tenantRules.TryGetValue(context.Tenant.Value, out var tenantRulesList))
+        {
+            lock (tenantRulesList)
+            {
+                tenantRulesSnapshot = tenantRulesList.ToList();
+            }
+        }
+        else
+        {
+            tenantRulesSnapshot = new List<CasbinRuleMetadata>();
+        }
+
+        // Subjects evaluated exactly like the Casbin request: the user itself and each of its groups.
+        var subjects = new List<string> { context.UserSid.Value };
+        if (context.GroupSids != null)
+        {
+            subjects.AddRange(context.GroupSids.Select(g => g.Value));
+        }
+
+        // SEC (Low): Decisions that depend on time-based sub_rules must not be served from the decision cache.
+        bool cacheable = !tenantRulesSnapshot.Any(r => ReferencesTime(r.SubRule));
+
         bool allowed = false;
+        var matchedAllowRules = new List<CasbinRuleMetadata>();
 
         try
         {
             // First check if any deny policy matches for the user or their groups (Deny takes absolute precedence)
-            if (_tenantRules.TryGetValue(context.Tenant.Value, out var tenantRulesList))
+            bool denied = false;
+            foreach (var rule in tenantRulesSnapshot)
             {
-                lock (tenantRulesList)
+                // Deny rules are matched conservatively (any action, any rule tenant within this tenant's rule set).
+                if (!string.Equals(rule.Eft, "deny", StringComparison.OrdinalIgnoreCase) ||
+                    !MatchObjectPattern(rule.Obj, tableStr))
                 {
-                    foreach (var rule in tenantRulesList)
-                    {
-                        if (string.Equals(rule.Eft, "deny", StringComparison.OrdinalIgnoreCase) &&
-                            MatchObjectPattern(rule.Obj, tableStr))
-                        {
-                            bool subMatch = string.Equals(rule.Sub, "*", StringComparison.OrdinalIgnoreCase) ||
-                                            string.Equals(rule.Sub, context.UserSid.Value, StringComparison.OrdinalIgnoreCase) ||
-                                            (context.GroupSids != null && context.GroupSids.Any(g => string.Equals(g.Value, rule.Sub, StringComparison.OrdinalIgnoreCase))) ||
-                                            enforcer.HasRoleForUser(context.UserSid.Value, rule.Sub) ||
-                                            (context.GroupSids != null && context.GroupSids.Any(g => enforcer.HasRoleForUser(g.Value, rule.Sub)));
-
-                            if (subMatch && EvaluateSubRule(rule.SubRule, context))
-                            {
-                                allowed = false;
-                                goto PolicyDone;
-                            }
-                        }
-                    }
+                    continue;
                 }
-            }
 
-            // r = sub, tenant, obj, act, ctx
-            if (enforcer.Enforce(context.UserSid.Value, context.Tenant.Value, tableStr, "read", context))
-            {
-                allowed = true;
-            }
-            else if (context.GroupSids != null)
-            {
-                foreach (var groupSid in context.GroupSids)
+                foreach (var subject in subjects)
                 {
-                    if (enforcer.Enforce(groupSid.Value, context.Tenant.Value, tableStr, "read", context))
+                    if (!IsSubjectMatch(rule.Sub, subject, enforcer))
                     {
-                        allowed = true;
+                        continue;
+                    }
+
+                    // Fail-closed: a deny rule whose condition cannot be evaluated is treated as matching.
+                    if (EvaluateSubRule(rule.SubRule, context, subject, tableStr, RequestedAction) != false)
+                    {
+                        denied = true;
                         break;
                     }
                 }
+
+                if (denied)
+                {
+                    break;
+                }
+            }
+
+            if (!denied)
+            {
+                // SEC H-12: The allow decision and the RLS filter collection use ONE matcher. The set of matching allow
+                // rules determined here is both the authorization basis and the source of the RLS filters.
+                foreach (var rule in tenantRulesSnapshot)
+                {
+                    if (IsAllowRuleMatch(rule, context, subjects, tableStr, enforcer))
+                    {
+                        matchedAllowRules.Add(rule);
+                    }
+                }
+
+                // Casbin itself remains an additional (AND) gate: if Casbin denies (e.g. Casbin-only deny semantics,
+                // role hierarchies), access is denied. If Casbin allows but no allow rule matched in the gateway
+                // matcher (e.g. keyMatch2 treating '.' as regex wildcard, see M-18), access is denied as well,
+                // because the RLS filters of the Casbin-matched rule could not be collected (fail-closed).
+                bool casbinAllowed = false;
+                foreach (var subject in subjects)
+                {
+                    // r = sub, tenant, obj, act, ctx
+                    if (enforcer.Enforce(subject, context.Tenant.Value, tableStr, RequestedAction, context))
+                    {
+                        casbinAllowed = true;
+                        break;
+                    }
+                }
+
+                allowed = casbinAllowed && matchedAllowRules.Count > 0;
             }
         }
         catch (Exception)
@@ -305,7 +351,6 @@ m = g(r.sub, p.sub) && r.tenant == p.tenant && keyMatch2(r.obj, p.obj) && (r.act
             allowed = false;
         }
 
-PolicyDone:
         sw.Stop();
         GatewayDiagnostics.PolicyEvaluationDuration.Record(sw.Elapsed.TotalMilliseconds);
 
@@ -322,8 +367,8 @@ PolicyDone:
 
         if (allowed)
         {
-            // Resolve any attached RLS pushdown filters from matching allow rules
-            var activeRlsFilters = CollectActiveRlsFilters(context, tableStr, enforcer);
+            // Resolve any attached RLS pushdown filters from exactly the allow rules that granted access
+            var activeRlsFilters = CollectActiveRlsFilters(matchedAllowRules, context, tableStr);
 
             string? combinedSql = null;
             if (activeRlsFilters.Count > 0)
@@ -347,91 +392,120 @@ PolicyDone:
                 $"Access to table '{tableStr}' denied by ABAC policy for tenant '{context.Tenant.Value}'.");
         }
 
-        _decisionCache.TryAdd(cacheKey, new CachedDecision(decision, Stopwatch.GetTimestamp()));
+        if (cacheable)
+        {
+            _decisionCache.TryAdd(cacheKey, new CachedDecision(decision, Stopwatch.GetTimestamp()));
+        }
+
         return ValueTask.FromResult(decision);
     }
 
-    private List<string> CollectActiveRlsFilters(SecurityEvaluationContext context, string tableStr, Enforcer enforcer)
+    private static readonly string[] TimeReferenceTokens = ["Timestamp", "DateTime", "Now", "Hour", "DayOfWeek", "Date"];
+
+    private static bool ReferencesTime(string? subRule)
+    {
+        if (string.IsNullOrWhiteSpace(subRule))
+        {
+            return false;
+        }
+
+        foreach (var token in TimeReferenceTokens)
+        {
+            if (subRule.Contains(token, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsActionMatch(string ruleAct) =>
+        string.Equals(ruleAct, "*", StringComparison.Ordinal) ||
+        string.Equals(ruleAct, RequestedAction, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSubjectMatch(string ruleSub, string subject, Enforcer enforcer) =>
+        string.Equals(ruleSub, "*", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(ruleSub, subject, StringComparison.OrdinalIgnoreCase) ||
+        enforcer.HasRoleForUser(subject, ruleSub);
+
+    private static bool IsAllowRuleMatch(
+        CasbinRuleMetadata rule,
+        SecurityEvaluationContext context,
+        IReadOnlyList<string> subjects,
+        string tableStr,
+        Enforcer enforcer)
+    {
+        if (!string.Equals(rule.Eft, "allow", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Same tenant condition as the Casbin matcher (r.tenant == p.tenant)
+        if (!string.Equals(rule.Tenant, context.Tenant.Value, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!MatchObjectPattern(rule.Obj, tableStr) || !IsActionMatch(rule.Act))
+        {
+            return false;
+        }
+
+        foreach (var subject in subjects)
+        {
+            // Sub_rule is evaluated with r.sub = the matched subject (user or group), as in the Casbin request.
+            if (IsSubjectMatch(rule.Sub, subject, enforcer) &&
+                EvaluateSubRule(rule.SubRule, context, subject, tableStr, RequestedAction) == true)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private List<string> CollectActiveRlsFilters(IReadOnlyList<CasbinRuleMetadata> matchedAllowRules, SecurityEvaluationContext context, string tableStr)
     {
         var result = new List<string>();
 
-        if (!_tenantRules.TryGetValue(context.Tenant.Value, out var rules))
+        foreach (var rule in matchedAllowRules)
         {
-            return result;
-        }
-
-        lock (rules)
-        {
-            foreach (var rule in rules)
+            // Handle Correlated Row Filter (Fail-closed on generation failure)
+            if (rule.CorrelatedRowFilter != null)
             {
-                if (!string.Equals(rule.Eft, "allow", StringComparison.OrdinalIgnoreCase))
+                var subquery = _rlsFilterGenerator.BuildCorrelatedSubquery(rule.CorrelatedRowFilter);
+                if (!string.IsNullOrWhiteSpace(subquery))
                 {
-                    continue;
+                    result.Add(subquery);
+                }
+                else
+                {
+                    throw new SecurityException($"Sicherheitsfehler: Korrelierter RLS-Filter für Tabelle '{tableStr}' konnte nicht generiert werden.");
+                }
+            }
+
+            // Handle Direct RLS SQL Filter with parameter/context interpolation
+            if (!string.IsNullOrWhiteSpace(rule.RlsFilter))
+            {
+                var interpolated = InterpolateRlsFilter(rule.RlsFilter, context);
+                if (string.IsNullOrWhiteSpace(interpolated))
+                {
+                    // Fail-closed: a matched allow rule with an RLS filter must contribute that filter.
+                    throw new SecurityException($"Sicherheitsfehler: RLS-Filter für Tabelle '{tableStr}' ergab nach der Interpolation einen leeren Ausdruck.");
                 }
 
-                // Check subject match
-                bool subMatch = string.Equals(rule.Sub, "*", StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(rule.Sub, context.UserSid.Value, StringComparison.OrdinalIgnoreCase) ||
-                                context.GroupSids.Any(g => string.Equals(g.Value, rule.Sub, StringComparison.OrdinalIgnoreCase)) ||
-                                enforcer.HasRoleForUser(context.UserSid.Value, rule.Sub) ||
-                                context.GroupSids.Any(g => enforcer.HasRoleForUser(g.Value, rule.Sub));
-
-                if (!subMatch)
-                {
-                    continue;
-                }
-
-                // Check object match
-                bool objMatch = MatchObjectPattern(rule.Obj, tableStr);
-
-                if (!objMatch)
-                {
-                    continue;
-                }
-
-                // Check action match (e.g. "read" or "*")
-                if (!string.Equals(rule.Act, "*", StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(rule.Act, "read", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                // Check sub_rule condition (Prevent cross-clearance/cross-role filter leak)
-                if (!EvaluateSubRule(rule.SubRule, context))
-                {
-                    continue;
-                }
-
-                // Handle Correlated Row Filter (Fail-closed on generation failure)
-                if (rule.CorrelatedRowFilter != null)
-                {
-                    var subquery = _rlsFilterGenerator.BuildCorrelatedSubquery(rule.CorrelatedRowFilter);
-                    if (!string.IsNullOrWhiteSpace(subquery))
-                    {
-                        result.Add(subquery);
-                    }
-                    else
-                    {
-                        throw new SecurityException($"Sicherheitsfehler: Korrelierter RLS-Filter für Tabelle '{tableStr}' konnte nicht generiert werden.");
-                    }
-                }
-
-                // Handle Direct RLS SQL Filter with parameter/context interpolation
-                if (!string.IsNullOrWhiteSpace(rule.RlsFilter))
-                {
-                    var interpolated = InterpolateRlsFilter(rule.RlsFilter, context);
-                    if (!string.IsNullOrWhiteSpace(interpolated))
-                    {
-                        result.Add(interpolated);
-                    }
-                }
+                result.Add(interpolated);
             }
         }
 
         return result;
     }
 
-    private static bool EvaluateSubRule(string? subRule, SecurityEvaluationContext context)
+    /// <summary>
+    /// Evaluates a sub_rule. Returns <c>null</c> when the expression cannot be evaluated (callers decide fail-closed).
+    /// </summary>
+    private static bool? EvaluateSubRule(string? subRule, SecurityEvaluationContext context, string subject, string tableStr, string act)
     {
         if (string.IsNullOrWhiteSpace(subRule) || string.Equals(subRule.Trim(), "true", StringComparison.OrdinalIgnoreCase))
         {
@@ -446,21 +520,24 @@ PolicyDone:
         try
         {
             var interpreter = new DynamicExpresso.Interpreter();
-            interpreter.SetVariable("r", new { ctx = context, sub = context.UserSid.Value, tenant = context.Tenant.Value });
+            // SEC H-12: Same request shape as the Casbin request (r.sub, r.tenant, r.obj, r.act, r.ctx).
+            interpreter.SetVariable("r", new { ctx = context, sub = subject, tenant = context.Tenant.Value, obj = tableStr, act });
             interpreter.SetVariable("ctx", context);
             interpreter.SetVariable("context", context);
 
             var normalized = Regex.Replace(subRule, @"'([^']{2,})'", "\"$1\"");
             var evalResult = interpreter.Eval(normalized);
-            return evalResult is bool b && b;
+            return evalResult is bool b ? b : null;
         }
         catch
         {
-            return false;
+            return null;
         }
     }
 
     private static readonly Regex SafeClaimValueRegex = new(@"^[a-zA-Z0-9\-_.@: ]{1,256}$", RegexOptions.Compiled);
+
+    private static readonly Regex RlsPlaceholderRegex = new(@"\$\{([a-zA-Z0-9_.]+)\}", RegexOptions.Compiled);
 
     private static string SanitizeClaimForSql(string? value, string claimName)
     {
@@ -469,7 +546,7 @@ PolicyDone:
         {
             throw new SecurityException($"Sicherheitsfehler: Claim '{claimName}' enthält ungültige Zeichen für SQL-RLS-Interpolation.");
         }
-        return value.Replace("'", "''");
+        return value.Replace("'", "''", StringComparison.Ordinal);
     }
 
     private static string InterpolateRlsFilter(string filterTemplate, SecurityEvaluationContext context)
@@ -499,49 +576,118 @@ PolicyDone:
             throw new SecurityException($"Sicherheitsfehler: Erforderliches RLS-Attribut 'PurposeId' fehlt im Kontext für Template '{filterTemplate}'.");
         }
 
-        var userSid = SanitizeClaimForSql(context.UserSid.Value, "user_sid");
-        var tenant = SanitizeClaimForSql(context.Tenant.Value, "tenant");
-        var department = SanitizeClaimForSql(context.Department, "department");
-        var region = SanitizeClaimForSql(context.Region, "region");
-        var clearance = SanitizeClaimForSql(context.ClearanceLevel, "clearance");
-        var purpose = SanitizeClaimForSql(context.PurposeId, "purpose");
-
-        var result = filterTemplate
-            .Replace("${r.sub}", userSid, StringComparison.OrdinalIgnoreCase)
-            .Replace("${user_sid}", userSid, StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.tenant}", tenant, StringComparison.OrdinalIgnoreCase)
-            .Replace("${tenant}", tenant, StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.ctx.Department}", department, StringComparison.OrdinalIgnoreCase)
-            .Replace("${department}", department, StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.ctx.Region}", region, StringComparison.OrdinalIgnoreCase)
-            .Replace("${region}", region, StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.ctx.ClearanceLevel}", clearance, StringComparison.OrdinalIgnoreCase)
-            .Replace("${clearance}", clearance, StringComparison.OrdinalIgnoreCase)
-            .Replace("${r.ctx.PurposeId}", purpose, StringComparison.OrdinalIgnoreCase)
-            .Replace("${purpose}", purpose, StringComparison.OrdinalIgnoreCase);
-
-        if (context.Attributes != null)
+        // SEC M-19: Placeholders are resolved by a single left-to-right scan that tracks SQL string-literal state.
+        // A value is ALWAYS emitted as SQL string literal content: inside an existing literal ('${x}', '${x}%') it is
+        // ''-escaped; outside a literal (cost_center = ${attr.cost_center}) it is wrapped in quotes. A claim value can
+        // therefore never change the SQL structure, even for unquoted templates.
+        var sb = new StringBuilder(filterTemplate.Length + 32);
+        bool inLiteral = false;
+        int i = 0;
+        while (i < filterTemplate.Length)
         {
-            foreach (var (k, v) in context.Attributes)
+            char c = filterTemplate[i];
+
+            if (c == '\'')
             {
-                if (v != null)
+                // '' inside a literal is an escaped quote and does not end the literal
+                if (inLiteral && i + 1 < filterTemplate.Length && filterTemplate[i + 1] == '\'')
                 {
-                    var sanitized = SanitizeClaimForSql(v.ToString(), k);
-                    result = result
-                        .Replace($"${{attr.{k}}}", sanitized, StringComparison.OrdinalIgnoreCase)
-                        .Replace($"${{{k}}}", sanitized, StringComparison.OrdinalIgnoreCase);
+                    sb.Append("''");
+                    i += 2;
+                    continue;
                 }
+
+                inLiteral = !inLiteral;
+                sb.Append(c);
+                i++;
+                continue;
+            }
+
+            if (c == '$' && i + 1 < filterTemplate.Length && filterTemplate[i + 1] == '{')
+            {
+                var match = RlsPlaceholderRegex.Match(filterTemplate, i);
+                if (!match.Success || match.Index != i)
+                {
+                    throw new SecurityException($"Sicherheitsfehler: Ungültiger RLS-Parameter im Template '{filterTemplate}'.");
+                }
+
+                var name = match.Groups[1].Value;
+                var value = ResolveRlsPlaceholder(name, context)
+                    ?? throw new SecurityException($"Sicherheitsfehler: Unaufgelöster RLS-Parameter im Template '{filterTemplate}'.");
+
+                var escaped = SanitizeClaimForSql(value, name);
+                if (inLiteral)
+                {
+                    sb.Append(escaped);
+                }
+                else
+                {
+                    sb.Append('\'').Append(escaped).Append('\'');
+                }
+
+                i += match.Length;
+                continue;
+            }
+
+            sb.Append(c);
+            i++;
+        }
+
+        if (inLiteral)
+        {
+            throw new SecurityException($"Sicherheitsfehler: Nicht abgeschlossenes String-Literal im RLS-Template '{filterTemplate}'.");
+        }
+
+        return sb.ToString();
+    }
+
+    private static string? ResolveRlsPlaceholder(string name, SecurityEvaluationContext context)
+    {
+        switch (name.ToLowerInvariant())
+        {
+            case "r.sub":
+            case "user_sid":
+                return context.UserSid.Value;
+            case "r.tenant":
+            case "tenant":
+                return context.Tenant.Value;
+            case "r.ctx.department":
+            case "department":
+                return context.Department ?? string.Empty;
+            case "r.ctx.region":
+            case "region":
+                return context.Region ?? string.Empty;
+            case "r.ctx.clearancelevel":
+            case "clearance":
+                return context.ClearanceLevel ?? string.Empty;
+            case "r.ctx.purposeid":
+            case "purpose":
+                return context.PurposeId ?? string.Empty;
+        }
+
+        if (context.Attributes == null)
+        {
+            return null;
+        }
+
+        var key = name.StartsWith("attr.", StringComparison.OrdinalIgnoreCase) ? name[5..] : name;
+        foreach (var (k, v) in context.Attributes)
+        {
+            if (v != null && string.Equals(k, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return v.ToString();
             }
         }
 
-        if (Regex.IsMatch(result, @"\$\{[a-zA-Z0-9_.]+\}"))
-        {
-            throw new SecurityException($"Sicherheitsfehler: Unaufgelöster RLS-Parameter im Template '{filterTemplate}'.");
-        }
-
-        return result;
+        return null;
     }
 
+    /// <summary>
+    /// Gateway object matcher (SEC M-18/H-12). Supports:
+    /// <c>*</c> (everything), exact match, <c>prefix.*</c> (any object strictly below <c>prefix.</c>, segment-bounded),
+    /// <c>*</c> inside a segment (matches within one segment only) and keyMatch2-style <c>:name</c> segment parameters.
+    /// Dots are always literal.
+    /// </summary>
     private static bool MatchObjectPattern(string pattern, string target)
     {
         if (string.Equals(pattern, "*", StringComparison.OrdinalIgnoreCase) ||
@@ -550,26 +696,71 @@ PolicyDone:
             return true;
         }
 
-        if (pattern.EndsWith(".*", StringComparison.Ordinal))
+        bool trailingWildcard = pattern.EndsWith(".*", StringComparison.Ordinal);
+        var body = trailingWildcard ? pattern[..^2] : pattern;
+
+        if (trailingWildcard && body.IndexOf('*', StringComparison.Ordinal) < 0 && body.IndexOf(':', StringComparison.Ordinal) < 0)
         {
-            var prefix = pattern[..^2];
-            return target.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            // SEC M-18: 'finance.dbo.*' must not match 'finance.dbo_hr.salaries' -> compare with the segment separator.
+            return target.StartsWith(body + ".", StringComparison.OrdinalIgnoreCase) && target.Length > body.Length + 1;
         }
 
-        if (pattern.Contains('*'))
+        if (!trailingWildcard && pattern.IndexOf('*', StringComparison.Ordinal) < 0 && pattern.IndexOf(':', StringComparison.Ordinal) < 0)
         {
-            try
+            return false;
+        }
+
+        var regex = new StringBuilder("^");
+        int i = 0;
+        while (i < body.Length)
+        {
+            char c = body[i];
+            if (c == '*')
             {
-                var regex = "^" + Regex.Escape(pattern).Replace("\\*", ".*") + "$";
-                return Regex.IsMatch(target, regex, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(200));
+                regex.Append("[^.]*");
+                i++;
             }
-            catch (RegexMatchTimeoutException)
+            else if (c == ':' && (i == 0 || body[i - 1] == '.'))
             {
-                return false;
+                int j = i + 1;
+                while (j < body.Length && (char.IsLetterOrDigit(body[j]) || body[j] == '_'))
+                {
+                    j++;
+                }
+
+                if (j > i + 1)
+                {
+                    regex.Append("[^.]+");
+                    i = j;
+                }
+                else
+                {
+                    regex.Append(Regex.Escape(":"));
+                    i++;
+                }
+            }
+            else
+            {
+                regex.Append(Regex.Escape(c.ToString()));
+                i++;
             }
         }
 
-        return false;
+        if (trailingWildcard)
+        {
+            regex.Append(@"\..+");
+        }
+
+        regex.Append('$');
+
+        try
+        {
+            return Regex.IsMatch(target, regex.ToString(), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(200));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
     }
 
     public void LoadPolicyFromText(TenantId tenant, string policyText)

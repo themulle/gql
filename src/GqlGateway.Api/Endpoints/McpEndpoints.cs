@@ -1,13 +1,12 @@
 namespace GqlGateway.Api.Endpoints;
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using GqlGateway.Api.Middleware;
 using GqlGateway.Application.Mcp.Interfaces;
-using GqlGateway.Application.Mcp.Services;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 using GqlGateway.Domain.Options;
@@ -17,6 +16,20 @@ using Microsoft.AspNetCore.Routing;
 
 public static class McpEndpoints
 {
+    // SEC M-09: Hard body limit for JSON-RPC messages (independent of Content-Length / chunked encoding).
+    internal const long MaxMcpMessageBytes = 1024 * 1024;
+
+    /// <summary>
+    /// SEC H-16: Identity of the current MCP caller, derived per request from the authenticated principal.
+    /// </summary>
+    internal sealed record McpCaller(
+        string PrincipalId,
+        string? UserSid,
+        string TenantId,
+        IReadOnlyList<string> Roles,
+        IReadOnlyList<string> GroupSids,
+        string? ClientIp = null);
+
     public static IEndpointRouteBuilder MapMcpEndpoints(this IEndpointRouteBuilder app, GatewayOptions gatewayOptions)
     {
         if (!gatewayOptions.Mcp.Enabled)
@@ -28,7 +41,8 @@ public static class McpEndpoints
             ? "/mcp"
             : gatewayOptions.Mcp.EndpointPath.TrimEnd('/');
 
-        var allowOpenMcp = gatewayOptions.IsMcpAuthBypassed || gatewayOptions.IsOpenSchemaAllowed;
+        // SEC H-02: OpenSchema no longer opens MCP. Only the explicit (production-blocked) MCP auth bypass does.
+        var allowOpenMcp = gatewayOptions.IsMcpAuthBypassed;
 
         // 1. SSE Connection Handshake
         var sseEndpoint = app.MapGet($"{mcpBasePath}/sse", async (
@@ -44,25 +58,17 @@ public static class McpEndpoints
                 return Results.Unauthorized();
             }
 
-            var principalId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                ?? principal.Identity?.Name
-                ?? (allowOpenMcp ? "anonymous-ai-agent" : "unknown-agent");
+            var caller = ResolveCaller(context, allowOpenMcp);
 
-            string tenantId;
-            if (context.Items.TryGetValue(TenantResolutionMiddleware.TenantIdItemKey, out var itemTenant) && itemTenant is TenantId tId)
+            McpSessionContext session;
+            try
             {
-                tenantId = tId.Value;
+                session = mcpHandler.CreateSession(caller.PrincipalId, caller.TenantId, caller.UserSid, caller.Roles, caller.GroupSids, caller.ClientIp);
             }
-            else
+            catch (McpSessionLimitExceededException)
             {
-                tenantId = principal.GetTenantId().Value;
+                return SessionLimitResult();
             }
-
-            var userSid = principal.GetUserSid()?.Value;
-            var roles = principal.GetUserRoles().ToList();
-            var groupSids = principal.GetGroupSids().Select(s => s.Value).ToList();
-
-            var session = mcpHandler.CreateSession(principalId, tenantId, userSid, roles, groupSids);
 
             sessionStore.RegisterSseSender(session.SessionId, async (evt, data) =>
             {
@@ -83,7 +89,10 @@ public static class McpEndpoints
             context.Response.Headers.ContentType = "text/event-stream";
             context.Response.Headers.CacheControl = "no-cache";
             context.Response.Headers.Connection = "keep-alive";
+            context.Response.Headers["Mcp-Session-Id"] = session.SessionId;
 
+            // The query parameter is kept for SSE client compatibility; the session is bound to the caller (SEC H-16),
+            // so a leaked id cannot be used by anybody else. Clients should prefer the Mcp-Session-Id header.
             var messageUri = $"{mcpBasePath}/message?sessionId={session.SessionId}";
             await context.Response.WriteAsync($"event: endpoint\r\ndata: {messageUri}\r\n\r\n", context.RequestAborted).ConfigureAwait(false);
             await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
@@ -109,125 +118,120 @@ public static class McpEndpoints
             return Results.Empty;
         });
 
-        if (!allowOpenMcp)
-        {
-            sseEndpoint.RequireAuthorization();
-        }
+        ApplyAuthorization(sseEndpoint, allowOpenMcp);
 
         // 2. JSON-RPC Message Receiver
         var messageEndpoint = app.MapPost($"{mcpBasePath}/message", async (
             IMcpProtocolHandler mcpHandler,
+            IMcpSessionStore sessionStore,
             HttpContext context) =>
         {
-            var sessionId = context.Request.Query["sessionId"].FirstOrDefault()
-                ?? context.Request.Headers["X-MCP-Session-Id"].FirstOrDefault();
+            if (context.User.Identity?.IsAuthenticated != true && !allowOpenMcp)
+            {
+                return Results.Unauthorized();
+            }
+
+            var sessionId = GetSessionIdFromRequest(context.Request, preferHeader: true);
 
             if (string.IsNullOrWhiteSpace(sessionId))
             {
-                return Results.BadRequest(new { error = "Missing 'sessionId' query parameter or 'X-MCP-Session-Id' header." });
+                return Results.BadRequest(new { error = "Missing 'Mcp-Session-Id' header (or 'sessionId' query parameter)." });
             }
 
             var session = mcpHandler.GetSession(sessionId);
             if (session == null)
             {
-                return Results.NotFound(new { error = $"Invalid or expired MCP session '{sessionId}'." });
+                return Results.NotFound(new { error = "Invalid or expired MCP session." });
             }
 
-            if (!allowOpenMcp)
+            // SEC H-16: The session is bound to subject + tenant and checked on every request (independent of OpenSchema).
+            var caller = ResolveCaller(context, allowOpenMcp);
+            if (!McpSessionBinding.IsOwnedBy(session, caller.UserSid, caller.TenantId))
             {
-                var callerId = context.User.FindFirst("client_id")?.Value
-                    ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                    ?? context.User.FindFirst("sub")?.Value
-                    ?? context.User.FindFirst("appid")?.Value
-                    ?? context.User.Identity?.Name;
-
-                if (string.IsNullOrWhiteSpace(callerId) ||
-                    !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
-                {
-                    return Results.StatusCode(StatusCodes.Status403Forbidden);
-                }
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            using var reader = new System.IO.StreamReader(context.Request.Body);
-            var payload = await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
+            var (payload, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                context.Request,
+                MaxMcpMessageBytes,
+                "MCP message exceeds maximum allowed size (1 MB).",
+                context.RequestAborted).ConfigureAwait(false);
+            if (tooLarge != null)
+            {
+                return tooLarge;
+            }
 
             if (string.IsNullOrWhiteSpace(payload))
             {
                 return Results.BadRequest(new { error = "Empty JSON-RPC payload." });
             }
 
-            var responseJson = await mcpHandler.HandleMessageAsync(sessionId, payload, context.RequestAborted).ConfigureAwait(false);
+            // SEC H-16: Roles/groups are taken from the current principal for every request.
+            sessionStore.RefreshPrincipalContext(session.SessionId, caller.Roles, caller.GroupSids);
+
+            var responseJson = await mcpHandler.HandleMessageAsync(session.SessionId, payload, context.RequestAborted).ConfigureAwait(false);
 
             return Results.Content(responseJson, "application/json; charset=utf-8");
         });
 
-        if (!allowOpenMcp)
-        {
-            messageEndpoint.RequireAuthorization();
-        }
+        ApplyAuthorization(messageEndpoint, allowOpenMcp);
 
         // 2b. Streamable HTTP Transport (MCP 2024-11-05 Specification)
         var streamableHttpEndpoint = app.MapPost(mcpBasePath, async (
             IMcpProtocolHandler mcpHandler,
+            IMcpSessionStore sessionStore,
             HttpContext context) =>
         {
-            var sessionId = context.Request.Headers["X-MCP-Session-Id"].FirstOrDefault()
-                ?? context.Request.Headers["Mcp-Session-Id"].FirstOrDefault()
-                ?? context.Request.Query["sessionId"].FirstOrDefault();
+            if (context.User.Identity?.IsAuthenticated != true && !allowOpenMcp)
+            {
+                return Results.Unauthorized();
+            }
+
+            var caller = ResolveCaller(context, allowOpenMcp);
+            var sessionId = GetSessionIdFromRequest(context.Request, preferHeader: true);
 
             McpSessionContext? session = null;
             if (!string.IsNullOrWhiteSpace(sessionId))
             {
                 session = mcpHandler.GetSession(sessionId);
-                if (session != null && !allowOpenMcp)
-                {
-                    var callerId = context.User.FindFirst("client_id")?.Value
-                        ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                        ?? context.User.FindFirst("sub")?.Value
-                        ?? context.User.FindFirst("appid")?.Value
-                        ?? context.User.Identity?.Name;
 
-                    if (string.IsNullOrWhiteSpace(callerId) ||
-                        !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return Results.StatusCode(StatusCodes.Status403Forbidden);
-                    }
+                // SEC H-16: Always enforce the subject + tenant binding.
+                if (session != null && !McpSessionBinding.IsOwnedBy(session, caller.UserSid, caller.TenantId))
+                {
+                    return Results.StatusCode(StatusCodes.Status403Forbidden);
                 }
             }
 
-            if (session == null)
+            // SEC M-09: Read (bounded) before creating a session, so oversized requests cannot allocate sessions.
+            var (payload, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                context.Request,
+                MaxMcpMessageBytes,
+                "MCP message exceeds maximum allowed size (1 MB).",
+                context.RequestAborted).ConfigureAwait(false);
+            if (tooLarge != null)
             {
-                var principal = context.User;
-                var principalId = principal.FindFirst("client_id")?.Value
-                    ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                    ?? principal.FindFirst("sub")?.Value
-                    ?? principal.FindFirst("appid")?.Value
-                    ?? principal.Identity?.Name
-                    ?? (allowOpenMcp ? "anonymous-ai-agent" : "cli-developer");
-
-                string tenantId;
-                if (context.Items.TryGetValue(TenantResolutionMiddleware.TenantIdItemKey, out var itemTenant) && itemTenant is TenantId tId)
-                {
-                    tenantId = tId.Value;
-                }
-                else
-                {
-                    tenantId = principal.GetTenantId().Value;
-                }
-
-                var userSid = principal.GetUserSid()?.Value;
-                var roles = principal.GetUserRoles().ToList();
-                var groupSids = principal.GetGroupSids().Select(s => s.Value).ToList();
-
-                session = mcpHandler.CreateSession(principalId, tenantId, userSid, roles, groupSids);
+                return tooLarge;
             }
-
-            using var reader = new System.IO.StreamReader(context.Request.Body);
-            var payload = await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
 
             if (string.IsNullOrWhiteSpace(payload))
             {
                 return Results.BadRequest(new { error = "Empty JSON-RPC payload." });
+            }
+
+            if (session == null)
+            {
+                try
+                {
+                    session = mcpHandler.CreateSession(caller.PrincipalId, caller.TenantId, caller.UserSid, caller.Roles, caller.GroupSids);
+                }
+                catch (McpSessionLimitExceededException)
+                {
+                    return SessionLimitResult();
+                }
+            }
+            else
+            {
+                sessionStore.RefreshPrincipalContext(session.SessionId, caller.Roles, caller.GroupSids);
             }
 
             context.Response.Headers["X-MCP-Session-Id"] = session.SessionId;
@@ -237,10 +241,7 @@ public static class McpEndpoints
             return Results.Content(responseJson, "application/json; charset=utf-8");
         });
 
-        if (!allowOpenMcp)
-        {
-            streamableHttpEndpoint.RequireAuthorization();
-        }
+        ApplyAuthorization(streamableHttpEndpoint, allowOpenMcp);
 
         // 3. Session Teardown
         var sessionEndpoint = app.MapDelete($"{mcpBasePath}/session/{{id}}", (
@@ -248,36 +249,89 @@ public static class McpEndpoints
             IMcpProtocolHandler mcpHandler,
             HttpContext context) =>
         {
+            if (context.User.Identity?.IsAuthenticated != true && !allowOpenMcp)
+            {
+                return Results.Unauthorized();
+            }
+
             var session = mcpHandler.GetSession(id);
             if (session == null)
             {
-                return Results.NotFound(new { error = $"Session '{id}' not found." });
+                return Results.NotFound(new { error = "Session not found." });
             }
 
-            if (!allowOpenMcp)
+            var caller = ResolveCaller(context, allowOpenMcp);
+            if (!McpSessionBinding.IsOwnedBy(session, caller.UserSid, caller.TenantId))
             {
-                var callerId = context.User.FindFirst("client_id")?.Value
-                    ?? context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
-                    ?? context.User.FindFirst("sub")?.Value
-                    ?? context.User.FindFirst("appid")?.Value
-                    ?? context.User.Identity?.Name;
-
-                if (string.IsNullOrWhiteSpace(callerId) ||
-                    !string.Equals(session.ServicePrincipalId, callerId, StringComparison.OrdinalIgnoreCase))
-                {
-                    return Results.StatusCode(StatusCodes.Status403Forbidden);
-                }
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
             var removed = mcpHandler.RemoveSession(id);
             return removed ? Results.NoContent() : Results.NotFound();
         });
 
-        if (!allowOpenMcp)
-        {
-            sessionEndpoint.RequireAuthorization();
-        }
+        ApplyAuthorization(sessionEndpoint, allowOpenMcp);
 
         return app;
+    }
+
+    private static void ApplyAuthorization(RouteHandlerBuilder endpoint, bool allowOpenMcp)
+    {
+        if (allowOpenMcp)
+        {
+            // Explicit opt-out of the fallback policy; only reachable with danger_bypass_mcp_auth (blocked in production).
+            endpoint.AllowAnonymous();
+        }
+        else
+        {
+            endpoint.RequireAuthorization();
+        }
+    }
+
+    private static IResult SessionLimitResult()
+        => Results.Json(
+            new { error = "MCP session limit reached. Close unused sessions or retry later." },
+            statusCode: StatusCodes.Status429TooManyRequests);
+
+    /// <summary>
+    /// SEC H-16: The session id is preferably taken from the <c>Mcp-Session-Id</c> header; the query parameter is only
+    /// accepted for SSE client compatibility (the session binding prevents use of a leaked id by other subjects).
+    /// </summary>
+    internal static string? GetSessionIdFromRequest(HttpRequest request, bool preferHeader)
+    {
+        var fromHeader = request.Headers["Mcp-Session-Id"].FirstOrDefault()
+            ?? request.Headers["X-MCP-Session-Id"].FirstOrDefault();
+        var fromQuery = request.Query["sessionId"].FirstOrDefault();
+
+        var sessionId = preferHeader ? (fromHeader ?? fromQuery) : (fromQuery ?? fromHeader);
+        return string.IsNullOrWhiteSpace(sessionId) ? null : sessionId.Trim();
+    }
+
+    /// <summary>
+    /// SEC H-16: Resolves subject (<c>GetUserSid()</c>), tenant (<c>context.Items</c>) and authorization attributes
+    /// of the current request.
+    /// </summary>
+    internal static McpCaller ResolveCaller(HttpContext context, bool allowOpenMcp)
+    {
+        var principal = context.User;
+        var isAuthenticated = principal.Identity?.IsAuthenticated == true;
+
+        var principalId = (isAuthenticated
+                ? principal.FindFirst("client_id")?.Value
+                  ?? principal.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                  ?? principal.FindFirst("sub")?.Value
+                  ?? principal.FindFirst("appid")?.Value
+                  ?? principal.Identity?.Name
+                : null)
+            ?? (allowOpenMcp ? "anonymous-ai-agent" : "unknown-agent");
+
+        var tenantId = EndpointSecurity.GetRequestTenant(context).Value;
+        var userSid = isAuthenticated ? principal.GetUserSid()?.Value : null;
+        var roles = isAuthenticated ? principal.GetUserRoles().ToList() : new List<string>();
+        var groupSids = isAuthenticated ? principal.GetGroupSids().Select(s => s.Value).ToList() : new List<string>();
+        var clientIp = (context.RequestServices?.GetService<GqlGateway.Application.Interfaces.IClientIpResolver>()?.ResolveClientIp()
+                        ?? context.Connection.RemoteIpAddress)?.ToString();
+
+        return new McpCaller(principalId, userSid, tenantId, roles, groupSids, clientIp);
     }
 }

@@ -185,10 +185,8 @@ public sealed partial class GatewayExecutionService : IGatewayExecutionService
 
                 decision = _resolutionService.ResolveAccess(userSid, groupSids, roles, table, activeConsents, metadata.Dialect);
 
-                // Cache decision
-                var ttl = metadata.Table.IsHighlySensitive
-                    ? TimeSpan.FromSeconds(60)
-                    : TimeSpan.FromMinutes(10);
+                // Cache decision (SEC: TTL bounded by the earliest consent ValidTo, as in CheckTableAccessAsync)
+                var ttl = ConsentResolutionService.ComputeDecisionCacheTtl(metadata.Table.IsHighlySensitive, activeConsents, DateTimeOffset.UtcNow);
                 await _cacheService.SetCachedDecisionAsync(tenantId, userSid, table, decision, ttl, contextHash, ct);
             }
             else

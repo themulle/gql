@@ -1,10 +1,11 @@
 namespace GqlGateway.Api.Endpoints;
 
 using System;
-using System.IO;
+using System.Security.Claims;
 using System.Threading.Tasks;
+using GqlGateway.Api.Extensions;
 using GqlGateway.Application.Streaming.Interfaces;
-using GqlGateway.Infrastructure.Streaming;
+using GqlGateway.Extensions.Cdc;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -20,13 +21,25 @@ public static class StreamingCdcEndpoints
             ICdcEventIngestionService ingestionService,
             ILoggerFactory loggerFactory) =>
         {
-            if (request.ContentLength > 10 * 1024 * 1024)
+            var user = request.HttpContext.User;
+
+            var isClusterAdmin = IsCdcClusterAdmin(user);
+            if (!IsAuthorizedCdcIngestion(user))
             {
-                return Results.BadRequest(new { error = "CDC payload exceeds maximum allowed size (10 MB)." });
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
             }
 
-            using var reader = new StreamReader(request.Body);
-            var body = await reader.ReadToEndAsync(request.HttpContext.RequestAborted);
+            // SEC M-07: Bounded read (Content-Length alone is bypassable via chunked transfer encoding).
+            var (body, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                request,
+                10 * 1024 * 1024,
+                "CDC payload exceeds maximum allowed size (10 MB).",
+                request.HttpContext.RequestAborted);
+            if (tooLarge != null)
+            {
+                return tooLarge;
+            }
+
             if (string.IsNullOrWhiteSpace(body))
             {
                 return Results.BadRequest(new { error = "Empty CDC payload" });
@@ -34,24 +47,6 @@ public static class StreamingCdcEndpoints
 
             try
             {
-                var user = request.HttpContext.User;
-                var sid = user.FindFirst(System.Security.Claims.ClaimTypes.PrimarySid)?.Value
-                          ?? user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-                var isClusterAdmin = user.IsInRole("ClusterAdmin") ||
-                                     user.IsInRole("PlatformAdmin") ||
-                                     (sid != null && sid.Contains("ADMIN", StringComparison.OrdinalIgnoreCase)) ||
-                                     (user.Identity?.Name != null && user.Identity.Name.Contains("ADMIN", StringComparison.OrdinalIgnoreCase));
-
-                var isAuthorizedIngestion = isClusterAdmin ||
-                                            user.IsInRole("CdcIngestionService") ||
-                                            user.IsInRole("StreamingAdmin") ||
-                                            user.IsInRole("GovernanceAdmin");
-
-                if (!isAuthorizedIngestion)
-                {
-                    return Results.StatusCode(StatusCodes.Status403Forbidden);
-                }
-
                 var callerTenant = user.FindFirst("tenant_id")?.Value
                                   ?? user.FindFirst("tid")?.Value
                                   ?? user.FindFirst("tenant")?.Value;
@@ -87,8 +82,22 @@ public static class StreamingCdcEndpoints
                 logger.LogWarning(ex, "Failed to parse or ingest CDC event payload.");
                 return Results.BadRequest(new { error = "Invalid CDC event format" });
             }
-        }).RequireAuthorization();
+        }).RequireAuthorization()
+          .WithRequestBodyLimit(10 * 1024 * 1024); // SEC M-01: explicit large-body exception to the global Kestrel limit
 
         return app;
     }
+
+    /// <summary>
+    /// SEC H-04: Cross-tenant CDC ingestion is decided by roles only. The former substring check ("ADMIN" in SID or
+    /// user name) promoted accounts such as "CORP\badminton" to cluster admin and has been removed.
+    /// </summary>
+    internal static bool IsCdcClusterAdmin(ClaimsPrincipal user)
+        => user.IsInRole("ClusterAdmin") || user.IsInRole("PlatformAdmin");
+
+    internal static bool IsAuthorizedCdcIngestion(ClaimsPrincipal user)
+        => IsCdcClusterAdmin(user) ||
+           user.IsInRole("CdcIngestionService") ||
+           user.IsInRole("StreamingAdmin") ||
+           user.IsInRole("GovernanceAdmin");
 }

@@ -68,6 +68,14 @@ public sealed class ConsentResolutionService : IConsentResolutionService
         }
 
         // Rule 3: Column Access Levels (Bounded by row-filter scope to prevent consent-blending privilege escalation)
+        // SEC H-11: The effective level of a column is computed over ALL allow consents, not only over the consents that
+        // mention the column. A consent without a rule for a column contributes "Deny" for that column (unless it has no
+        // column rules at all, which means "all columns Clear"). Allow consents are grouped by their row filter:
+        //   - rows of the same filter group are visible through every consent of that group -> maximum within the group
+        //   - rows of different filter groups are only visible through their own group -> minimum across groups
+        //   - if an unconstrained (no row filter) consent exists, rows outside every filter are visible through the
+        //     unconstrained consents only -> their maximum is the bound for the whole result
+        // This prevents a column released by consent B (rows US) from becoming Clear for the rows of consent A (rows EU).
         var allReferencedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in applicable)
         {
@@ -77,10 +85,12 @@ public sealed class ConsentResolutionService : IConsentResolutionService
             }
         }
 
-        var columnAccess = new Dictionary<string, ColumnAccessLevel>(StringComparer.OrdinalIgnoreCase);
         var unconstrainedConsents = aConsents.Where(c => c.RowFilters.Count == 0).ToList();
-        bool hasUnconstrained = unconstrainedConsents.Count > 0;
+        var rowConstrainedGroups = unconstrainedConsents.Count > 0
+            ? new List<List<Consent>>()
+            : BuildRowFilterGroups(aConsents, dialect);
 
+        var columnAccess = new Dictionary<string, ColumnAccessLevel>(StringComparer.OrdinalIgnoreCase);
         foreach (var column in allReferencedColumns)
         {
             if (hardDeniedColumns.Contains(column))
@@ -89,96 +99,118 @@ public sealed class ConsentResolutionService : IConsentResolutionService
                 continue;
             }
 
-            if (hasUnconstrained)
+            var level = ResolveColumnLevel(column, unconstrainedConsents, rowConstrainedGroups);
+
+            if (maskedOnlyColumns.Contains(column) && level == ColumnAccessLevel.Clear)
             {
-                // When unconstrained consents exist, table rows are unfiltered.
-                // Columns can ONLY be elevated to what unconstrained consents grant, preventing
-                // row-constrained grants (e.g. region='EU' -> Clear) from leaking cleartext on all rows!
-                var unconstrainedMax = ColumnAccessLevel.Deny;
-                var hasUnconstrainedGrant = false;
-
-                foreach (var uc in unconstrainedConsents)
-                {
-                    if (uc.ColumnRules.Count == 0)
-                    {
-                        unconstrainedMax = ColumnAccessLevel.Clear;
-                        hasUnconstrainedGrant = true;
-                        break;
-                    }
-
-                    var r = uc.ColumnRules.FirstOrDefault(cr => string.Equals(cr.ColumnName, column, StringComparison.OrdinalIgnoreCase));
-                    if (r != null)
-                    {
-                        hasUnconstrainedGrant = true;
-                        if (r.AccessLevel > unconstrainedMax) unconstrainedMax = r.AccessLevel;
-                    }
-                }
-
-                if (hasUnconstrainedGrant)
-                {
-                    columnAccess[column] = unconstrainedMax;
-                }
-                else
-                {
-                    // Column was ONLY granted under row-constrained consents, but table access is unconstrained.
-                    // Under Zero Trust, column cannot be exposed globally without row constraint -> Deny globally
-                    columnAccess[column] = ColumnAccessLevel.Deny;
-                }
-            }
-            else
-            {
-                // All applicable allow consents are row-constrained.
-                // If consents have diverging row filters with different access levels, choose the safest (minimum).
-                var grantingConsents = new List<(Consent Consent, ColumnAccessLevel Level)>();
-                foreach (var ac in aConsents)
-                {
-                    if (ac.ColumnRules.Count == 0)
-                    {
-                        grantingConsents.Add((ac, ColumnAccessLevel.Clear));
-                    }
-                    else
-                    {
-                        var r = ac.ColumnRules.FirstOrDefault(cr => string.Equals(cr.ColumnName, column, StringComparison.OrdinalIgnoreCase));
-                        if (r != null)
-                        {
-                            grantingConsents.Add((ac, r.AccessLevel));
-                        }
-                    }
-                }
-
-                if (grantingConsents.Count == 0)
-                {
-                    columnAccess[column] = ColumnAccessLevel.Deny;
-                }
-                else
-                {
-                    var distinctFilters = grantingConsents
-                        .Select(g => _sqlBuilder.BuildCombinedRowFilter(new[] { g.Consent }, Array.Empty<Consent>(), dialect))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .Count();
-
-                    if (distinctFilters <= 1)
-                    {
-                        columnAccess[column] = grantingConsents.Max(g => g.Level);
-                    }
-                    else
-                    {
-                        columnAccess[column] = grantingConsents.Min(g => g.Level);
-                    }
-                }
+                level = ColumnAccessLevel.Mask;
             }
 
-            if (maskedOnlyColumns.Contains(column) && columnAccess[column] == ColumnAccessLevel.Clear)
-            {
-                columnAccess[column] = ColumnAccessLevel.Mask;
-            }
+            columnAccess[column] = level;
         }
 
         // Rule 4: Row Predicate resolution delegated to dedicated IRowFilterSqlBuilder
         string? rowFilterSql = _sqlBuilder.BuildCombinedRowFilter(aConsents, dConsents, dialect);
-        bool hasUnconstrainedColumnAllow = aConsents.Any(c => c.ColumnRules.Count == 0);
+
+        // SEC H-11: Columns without any explicit rule (e.g. 'ssn' when only 'name' is mentioned) default to Clear only if
+        // the same union semantics yield Clear for an unmentioned column, i.e. every row of the result is visible through
+        // at least one allow consent without column rules. Previously a single row-constrained consent without column
+        // rules released every unmentioned column for the rows of all other consents.
+        bool hasUnconstrainedColumnAllow =
+            ResolveColumnLevel(column: null, unconstrainedConsents, rowConstrainedGroups) == ColumnAccessLevel.Clear;
 
         return TableAccessDecision.Allowed(table, columnAccess, rowFilterSql, hasUnconstrainedColumnAllow);
+    }
+
+    /// <summary>
+    /// SEC (Low): Cache lifetime of a consent decision. Bounded by the earliest <c>ValidTo</c> of the consents the decision
+    /// was derived from, so an expired consent is never served from the cache.
+    /// </summary>
+    public static TimeSpan ComputeDecisionCacheTtl(bool isHighlySensitive, IReadOnlyList<Consent> consents, DateTimeOffset now)
+    {
+        var ttl = isHighlySensitive
+            ? TimeSpan.FromSeconds(60)
+            : TimeSpan.FromMinutes(10);
+
+        if (consents == null || consents.Count == 0)
+        {
+            return ttl;
+        }
+
+        var earliestExpiry = consents
+            .Where(c => c.ValidTo > now)
+            .Select(c => c.ValidTo - now)
+            .DefaultIfEmpty(ttl)
+            .Min();
+
+        if (earliestExpiry < ttl)
+        {
+            ttl = earliestExpiry > TimeSpan.FromSeconds(1) ? earliestExpiry : TimeSpan.FromSeconds(1);
+        }
+
+        return ttl;
+    }
+
+    private List<List<Consent>> BuildRowFilterGroups(IReadOnlyList<Consent> allowConsents, DatabaseDialect dialect)
+    {
+        var groups = new Dictionary<string, List<Consent>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var consent in allowConsents)
+        {
+            var key = _sqlBuilder.BuildCombinedRowFilter(new[] { consent }, Array.Empty<Consent>(), dialect) ?? string.Empty;
+            if (!groups.TryGetValue(key, out var members))
+            {
+                members = new List<Consent>();
+                groups[key] = members;
+            }
+            members.Add(consent);
+        }
+
+        return groups.Values.ToList();
+    }
+
+    private static ColumnAccessLevel ResolveColumnLevel(
+        string? column,
+        IReadOnlyList<Consent> unconstrainedConsents,
+        IReadOnlyList<List<Consent>> rowConstrainedGroups)
+    {
+        if (unconstrainedConsents.Count > 0)
+        {
+            // Rows outside every row filter are visible only through the unconstrained consents.
+            return unconstrainedConsents.Max(c => GetConsentColumnLevel(c, column));
+        }
+
+        if (rowConstrainedGroups.Count == 0)
+        {
+            return ColumnAccessLevel.Deny;
+        }
+
+        var result = ColumnAccessLevel.Clear;
+        foreach (var group in rowConstrainedGroups)
+        {
+            var groupLevel = group.Max(c => GetConsentColumnLevel(c, column));
+            if (groupLevel < result)
+            {
+                result = groupLevel;
+            }
+        }
+
+        return result;
+    }
+
+    private static ColumnAccessLevel GetConsentColumnLevel(Consent consent, string? column)
+    {
+        if (consent.ColumnRules.Count == 0)
+        {
+            return ColumnAccessLevel.Clear;
+        }
+
+        if (column == null)
+        {
+            return ColumnAccessLevel.Deny;
+        }
+
+        var rule = consent.ColumnRules.FirstOrDefault(cr => string.Equals(cr.ColumnName, column, StringComparison.OrdinalIgnoreCase));
+        return rule?.AccessLevel ?? ColumnAccessLevel.Deny;
     }
 
     private static bool IsSubjectMatch(

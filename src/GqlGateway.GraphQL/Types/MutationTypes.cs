@@ -181,9 +181,10 @@ public sealed class Mutation
         var meta = await metadataRepository.GetTableMetadataAsync(tableId, ct);
         if (meta == null)
         {
+            // SEC (Niedrig): Keine Tabellen-Enumeration über NOT_FOUND + Tabellenname; neutrale FORBIDDEN-Antwort.
             throw new GraphQLException(ErrorBuilder.New()
-                .SetCode("NOT_FOUND")
-                .SetMessage($"Table '{tableId}' does not exist.")
+                .SetCode("FORBIDDEN")
+                .SetMessage("Zugriffsanfrage für die angegebene Tabelle ist nicht möglich.")
                 .Build());
         }
 

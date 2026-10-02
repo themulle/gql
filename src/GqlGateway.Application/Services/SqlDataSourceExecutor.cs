@@ -18,6 +18,7 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
     private readonly IOptions<GatewayOptions>? _options;
     private readonly ILogger<SqlDataSourceExecutor>? _logger;
     private readonly Microsoft.Extensions.Hosting.IHostEnvironment? _environment;
+    private readonly IColumnMaskingProvider? _maskingProvider;
 
     public DataSourceType SupportedType => DataSourceType.Sql;
     public const int MaxAllowedBinaryBytes = 16 * 1024 * 1024; // 16 MB limit per binary column value (SEC-SPEC-05)
@@ -26,12 +27,14 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         ISqlConnectionFactory? connectionFactory = null,
         IOptions<GatewayOptions>? options = null,
         ILogger<SqlDataSourceExecutor>? logger = null,
-        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null)
+        Microsoft.Extensions.Hosting.IHostEnvironment? environment = null,
+        IColumnMaskingProvider? maskingProvider = null)
     {
         _connectionFactory = connectionFactory;
         _options = options;
         _logger = logger;
         _environment = environment;
+        _maskingProvider = maskingProvider;
     }
 
     public async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> ExecuteAsync(
@@ -69,7 +72,8 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
             var matchingCol = context.Metadata.Columns.FirstOrDefault(c => string.Equals(c.ColumnName, argKey, StringComparison.OrdinalIgnoreCase));
             if (matchingCol != null && argVal != null)
             {
-                var access = context.AccessDecision.GetColumnAccess(matchingCol.ColumnName);
+                // SEC H-10: Filter only on effectively Clear columns (catalog-sensitive/masked columns need an explicit Clear).
+                var access = context.AccessDecision.GetEffectiveColumnAccess(matchingCol.ColumnName, context.Metadata);
                 if (access != ColumnAccessLevel.Clear)
                 {
                     throw new SecurityException($"Zero-Trust-Verletzung: Filtern auf Spalte '{matchingCol.ColumnName}' in Tabelle '{context.Metadata.Identifier}' ist nicht gestattet (Zugriffsebene: {access}).");
@@ -126,31 +130,38 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
 
         // SEC-AC-02: Zero-Trust: Exclude any columns marked with ColumnAccessLevel.Deny
         var authorizedColumns = columnsToSelect
-            .Where(col => context.AccessDecision.GetColumnAccess(col) != ColumnAccessLevel.Deny)
+            .Where(col => context.AccessDecision.GetEffectiveColumnAccess(col, metadata) != ColumnAccessLevel.Deny)
             .ToList();
 
         var selectParts = new List<string>(authorizedColumns.Count);
-        string hmacSalt = _options?.Value?.DataMasking?.HmacSecretKeyVaultRef ?? _options?.Value?.DataMasking?.HmacKeyId ?? "gateway_salt";
         bool hasMaskedCols = false;
+
+        // SEC H-13: HMAC pseudonymization is computed in the gateway after reading (keyed with the resolved secret),
+        // never in SQL with a secret (or secret name) embedded in the statement text.
+        var tenantVal = context.Tenant?.Value ?? context.Principal.FindFirst("tenant")?.Value ?? TenantId.LegacySingleTenant.Value;
+        var gatewayHmacColumns = new Dictionary<string, MaskingRule>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var col in authorizedColumns)
         {
             var colDef = metadata.GetColumn(col);
-            var access = context.AccessDecision.GetColumnAccess(col);
 
-            // Zero-Trust Hardening: Catalog sensitive columns default to Mask if not explicitly Clear
-            if (access != ColumnAccessLevel.Mask && (colDef?.IsSensitive == true || metadata.ColumnMaskingRules.ContainsKey(col)))
-            {
-                if (!context.AccessDecision.HasExplicitClear(col))
-                {
-                    access = ColumnAccessLevel.Mask;
-                }
-            }
+            // SEC H-10: Same effective access decision as used for filter validation (catalog-sensitive -> Mask unless explicit Clear)
+            var access = context.AccessDecision.GetEffectiveColumnAccess(col, metadata);
 
             if (access == ColumnAccessLevel.Mask && _options?.Value?.IsColumnMaskingDisabled != true)
             {
                 hasMaskedCols = true;
-                selectParts.Add(BuildMaskedColumnProjection(col, colDef?.DataType, dialect, metadata, hmacSalt));
+                if (_maskingProvider != null &&
+                    metadata.ColumnMaskingRules.TryGetValue(col, out var hmacRule) &&
+                    IsHmacRule(hmacRule))
+                {
+                    gatewayHmacColumns[col] = CreateTenantScopedHmacRule(hmacRule, tenantVal, _options?.Value?.DataMasking?.HmacKeyId);
+                    selectParts.Add(BuildColumnProjection(col, colDef?.DataType, dialect));
+                }
+                else
+                {
+                    selectParts.Add(BuildMaskedColumnProjection(col, colDef?.DataType, dialect, metadata));
+                }
             }
             else
             {
@@ -176,7 +187,6 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         var paramIndex = 0;
 
         // Stufe 1: Applikationsseitiger erzwungener Tenant-Filter (Defense in Depth)
-        var tenantVal = context.Tenant?.Value ?? context.Principal.FindFirst("tenant")?.Value ?? TenantId.LegacySingleTenant.Value;
         var hasTenantCol = metadata.Columns.Any(c => string.Equals(c.ColumnName, "tenant_id", StringComparison.OrdinalIgnoreCase));
         if (hasTenantCol)
         {
@@ -218,8 +228,8 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
             var matchingCol = metadata.Columns.FirstOrDefault(c => string.Equals(c.ColumnName, argKey, StringComparison.OrdinalIgnoreCase));
             if (matchingCol != null && argVal != null)
             {
-                // SEC-01: Zero-Trust rule: Filtering on columns without explicit Clear access (or with Mask/Deny) is strictly forbidden to prevent side-channel inference
-                var access = context.AccessDecision.GetColumnAccess(matchingCol.ColumnName);
+                // SEC-01 / SEC H-10: Filtering on columns that are not effectively Clear (Mask/Deny or catalog-sensitive without explicit Clear) is forbidden to prevent side-channel inference
+                var access = context.AccessDecision.GetEffectiveColumnAccess(matchingCol.ColumnName, metadata);
                 if (access != ColumnAccessLevel.Clear)
                 {
                     throw new SecurityException($"Zero-Trust-Verletzung: Filtern auf Spalte '{matchingCol.ColumnName}' in Tabelle '{metadata.Identifier}' ist nicht gestattet (Zugriffsebene: {access}).");
@@ -321,7 +331,12 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
                     for (int i = 0; i < fieldCount; i++)
                     {
                         var rawVal = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                        row[columnNames[i]] = NormalizeReadValue(rawVal, columnNames[i]);
+                        var normalized = NormalizeReadValue(rawVal, columnNames[i]);
+                        if (_maskingProvider != null && gatewayHmacColumns.TryGetValue(columnNames[i], out var hmacRule))
+                        {
+                            normalized = _maskingProvider.MaskValue(columnNames[i], normalized, hmacRule);
+                        }
+                        row[columnNames[i]] = normalized;
                     }
                     results.Add(row);
                 }
@@ -351,8 +366,9 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         }
     }
 
-    public static string BuildMaskedColumnProjection(string columnName, string? dataType, DatabaseDialect dialect, TableMetadata tableMeta, string hmacSalt)
+    public static string BuildMaskedColumnProjection(string columnName, string? dataType, DatabaseDialect dialect, TableMetadata tableMeta)
     {
+        ArgumentNullException.ThrowIfNull(tableMeta);
         DatabaseDialectExtensions.ValidateIdentifier(columnName);
         var quotedCol = dialect.QuoteIdentifier(columnName);
         string maskExpr;
@@ -364,9 +380,11 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
             {
                 maskExpr = "NULL";
             }
-            else if (ruleType is "HMAC" or "HMAC_SHA256" or "HASH")
+            else if (IsHmacRule(rule))
             {
-                maskExpr = BuildDeterministicHashExpression(columnName, dialect, hmacSalt);
+                // SEC H-13: No unkeyed in-DB hash. HMAC columns are pseudonymized in the gateway (IColumnMaskingProvider);
+                // without a masking provider the column is redacted (fail-closed).
+                maskExpr = "'***'";
             }
             else if (!string.IsNullOrWhiteSpace(rule.Replacement))
             {
@@ -385,19 +403,24 @@ public sealed class SqlDataSourceExecutor : IDataSourceExecutor
         return $"{maskExpr} AS {quotedCol}";
     }
 
-    private static string BuildDeterministicHashExpression(string columnName, DatabaseDialect dialect, string salt)
+    private static bool IsHmacRule(MaskingRule rule) =>
+        rule.RuleType?.ToUpperInvariant() is "HMAC" or "HMAC_SHA256" or "HASH";
+
+    /// <summary>
+    /// SEC H-13: Derives a tenant-scoped HMAC key id so pseudonyms cannot be correlated across tenants.
+    /// The actual key derivation (HMAC over the master secret) happens inside <see cref="IColumnMaskingProvider"/>.
+    /// </summary>
+    private static MaskingRule CreateTenantScopedHmacRule(MaskingRule rule, string tenant, string? defaultKeyId)
     {
-        string safeSalt = salt.Replace("'", "''");
-        return dialect switch
+        var baseKeyId = !string.IsNullOrWhiteSpace(rule.HmacKeyId) ? rule.HmacKeyId : (defaultKeyId ?? "default");
+        return new MaskingRule
         {
-            DatabaseDialect.PostgreSql =>
-                $"ENCODE(DIGEST(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT) || '{safeSalt}', 'sha256'), 'hex')",
-            DatabaseDialect.SqlServer =>
-                $"CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CAST([{columnName.Replace("]", "]]")}] AS VARCHAR(MAX)) + '{safeSalt}'), 2)",
-            DatabaseDialect.Sqlite =>
-                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), '{safeSalt}')",
-            _ =>
-                $"gateway_hmac_sha256(CAST(\"{columnName.Replace("\"", "\"\"")}\" AS TEXT), '{safeSalt}')"
+            Id = rule.Id,
+            TableColumnId = rule.TableColumnId,
+            RuleType = "HMAC_SHA256",
+            PatternOrFormat = rule.PatternOrFormat,
+            Replacement = rule.Replacement,
+            HmacKeyId = $"{baseKeyId}|tenant:{tenant}"
         };
     }
 

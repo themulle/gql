@@ -23,16 +23,53 @@ public sealed class StreamRlsPolicyEnforcerTests
     private readonly ITableMetadataRepository _metadataRepo = Substitute.For<ITableMetadataRepository>();
     private readonly IColumnMaskingProvider _maskingProvider = Substitute.For<IColumnMaskingProvider>();
     private readonly IEpochValidationService _epochService = Substitute.For<IEpochValidationService>();
+    private readonly IConsentRepository _consentRepo = Substitute.For<IConsentRepository>();
+    private readonly IConsentResolutionService _resolution = Substitute.For<IConsentResolutionService>();
+    private readonly IConsentCacheService _cache = Substitute.For<IConsentCacheService>();
     private readonly StreamRlsPolicyEnforcer _sut;
 
     public StreamRlsPolicyEnforcerTests()
     {
+        _consentRepo.GetActiveConsentsForSubjectsAsync(
+                Arg.Any<IEnumerable<Sid>>(), Arg.Any<TableIdentifier>(), Arg.Any<DateTimeOffset>(), Arg.Any<TenantId?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<Consent>>(Array.Empty<Consent>()));
+
         _sut = new StreamRlsPolicyEnforcer(
             _policyEnforcement,
             _metadataRepo,
             _maskingProvider,
             _epochService,
-            NullLogger<StreamRlsPolicyEnforcer>.Instance);
+            NullLogger<StreamRlsPolicyEnforcer>.Instance,
+            _consentRepo,
+            _resolution,
+            _cache);
+    }
+
+    // SEC H-09: The consent decision (IConsentResolutionService) is the primary source; Casbin is an additional gate.
+    private void SetupConsentDecision(TableAccessDecision decision)
+    {
+        _resolution.ResolveAccess(
+                Arg.Any<Sid>(), Arg.Any<IReadOnlySet<Sid>>(), Arg.Any<IReadOnlySet<string>>(),
+                Arg.Any<TableIdentifier>(), Arg.Any<IReadOnlyList<Consent>>(), Arg.Any<DatabaseDialect>())
+            .Returns(decision);
+    }
+
+    private void SetupMetadata(TableIdentifier table, string[] columns, IReadOnlyDictionary<string, MaskingRule>? maskingRules = null)
+    {
+        var cols = new List<TableColumn>();
+        foreach (var c in columns)
+        {
+            cols.Add(new TableColumn { ColumnName = c });
+        }
+
+        _metadataRepo.GetTableMetadataAsync(table, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<TableMetadata?>(new TableMetadata
+            {
+                Identifier = table,
+                Table = new Table { SourceName = table.Domain, SchemaName = table.Schema, TableName = table.TableName },
+                Columns = cols,
+                ColumnMaskingRules = maskingRules ?? new Dictionary<string, MaskingRule>()
+            }));
     }
 
     [Fact]
@@ -82,6 +119,9 @@ public sealed class StreamRlsPolicyEnforcerTests
             new Claim(ClaimTypes.PrimarySid, "S-1-5-BOB")
         }));
 
+        SetupMetadata(table, ["id", "name"]);
+        SetupConsentDecision(TableAccessDecision.Allowed(table, new Dictionary<string, ColumnAccessLevel>(), hasUnconstrainedColumnAllow: true));
+        _policyEnforcement.HasPolicies(Arg.Any<TenantId>()).Returns(true);
         _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
             .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
                 Table: table,
@@ -132,30 +172,21 @@ public sealed class StreamRlsPolicyEnforcerTests
             ["ssn"] = ColumnAccessLevel.Deny
         };
 
-        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
-            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
-                Table: table,
-                IsAllowed: true,
-                ColumnAccess: columnAccess,
-                CombinedRowFilterSql: null,
-                DeniedReasons: Array.Empty<string>()
-            )));
+        SetupConsentDecision(new TableAccessDecision(
+            Table: table,
+            IsAllowed: true,
+            ColumnAccess: columnAccess,
+            CombinedRowFilterSql: null,
+            DeniedReasons: Array.Empty<string>()
+        ));
 
-        _metadataRepo.GetTableMetadataAsync(table, Arg.Any<CancellationToken>())
-            .Returns(Task.FromResult<TableMetadata?>(new TableMetadata
+        SetupMetadata(
+            table,
+            ["id", "name", "email", "ssn"],
+            new Dictionary<string, MaskingRule>
             {
-                Identifier = table,
-                Table = new Table
-                {
-                    SourceName = "sales",
-                    SchemaName = "crm",
-                    TableName = "customers"
-                },
-                ColumnMaskingRules = new Dictionary<string, MaskingRule>
-                {
-                    ["email"] = new MaskingRule { RuleType = "MASK_EMAIL" }
-                }
-            }));
+                ["email"] = new MaskingRule { RuleType = "MASK_EMAIL" }
+            });
 
         _maskingProvider.MaskValue("email", "charlie@enterprise.com", Arg.Any<MaskingRule>())
             .Returns("c***@enterprise.com");
@@ -190,15 +221,15 @@ public sealed class StreamRlsPolicyEnforcerTests
             new Claim(ClaimTypes.PrimarySid, "S-1-5-AUDITOR")
         }));
 
-        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
-            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
-                Table: table,
-                IsAllowed: true,
-                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
-                CombinedRowFilterSql: null,
-                DeniedReasons: Array.Empty<string>(),
-                HasUnconstrainedColumnAllow: true
-            )));
+        SetupMetadata(table, ["invoice_id", "amount"]);
+        SetupConsentDecision(new TableAccessDecision(
+            Table: table,
+            IsAllowed: true,
+            ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+            CombinedRowFilterSql: null,
+            DeniedReasons: Array.Empty<string>(),
+            HasUnconstrainedColumnAllow: true
+        ));
 
         var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
 
@@ -228,15 +259,15 @@ public sealed class StreamRlsPolicyEnforcerTests
             new Claim(ClaimTypes.PrimarySid, "S-1-5-CLERK")
         }));
 
-        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
-            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
-                Table: table,
-                IsAllowed: true,
-                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
-                CombinedRowFilterSql: "status IN ('PENDING', 'PROCESSING') AND amount >= 100",
-                DeniedReasons: Array.Empty<string>(),
-                HasUnconstrainedColumnAllow: true
-            )));
+        SetupMetadata(table, ["id", "status", "amount"]);
+        SetupConsentDecision(new TableAccessDecision(
+            Table: table,
+            IsAllowed: true,
+            ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+            CombinedRowFilterSql: "status IN ('PENDING', 'PROCESSING') AND amount >= 100",
+            DeniedReasons: Array.Empty<string>(),
+            HasUnconstrainedColumnAllow: true
+        ));
 
         var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
 
@@ -265,15 +296,15 @@ public sealed class StreamRlsPolicyEnforcerTests
             new Claim(ClaimTypes.PrimarySid, "S-1-5-CLERK")
         }));
 
-        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
-            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
-                Table: table,
-                IsAllowed: true,
-                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
-                CombinedRowFilterSql: "amount >= 100",
-                DeniedReasons: Array.Empty<string>(),
-                HasUnconstrainedColumnAllow: true
-            )));
+        SetupMetadata(table, ["id", "status", "amount"]);
+        SetupConsentDecision(new TableAccessDecision(
+            Table: table,
+            IsAllowed: true,
+            ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+            CombinedRowFilterSql: "amount >= 100",
+            DeniedReasons: Array.Empty<string>(),
+            HasUnconstrainedColumnAllow: true
+        ));
 
         var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
 
@@ -301,15 +332,15 @@ public sealed class StreamRlsPolicyEnforcerTests
             new Claim(ClaimTypes.PrimarySid, "S-1-5-MANAGER")
         }));
 
-        _policyEnforcement.EvaluatePolicyAsync(Arg.Any<SecurityEvaluationContext>(), Arg.Any<CancellationToken>())
-            .Returns(new ValueTask<TableAccessDecision>(new TableAccessDecision(
-                Table: table,
-                IsAllowed: true,
-                ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
-                CombinedRowFilterSql: "(level = 'GOLD' OR level = 'PLATINUM') AND email LIKE '%.client@%'",
-                DeniedReasons: Array.Empty<string>(),
-                HasUnconstrainedColumnAllow: true
-            )));
+        SetupMetadata(table, ["id", "email", "level"]);
+        SetupConsentDecision(new TableAccessDecision(
+            Table: table,
+            IsAllowed: true,
+            ColumnAccess: new Dictionary<string, ColumnAccessLevel>(),
+            CombinedRowFilterSql: "(level = 'GOLD' OR level = 'PLATINUM') AND email LIKE '%.client@%'",
+            DeniedReasons: Array.Empty<string>(),
+            HasUnconstrainedColumnAllow: true
+        ));
 
         var result = await _sut.EvaluateAndMaskAsync(cdcEvent, subscriber);
 

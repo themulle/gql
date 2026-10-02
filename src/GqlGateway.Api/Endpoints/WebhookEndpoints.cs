@@ -1,10 +1,10 @@
 namespace GqlGateway.Api.Endpoints;
 
 using System;
-using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using GqlGateway.Api.Extensions;
 using GqlGateway.Application.DataCatalog.Interfaces;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.OpenMetadata.Interfaces;
@@ -23,13 +23,16 @@ public static class WebhookEndpoints
             IOpenMetadataSyncService syncService,
             IOptions<GatewayOptions> options) =>
         {
-            if (context.Request.ContentLength > 2 * 1024 * 1024)
+            // SEC M-07: Bounded read instead of a bypassable Content-Length check.
+            var (payload, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                context.Request,
+                2 * 1024 * 1024,
+                "Payload size exceeds maximum allowed size (2 MB).",
+                context.RequestAborted);
+            if (payload == null)
             {
-                return Results.BadRequest(new { error = "Payload size exceeds maximum allowed size (2 MB)." });
+                return tooLarge!;
             }
-
-            using var reader = new StreamReader(context.Request.Body);
-            var payload = await reader.ReadToEndAsync(context.RequestAborted);
 
             string? signature = context.Request.Headers["X-OpenMetadata-Signature"].FirstOrDefault() ??
                                 context.Request.Headers["X-OM-Signature"].FirstOrDefault();
@@ -54,13 +57,21 @@ public static class WebhookEndpoints
             IOptions<GatewayOptions> options,
             string defaultSystemName)
         {
-            if (context.Request.ContentLength > 2 * 1024 * 1024)
+            // SEC M-07: Bounded read instead of a bypassable Content-Length check.
+            var (payload, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                context.Request,
+                2 * 1024 * 1024,
+                "Payload size exceeds maximum allowed size (2 MB).",
+                context.RequestAborted);
+            if (payload == null)
             {
-                return Results.BadRequest(new { error = "Payload size exceeds maximum allowed size (2 MB)." });
+                return tooLarge!;
             }
 
-            using var reader = new StreamReader(context.Request.Body);
-            var payload = await reader.ReadToEndAsync(context.RequestAborted);
+            if (string.IsNullOrWhiteSpace(payload))
+            {
+                return Results.BadRequest(new { error = "Empty webhook payload." });
+            }
 
             var opts = options.Value;
             string? signature = context.Request.Headers["X-ITSM-Signature"].FirstOrDefault()
@@ -82,11 +93,11 @@ public static class WebhookEndpoints
                            ?? context.Request.Headers["X-Timestamp"].FirstOrDefault()
                            ?? context.Request.Headers["Date"].FirstOrDefault();
 
-            if (string.IsNullOrWhiteSpace(tsHeader) || !DateTimeOffset.TryParse(tsHeader, out timestamp))
+            if (string.IsNullOrWhiteSpace(tsHeader) || !EndpointSecurity.TryParseWebhookTimestamp(tsHeader, out timestamp))
             {
                 if (!opts.IsWebhookTimestampToleranceIgnored)
                 {
-                    return Results.BadRequest(new { error = "Header X-ITSM-Timestamp is required and must be a valid ISO 8601 timestamp." });
+                    return Results.BadRequest(new { error = "Header X-ITSM-Timestamp is required and must be a valid ISO 8601 timestamp or Unix time in seconds." });
                 }
                 timestamp = DateTimeOffset.UtcNow;
             }
@@ -99,6 +110,8 @@ public static class WebhookEndpoints
                 }
             }
 
+            // SEC H-06: The instance header is unsigned. It is only passed on for a consistency check;
+            // the handler takes the instance exclusively from the signed payload.
             string? instanceHeader = context.Request.Headers["X-Instance-ID"].FirstOrDefault()
                                      ?? context.Request.Headers["X-ServiceNow-Instance"].FirstOrDefault()
                                      ?? context.Request.Headers["X-Jira-Instance"].FirstOrDefault()
@@ -138,13 +151,16 @@ public static class WebhookEndpoints
             IOptions<GatewayOptions> options) =>
         {
             var opts = options.Value;
-            if (context.Request.ContentLength > 10 * 1024 * 1024)
+            // SEC M-07: Bounded read instead of a bypassable Content-Length check.
+            var (payload, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                context.Request,
+                10 * 1024 * 1024,
+                "Payload exceeds maximum allowed size (10 MB).",
+                context.RequestAborted);
+            if (payload == null)
             {
-                return Results.BadRequest(new { error = "Payload exceeds maximum allowed size (10 MB)." });
+                return tooLarge!;
             }
-
-            using var reader = new StreamReader(context.Request.Body);
-            var payload = await reader.ReadToEndAsync(context.RequestAborted);
 
             // Azure EventGrid SubscriptionValidation handshake
             if (context.Request.Headers.TryGetValue("Aeg-Event-Type", out var eventType) &&
@@ -190,11 +206,13 @@ public static class WebhookEndpoints
                 signature = "bypassed";
             }
 
+            // SEC M-34: The catalog handler signs "{unixSeconds}.{payload}", so senders typically transmit Unix seconds;
+            // ISO 8601 remains accepted. The parsed value is passed on unchanged to the handler.
             DateTimeOffset? timestamp = null;
             if (context.Request.Headers.TryGetValue("X-Catalog-Timestamp", out var tsHeader) ||
                 context.Request.Headers.TryGetValue("X-Timestamp", out tsHeader))
             {
-                if (DateTimeOffset.TryParse(tsHeader.FirstOrDefault(), out var ts))
+                if (EndpointSecurity.TryParseWebhookTimestamp(tsHeader.FirstOrDefault(), out var ts))
                 {
                     timestamp = ts;
                 }
@@ -222,7 +240,8 @@ public static class WebhookEndpoints
             }
 
             return Results.Ok(result);
-        }).AllowAnonymous();
+        }).AllowAnonymous()
+          .WithRequestBodyLimit(10 * 1024 * 1024); // SEC M-01: explicit large-body exception to the global Kestrel limit
 
         app.MapPost("/api/v1/governance/catalog/webhook/{provider}", async (
             HttpContext context,
@@ -230,13 +249,16 @@ public static class WebhookEndpoints
             IDataCatalogWebhookHandler webhookHandler,
             IOptions<GatewayOptions> options) =>
         {
-            if (context.Request.ContentLength > 10 * 1024 * 1024)
+            // SEC M-07: Bounded read instead of a bypassable Content-Length check.
+            var (payload, tooLarge) = await EndpointSecurity.TryReadBodyAsync(
+                context.Request,
+                10 * 1024 * 1024,
+                "Payload exceeds maximum allowed size (10 MB).",
+                context.RequestAborted);
+            if (payload == null)
             {
-                return Results.BadRequest(new { error = "Payload exceeds maximum allowed size (10 MB)." });
+                return tooLarge!;
             }
-
-            using var reader = new StreamReader(context.Request.Body);
-            var payload = await reader.ReadToEndAsync(context.RequestAborted);
 
             if (context.Request.Headers.TryGetValue("Aeg-Event-Type", out var eventType) &&
                 string.Equals(eventType.FirstOrDefault(), "SubscriptionValidation", StringComparison.OrdinalIgnoreCase))
@@ -282,11 +304,13 @@ public static class WebhookEndpoints
                 signature = "bypassed";
             }
 
+            // SEC M-34: The catalog handler signs "{unixSeconds}.{payload}", so senders typically transmit Unix seconds;
+            // ISO 8601 remains accepted. The parsed value is passed on unchanged to the handler.
             DateTimeOffset? timestamp = null;
             if (context.Request.Headers.TryGetValue("X-Catalog-Timestamp", out var tsHeader) ||
                 context.Request.Headers.TryGetValue("X-Timestamp", out tsHeader))
             {
-                if (DateTimeOffset.TryParse(tsHeader.FirstOrDefault(), out var ts))
+                if (EndpointSecurity.TryParseWebhookTimestamp(tsHeader.FirstOrDefault(), out var ts))
                 {
                     timestamp = ts;
                 }
@@ -312,7 +336,8 @@ public static class WebhookEndpoints
             }
 
             return Results.Ok(result);
-        }).AllowAnonymous();
+        }).AllowAnonymous()
+          .WithRequestBodyLimit(10 * 1024 * 1024); // SEC M-01: explicit large-body exception to the global Kestrel limit
 
         return app;
     }

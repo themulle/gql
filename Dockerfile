@@ -6,10 +6,13 @@
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
-# Standard-Konfiguration für schlüsselfertigen Sofortstart (8080 HTTP / 8081 HTTPS)
+# Standard-Konfiguration (8080 HTTP / 8081 HTTPS)
+# SEC C-04: Das veröffentlichte Image läuft standardmäßig in PRODUCTION (alle Schutzmechanismen aktiv).
+# Development im Container ist nur mit explizitem Opt-in möglich (GQL_ALLOW_DEV_IN_CONTAINER=true),
+# siehe docker-compose.dev.yml für den lokalen Getting-Started-Betrieb.
 ENV ASPNETCORE_HTTP_PORTS=8080 \
     ASPNETCORE_HTTPS_PORTS=8081 \
-    ASPNETCORE_ENVIRONMENT=Development \
+    ASPNETCORE_ENVIRONMENT=Production \
     DOTNET_RUNNING_IN_CONTAINER=true \
     DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
     Gateway__Caching__Garnet__EnableEmbeddedServer=true \

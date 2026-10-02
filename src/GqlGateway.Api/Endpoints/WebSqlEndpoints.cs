@@ -5,20 +5,31 @@ using System.Collections.Generic;
 using System.Data.Common;
 using System.IO;
 using System.Security;
+using System.Security.Claims;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
+using GqlGateway.Api.Extensions;
+using GqlGateway.Api.Serialization;
+using GqlGateway.Application.Serialization;
+using GqlGateway.Application.Sql;
 using GqlGateway.Application.Sql.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 public static class WebSqlEndpoints
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
+    public const string GenericForbiddenMessage = "The SQL statement was rejected by the gateway security policy.";
+    public const string GenericBadRequestMessage = "The SQL request is invalid (syntax error, empty statement or size limit exceeded).";
+    public const string GenericServerErrorMessage = "The SQL statement could not be executed. Contact support with the trace id.";
 
     public sealed record WebSqlRequestDto(
         string? Sql,
@@ -29,16 +40,20 @@ public static class WebSqlEndpoints
     {
         app.MapPost("/api/v1/sql", HandleWebSqlRequest)
            .WithName("ExecuteGovernedWebSqlV1")
+           .WithMetadata(new ParquetOutputSupportedMetadata())
+           .WithRequestBodyLimit(2 * 1024 * 1024)
            .RequireAuthorization();
 
         app.MapPost("/api/sql", HandleWebSqlRequest)
            .WithName("ExecuteGovernedWebSql")
+           .WithMetadata(new ParquetOutputSupportedMetadata())
+           .WithRequestBodyLimit(2 * 1024 * 1024)
            .RequireAuthorization();
 
         return app;
     }
 
-    private static async Task HandleWebSqlRequest(
+    internal static async Task HandleWebSqlRequest(
         HttpContext httpContext,
         IGovernedSqlExecutionService sqlService,
         IOptions<GatewayOptions> gatewayOptions,
@@ -48,6 +63,12 @@ public static class WebSqlEndpoints
         var ct = httpContext.RequestAborted;
 
         // Content Length validation
+        var maxBodySizeFeature = httpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+        if (maxBodySizeFeature != null && !maxBodySizeFeature.IsReadOnly)
+        {
+            maxBodySizeFeature.MaxRequestBodySize = 2 * 1024 * 1024;
+        }
+
         if (httpContext.Request.ContentLength > 2 * 1024 * 1024)
         {
             httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
@@ -81,8 +102,10 @@ public static class WebSqlEndpoints
             }
             catch (JsonException ex)
             {
+                // SEC M-10: Parser details stay in the server log
+                logger.LogWarning(ex, "WebSQL request body is not valid JSON. TraceId={TraceId}", httpContext.TraceIdentifier);
                 httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
-                await httpContext.Response.WriteAsJsonAsync(new { error = "Invalid JSON payload.", details = ex.Message }, ct);
+                await httpContext.Response.WriteAsJsonAsync(new { error = "Invalid JSON payload.", traceId = httpContext.TraceIdentifier }, ct);
                 return;
             }
         }
@@ -94,15 +117,9 @@ public static class WebSqlEndpoints
             return;
         }
 
-        // Resolve Tenant
+        // Resolve Tenant canonically
         var user = httpContext.User;
-        var tenantClaim = user.FindFirst("tenant_id")?.Value
-            ?? user.FindFirst("tid")?.Value
-            ?? user.FindFirst("tenant")?.Value;
-
-        var tenantId = TenantId.TryParse(tenantClaim, out var tid)
-            ? tid
-            : TenantId.LegacySingleTenant;
+        var tenantId = EndpointSecurity.GetRequestTenant(httpContext);
 
         // Check if array format requested (?format=arrays)
         bool formatArrays = httpContext.Request.Query.TryGetValue("format", out var formatVal) &&
@@ -110,14 +127,18 @@ public static class WebSqlEndpoints
 
         var governedRequest = new GovernedSqlQueryRequest(sql, parameters, dataSource);
 
+        // F-DATA-01: Parquet output (Accept: application/vnd.apache.parquet) of the fully governed result set
+        if (ParquetContentNegotiation.IsParquetRequested(httpContext.Request))
+        {
+            await HandleParquetWebSqlRequestAsync(httpContext, sqlService, gatewayOptions, logger, governedRequest, user, tenantId, ct);
+            return;
+        }
+
+        // SEC M-10: The JSON writer is created lazily when the first result arrives. Policy/parse errors raised while the
+        // statement is governed therefore never start the response, so the 4xx/5xx status and the curated body can still be sent.
+        Utf8JsonWriter? writer = null;
         try
         {
-            httpContext.Response.StatusCode = StatusCodes.Status200OK;
-            httpContext.Response.ContentType = "application/json; charset=utf-8";
-
-            await using var writer = new Utf8JsonWriter(httpContext.Response.Body);
-            writer.WriteStartObject();
-
             int rowCount = 0;
             string[] columnNames = Array.Empty<string>();
 
@@ -127,6 +148,13 @@ public static class WebSqlEndpoints
                 tenantId,
                 async (reader, token) =>
                 {
+                    httpContext.Response.StatusCode = StatusCodes.Status200OK;
+                    httpContext.Response.ContentType = "application/json; charset=utf-8";
+
+                    var w = new Utf8JsonWriter(httpContext.Response.Body);
+                    writer = w;
+                    w.WriteStartObject();
+
                     int fieldCount = reader.FieldCount;
                     columnNames = new string[fieldCount];
                     for (int i = 0; i < fieldCount; i++)
@@ -135,97 +163,218 @@ public static class WebSqlEndpoints
                     }
 
                     // Write "columns": [...]
-                    writer.WriteStartArray("columns");
+                    w.WriteStartArray("columns");
                     for (int i = 0; i < fieldCount; i++)
                     {
-                        writer.WriteStringValue(columnNames[i]);
+                        w.WriteStringValue(columnNames[i]);
                     }
-                    writer.WriteEndArray();
+                    w.WriteEndArray();
 
                     // Write "rows": [...]
-                    writer.WriteStartArray("rows");
+                    w.WriteStartArray("rows");
 
                     while (await reader.ReadAsync(token))
                     {
                         rowCount++;
                         if (formatArrays)
                         {
-                            writer.WriteStartArray();
+                            w.WriteStartArray();
                             for (int i = 0; i < fieldCount; i++)
                             {
-                                WriteDbValue(writer, reader.IsDBNull(i) ? null : reader.GetValue(i));
+                                WriteDbValue(w, reader.IsDBNull(i) ? null : reader.GetValue(i));
                             }
-                            writer.WriteEndArray();
+                            w.WriteEndArray();
                         }
                         else
                         {
-                            writer.WriteStartObject();
+                            w.WriteStartObject();
                             for (int i = 0; i < fieldCount; i++)
                             {
-                                writer.WritePropertyName(columnNames[i]);
-                                WriteDbValue(writer, reader.IsDBNull(i) ? null : reader.GetValue(i));
+                                w.WritePropertyName(columnNames[i]);
+                                WriteDbValue(w, reader.IsDBNull(i) ? null : reader.GetValue(i));
                             }
-                            writer.WriteEndObject();
+                            w.WriteEndObject();
                         }
 
                         // Flush writer periodically to maintain streaming response for large row sets
                         if (rowCount % 250 == 0)
                         {
-                            await writer.FlushAsync(token);
+                            await w.FlushAsync(token);
                         }
                     }
 
-                    writer.WriteEndArray();
+                    w.WriteEndArray();
                 },
                 ct);
+
+            if (writer == null)
+            {
+                // No result set was produced: emit an empty, well-formed result
+                httpContext.Response.StatusCode = StatusCodes.Status200OK;
+                httpContext.Response.ContentType = "application/json; charset=utf-8";
+                writer = new Utf8JsonWriter(httpContext.Response.Body);
+                writer.WriteStartObject();
+                writer.WriteStartArray("columns");
+                writer.WriteEndArray();
+                writer.WriteStartArray("rows");
+                writer.WriteEndArray();
+            }
 
             writer.WriteNumber("rowCount", rowCount);
             writer.WriteEndObject();
             await writer.FlushAsync(ct);
             await httpContext.Response.Body.FlushAsync(ct);
         }
-        catch (SecurityException secEx)
+        catch (Exception ex)
         {
-            logger.LogWarning(secEx, "WebSQL Security Violation: {Message}", secEx.Message);
-            if (!httpContext.Response.HasStarted)
+            await WriteWebSqlErrorAsync(httpContext, ex, logger, ct);
+        }
+        finally
+        {
+            if (writer != null)
             {
+                await writer.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// F-DATA-01: Executes the governed statement and returns the result set as Apache Parquet. The rows are taken from the
+    /// same governed reader as the JSON path (RLS, masking, consent applied in the rewritten SQL); the conversion is a pure
+    /// output transformation. SEC M-10: nothing is written before the result arrives, so policy errors keep their status.
+    /// </summary>
+    private static async Task HandleParquetWebSqlRequestAsync(
+        HttpContext httpContext,
+        IGovernedSqlExecutionService sqlService,
+        IOptions<GatewayOptions> gatewayOptions,
+        ILogger logger,
+        GovernedSqlQueryRequest governedRequest,
+        ClaimsPrincipal user,
+        TenantId tenantId,
+        CancellationToken ct)
+    {
+        var parquetService = httpContext.RequestServices?.GetService<IParquetExportService>();
+        if (await ParquetResponseWriter.TryRejectUnavailableAsync(httpContext, parquetService, ct))
+        {
+            return;
+        }
+
+        var configuredMaxRows = gatewayOptions.Value.ParquetEgress.MaxRowsPerFile;
+        var maxRows = configuredMaxRows > 0 ? configuredMaxRows : 100000;
+
+        var rows = new List<IReadOnlyDictionary<string, object?>>();
+        string[] columnNames = Array.Empty<string>();
+
+        try
+        {
+            await sqlService.ExecuteGovernedQueryAsync(
+                governedRequest,
+                user,
+                tenantId,
+                async (reader, token) =>
+                {
+                    int fieldCount = reader.FieldCount;
+                    columnNames = BuildUniqueColumnNames(reader);
+
+                    // At most MaxRowsPerFile + 1 rows are read: the extra row only marks the export as truncated
+                    // (X-Export-Truncated: true); the remaining result set is never materialized.
+                    while (rows.Count <= maxRows && await reader.ReadAsync(token))
+                    {
+                        var row = new Dictionary<string, object?>(fieldCount, StringComparer.Ordinal);
+                        for (int i = 0; i < fieldCount; i++)
+                        {
+                            row[columnNames[i]] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                        }
+                        rows.Add(row);
+                    }
+                },
+                ct);
+
+            // An empty result (or no result set) is a Parquet file with zero rows and the result columns.
+            await ParquetResponseWriter.WriteAsync(httpContext, parquetService!, "websql", rows, columnNames, ct);
+        }
+        catch (Exception ex)
+        {
+            await WriteWebSqlErrorAsync(httpContext, ex, logger, ct);
+        }
+    }
+
+    private static async Task WriteWebSqlErrorAsync(
+        HttpContext httpContext,
+        Exception ex,
+        ILogger logger,
+        CancellationToken ct)
+    {
+        if (httpContext.Response.HasStarted)
+        {
+            return;
+        }
+
+        switch (ex)
+        {
+            case SecurityException secEx:
+                logger.LogWarning(secEx, "WebSQL Security Violation. TraceId={TraceId}", httpContext.TraceIdentifier);
                 httpContext.Response.StatusCode = StatusCodes.Status403Forbidden;
                 httpContext.Response.ContentType = "application/json; charset=utf-8";
                 await httpContext.Response.WriteAsJsonAsync(new
                 {
                     error = "Forbidden",
-                    message = secEx.Message
+                    message = secEx is WebSqlPolicyException ? secEx.Message : GenericForbiddenMessage,
+                    traceId = httpContext.TraceIdentifier
                 }, ct);
-            }
-        }
-        catch (ArgumentException argEx)
-        {
-            logger.LogWarning(argEx, "WebSQL Bad Request: {Message}", argEx.Message);
-            if (!httpContext.Response.HasStarted)
-            {
+                break;
+
+            case ArgumentException argEx:
+                logger.LogWarning(argEx, "WebSQL Bad Request. TraceId={TraceId}", httpContext.TraceIdentifier);
                 httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
                 httpContext.Response.ContentType = "application/json; charset=utf-8";
                 await httpContext.Response.WriteAsJsonAsync(new
                 {
                     error = "BadRequest",
-                    message = argEx.Message
+                    message = GenericBadRequestMessage,
+                    traceId = httpContext.TraceIdentifier
                 }, ct);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "WebSQL Execution Failed: {Message}", ex.Message);
-            if (!httpContext.Response.HasStarted)
-            {
+                break;
+
+            default:
+                // SEC M-10: Never echo exception/database messages to the client
+                logger.LogError(ex, "WebSQL Execution Failed. TraceId={TraceId}", httpContext.TraceIdentifier);
                 httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
                 httpContext.Response.ContentType = "application/json; charset=utf-8";
                 await httpContext.Response.WriteAsJsonAsync(new
                 {
                     error = "InternalServerError",
-                    message = ex.Message
+                    message = GenericServerErrorMessage,
+                    traceId = httpContext.TraceIdentifier
                 }, ct);
-            }
+                break;
         }
+    }
+
+    private static string[] BuildUniqueColumnNames(DbDataReader reader)
+    {
+        var names = new string[reader.FieldCount];
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < names.Length; i++)
+        {
+            var baseName = reader.GetName(i);
+            if (string.IsNullOrWhiteSpace(baseName))
+            {
+                baseName = "column" + (i + 1);
+            }
+
+            var name = baseName;
+            var suffix = 1;
+            while (!seen.Add(name))
+            {
+                name = baseName + "_" + suffix;
+                suffix++;
+            }
+
+            names[i] = name;
+        }
+
+        return names;
     }
 
     private static void WriteDbValue(Utf8JsonWriter writer, object? val)

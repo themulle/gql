@@ -310,7 +310,7 @@ Kombiniert Pre-Authentication IP-Limiting mit Token-Bucket-Verbrauch pro Windows
 
 ### 2.6 `GraphQL` (Engine- & Abfrageschutz)
 
-Steuert Hot Chocolate 14 Parameter, Komplexitätsgrenzen und Anti-CSRF-Prüfungen.
+Steuert Hot Chocolate 16 Parameter, Komplexitätsgrenzen und Anti-CSRF-Prüfungen.
 
 | Eigenschaft | Typ | Wertebereich | Standard | Beschreibung |
 | :--- | :--- | :--- | :--- | :--- |

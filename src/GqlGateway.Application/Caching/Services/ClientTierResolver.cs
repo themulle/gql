@@ -59,13 +59,7 @@ public sealed class ClientTierResolver : IClientTierResolver
                             principal.FindFirst("client_tier")?.Value ??
                             principal.FindFirst("urn:gqlgateway:tier")?.Value;
 
-            var subjectId = principal.FindFirst("client_id")?.Value ??
-                            principal.FindFirst("azp")?.Value ??
-                            principal.FindFirst("appid")?.Value ??
-                            principal.FindFirst(ClaimTypes.NameIdentifier)?.Value ??
-                            principal.FindFirst("sub")?.Value ??
-                            principal.Identity.Name ??
-                            "authenticated_user";
+            var subjectId = BuildAuthenticatedSubjectId(principal);
 
             if (!string.IsNullOrWhiteSpace(tierClaim) && Enum.TryParse<ClientTier>(tierClaim, true, out var parsedTier))
             {
@@ -76,23 +70,57 @@ public sealed class ClientTierResolver : IClientTierResolver
             return Task.FromResult(new ClientQuotaContext(subjectId, ClientTier.Standard, ClientQuotaPolicy.ForTier(ClientTier.Standard)));
         }
 
-        // 3. Fallback: Unregistered API Key for Anonymous Client (always Free tier, deterministic subjectId, bounded cache)
+        // 3. SEC M-16: Unbekannte X-API-Key-Werte werden ignoriert. Früher erzeugte jeder zufällige Key einen frischen Bucket;
+        //    jetzt fällt der Aufrufer auf den IP-basierten anonymen Bucket zurück.
         if (!string.IsNullOrWhiteSpace(apiKey))
         {
-            var cleanKey = apiKey.Trim();
-            var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(cleanKey));
-            var hexHash = Convert.ToHexString(hashBytes).ToLowerInvariant();
-            var subjectId = "key_" + hexHash[..16];
-
-            EnsureCacheCapacity();
-            _apiKeyCache[subjectId] = (ClientTier.Free, DateTimeOffset.UtcNow.AddMinutes(10));
-            return Task.FromResult(new ClientQuotaContext(subjectId, ClientTier.Free, ClientQuotaPolicy.ForTier(ClientTier.Free)));
+            _logger.LogDebug("Unregistered X-API-Key ignored for quota resolution; falling back to anonymous IP bucket.");
         }
 
         // 4. Fallback: Pure Anonymous / Free tier with IP
         var ip = !string.IsNullOrWhiteSpace(clientIp) ? clientIp : "anonymous";
         var freeSubject = $"anon_{ip}";
         return Task.FromResult(new ClientQuotaContext(freeSubject, ClientTier.Free, ClientQuotaPolicy.ForTier(ClientTier.Free)));
+    }
+
+    /// <summary>
+    /// SEC M-16: Quota-Subjekt eines angemeldeten Aufrufers = Tenant + Benutzer-SID; die client_id wird nur ergänzt.
+    /// Dadurch teilen sich Benutzer derselben Client-Anwendung keinen gemeinsamen Bucket mehr.
+    /// </summary>
+    internal static string BuildAuthenticatedSubjectId(ClaimsPrincipal principal)
+    {
+        string tenant;
+        try
+        {
+            tenant = principal.GetTenantId().Value;
+        }
+        catch (System.Security.SecurityException)
+        {
+            tenant = "invalid-tenant";
+        }
+
+        var userSid = principal.GetUserSid()?.Value;
+        if (string.IsNullOrWhiteSpace(userSid))
+        {
+            userSid = principal.Identity?.Name;
+        }
+
+        if (string.IsNullOrWhiteSpace(userSid))
+        {
+            userSid = "authenticated_user";
+        }
+
+        var clientId = principal.FindFirst("client_id")?.Value ??
+                       principal.FindFirst("azp")?.Value ??
+                       principal.FindFirst("appid")?.Value;
+
+        var subject = $"user:{tenant}:{userSid}";
+        if (!string.IsNullOrWhiteSpace(clientId) && !string.Equals(clientId, userSid, StringComparison.OrdinalIgnoreCase))
+        {
+            subject += $":{clientId}";
+        }
+
+        return subject;
     }
 
     private void EnsureCacheCapacity()

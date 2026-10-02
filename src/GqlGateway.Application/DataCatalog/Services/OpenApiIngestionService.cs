@@ -205,6 +205,20 @@ public sealed class OpenApiIngestionService : IOpenApiIngestionService
                     PrimaryKeyColumns = primaryKeys
                 };
 
+                // SEC M-30: an OpenAPI (re-)ingestion must never weaken governance of an existing table
+                // (RequiresFourEyes, Sensitivity, IsActive, column IsSensitive, masking rules) nor re-route it
+                // (DataSourceType / HttpEndpoint of existing tables are preserved).
+                var existing = await _metadataRepository.GetTableMetadataAsync(tableId, ct).ConfigureAwait(false);
+                if (existing != null)
+                {
+                    tableMetadata = CatalogGovernanceRatchet.Merge(tableMetadata, existing);
+                    if (existing.Table.HttpEndpoint != null &&
+                        !string.Equals(existing.Table.HttpEndpoint.BaseUrl, serverUrl, StringComparison.OrdinalIgnoreCase))
+                    {
+                        warnings.Add($"Schema '{schemaName}': existing endpoint of table '{tableId}' was kept; endpoint changes require an administrative update.");
+                    }
+                }
+
                 await _metadataRepository.UpsertTableMetadataAsync(tableMetadata, ct).ConfigureAwait(false);
                 ingestedTableNames.Add(tableName);
             }

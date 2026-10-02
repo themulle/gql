@@ -1,6 +1,7 @@
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Options;
 using GqlGateway.Infrastructure.Persistence;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using StackExchange.Redis;
@@ -13,17 +14,20 @@ public sealed class GatewayHealthCheckService : IGatewayHealthCheckService
     private readonly IConnectionMultiplexer? _redisMultiplexer;
     private readonly IOptions<GatewayOptions> _options;
     private readonly ILogger<GatewayHealthCheckService> _logger;
+    private readonly IHostEnvironment? _environment;
 
     public GatewayHealthCheckService(
         IOptions<GatewayOptions> options,
         ILogger<GatewayHealthCheckService> logger,
         IGovernanceRepository? governanceRepository = null,
-        IConnectionMultiplexer? redisMultiplexer = null)
+        IConnectionMultiplexer? redisMultiplexer = null,
+        IHostEnvironment? environment = null)
     {
         _options = options;
         _logger = logger;
         _governanceRepository = governanceRepository;
         _redisMultiplexer = redisMultiplexer;
+        _environment = environment;
     }
 
     public async Task<GatewayHealthReport> CheckHealthAsync(CancellationToken ct = default)
@@ -96,15 +100,42 @@ public sealed class GatewayHealthCheckService : IGatewayHealthCheckService
         }
 
         // 3. Security Invariants Check (H-5)
-        var activeBypasses = _options.Value.GetAllActiveBypasses();
-        bool securityHealthy = activeBypasses.Count == 0;
-        string securityDesc = securityHealthy
-            ? "No security bypasses active (Zero-Trust enforced)."
-            : $"WARNING: Active security bypasses: {string.Join(", ", activeBypasses)}";
+        // DANGER entries make the component unhealthy (outside Development additionally the whole report, so that
+        // /health/ready returns 503 - defense in depth, startup validation already blocks DANGER there).
+        // WARN entries keep the component healthy but are listed as "degraded: ...".
+        var dangerBypasses = _options.Value.GetActiveDangerBypasses();
+        var warnings = _options.Value.GetActiveWarnings();
+        bool securityHealthy = dangerBypasses.Count == 0;
+        string securityDesc;
+        if (!securityHealthy)
+        {
+            securityDesc = $"WARNING: Active security bypasses: {string.Join(", ", dangerBypasses)}";
+            if (warnings.Count > 0)
+            {
+                securityDesc += $" degraded: {string.Join(", ", warnings)}";
+            }
+        }
+        else if (warnings.Count > 0)
+        {
+            securityDesc = $"degraded: {string.Join(", ", warnings)}";
+        }
+        else
+        {
+            securityDesc = "No security bypasses active (Zero-Trust enforced).";
+        }
+
         components.Add(new HealthCheckComponentResult("SecurityConfiguration", securityHealthy, securityDesc));
         if (!securityHealthy)
         {
-            _logger.LogWarning("Health check detected active security bypasses: {Bypasses}", string.Join(", ", activeBypasses));
+            _logger.LogWarning("Health check detected active security bypasses: {Bypasses}", string.Join(", ", dangerBypasses));
+            if (_environment != null && !_environment.IsDevelopment())
+            {
+                overallHealthy = false;
+            }
+        }
+        else if (warnings.Count > 0)
+        {
+            _logger.LogDebug("Health check: security-relevant settings active (permitted): {Warnings}", string.Join(", ", warnings));
         }
 
         return new GatewayHealthReport(overallHealthy, components);

@@ -80,10 +80,11 @@ public class McpIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var text = content[0].GetProperty("text").GetString();
         text.ShouldNotBeNull();
 
-        // Verify automated AI Guardrail masking in the response
+        // SEC M-17: Der MCP-Executor liefert keine erfundenen Beispieldaten mehr (frueher "Erika Mustermann"),
+        // sondern echte Daten oder ein strukturiertes Fehler-Ergebnis.
         text.ShouldNotContain("erika.mustermann@acme-corp.com");
-        text.ShouldContain("***@acme-corp.com");
-        text.ShouldContain("[REDACTED-GDPR-ART9]");
+        text.ShouldNotContain("Erika Mustermann");
+        text.ShouldNotContain("Diabetes Type 2");
 
         // 4. Teardown session
         var deleteResp = await client.DeleteAsync($"/mcp/session/{sessionId}");
@@ -165,7 +166,11 @@ public class McpIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var custResp = await client.PostAsync(messageUri, new StringContent(custPayload, Encoding.UTF8, "application/json"));
         custResp.StatusCode.ShouldBe(HttpStatusCode.OK);
         var custJson = await custResp.Content.ReadAsStringAsync();
-        custJson.ShouldContain("_provenance");
+        // SEC M-17: Ohne echte Datenquelle liefert der Executor ein strukturiertes Fehler-Ergebnis (ohne Provenance) statt Mock-Daten.
+        (custJson.Contains("_provenance", StringComparison.Ordinal) ||
+         custJson.Contains("EXECUTION_FAILED", StringComparison.Ordinal) ||
+         custJson.Contains("FORBIDDEN", StringComparison.Ordinal)).ShouldBeTrue();
+        custJson.ShouldNotContain("Erika Mustermann");
 
         // Teardown
         var deleteResp = await client.DeleteAsync($"/mcp/session/{sessionId}");
@@ -228,8 +233,10 @@ public class McpIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task McpEndpoints_WhenOpenSchemaEnabled_AllowsAnonymousAgentAccess()
+    public async Task H02_McpEndpoints_WhenOpenSchemaEnabled_StillRequireAuthentication()
     {
+        // SEC H-02: OpenSchema only opens documentation/catalog routes. MCP (incl. tools/call) stays behind
+        // authentication unless the production-blocked danger_bypass_mcp_auth switch is set.
         using var openFactory = _factory.WithWebHostBuilder(builder =>
         {
             builder.UseSetting("Gateway:Insecure:danger_bypass_mcp_auth", "false");
@@ -239,45 +246,25 @@ public class McpIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
         var client = openFactory.CreateClient();
 
-        // 1. Establish SSE Connection without credentials
         using var sseRequest = new HttpRequestMessage(HttpMethod.Get, "/mcp/sse");
         sseRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-
         using var sseResponse = await client.SendAsync(sseRequest, HttpCompletionOption.ResponseHeadersRead);
-        sseResponse.StatusCode.ShouldBe(HttpStatusCode.OK);
+        sseResponse.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
 
-        using var stream = await sseResponse.Content.ReadAsStreamAsync();
-        using var reader = new StreamReader(stream);
-
-        var line1 = await reader.ReadLineAsync(); // "event: endpoint"
-        var line2 = await reader.ReadLineAsync(); // "data: /mcp/message?sessionId=..."
-        await reader.ReadLineAsync(); // empty line
-
-        var messageUri = line2!.Replace("data: ", "").Trim();
-        var sessionId = messageUri.Substring(messageUri.IndexOf("sessionId=", StringComparison.Ordinal) + 10);
-
-        // 2. Initialize
         var initPayload = """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}""";
-        var initResp = await client.PostAsync(messageUri, new StringContent(initPayload, Encoding.UTF8, "application/json"));
-        initResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+        var postResp = await client.PostAsync("/mcp", new StringContent(initPayload, Encoding.UTF8, "application/json"));
+        postResp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+    }
 
-        // 3. tools/list
-        var toolsPayload = """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""";
-        var toolsResp = await client.PostAsync(messageUri, new StringContent(toolsPayload, Encoding.UTF8, "application/json"));
-        toolsResp.StatusCode.ShouldBe(HttpStatusCode.OK);
+    [Fact]
+    public async Task M09_McpStreamableHttp_OversizedBody_IsRejectedWith413()
+    {
+        var client = _factory.CreateClient();
 
-        var toolsJson = await toolsResp.Content.ReadAsStringAsync();
-        using var toolsDoc = JsonDocument.Parse(toolsJson);
-        var tools = toolsDoc.RootElement.GetProperty("result").GetProperty("tools");
-        tools.GetArrayLength().ShouldBeGreaterThan(0);
+        var hugeParam = new string('a', 1024 * 1024 + 16);
+        var payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{\"pad\":\"" + hugeParam + "\"}}";
+        var response = await client.PostAsync("/mcp", new StringContent(payload, Encoding.UTF8, "application/json"));
 
-        // 4. resources/list
-        var resPayload = """{"jsonrpc":"2.0","id":3,"method":"resources/list","params":{}}""";
-        var resResp = await client.PostAsync(messageUri, new StringContent(resPayload, Encoding.UTF8, "application/json"));
-        resResp.StatusCode.ShouldBe(HttpStatusCode.OK);
-
-        // Teardown
-        var deleteResp = await client.DeleteAsync($"/mcp/session/{sessionId}");
-        deleteResp.StatusCode.ShouldBe(HttpStatusCode.NoContent);
+        response.StatusCode.ShouldBe(HttpStatusCode.RequestEntityTooLarge);
     }
 }

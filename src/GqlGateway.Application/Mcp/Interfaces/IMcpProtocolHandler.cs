@@ -17,7 +17,8 @@ public interface IMcpProtocolHandler
         string tenantId,
         string? userSid = null,
         System.Collections.Generic.IReadOnlyList<string>? roles = null,
-        System.Collections.Generic.IReadOnlyList<string>? groupSids = null);
+        System.Collections.Generic.IReadOnlyList<string>? groupSids = null,
+        string? clientIp = null);
 
     /// <summary>
     /// Gets an existing active session by ID.

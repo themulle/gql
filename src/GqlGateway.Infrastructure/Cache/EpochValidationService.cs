@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace GqlGateway.Infrastructure.Cache;
@@ -15,12 +16,21 @@ public sealed class EpochValidationService : IEpochValidationService
     private readonly string _invalidationChannel;
     private readonly StackExchange.Redis.IConnectionMultiplexer? _multiplexer;
     private readonly string _redisPrefix;
+    private readonly ConcurrentDictionary<string, long> _highestSeenRedisEpoch = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ILogger<EpochValidationService>? _logger;
 
+    // SEC H-01: Epoch values read from Redis/Garnet are not trusted blindly. Each node remembers the highest
+    // epoch it has observed per table; a lower value (Redis restart without persistence, or a tampered key that
+    // tries to re-validate an older, still-signed L2 entry) is treated as a rollback and forces a fresh epoch
+    // above the highest observed one. Residual risk: a node that never observed the higher epoch cannot detect
+    // the rollback, therefore Redis/Garnet must additionally be protected by authentication (see GarnetServerManager).
     public EpochValidationService(
         IOptions<GatewayOptions>? options = null,
         IEventBus? eventBus = null,
-        StackExchange.Redis.IConnectionMultiplexer? multiplexer = null)
+        StackExchange.Redis.IConnectionMultiplexer? multiplexer = null,
+        ILogger<EpochValidationService>? logger = null)
     {
+        _logger = logger;
         _options = options?.Value?.Caching?.EpochValidation ?? new EpochValidationOptions();
         _invalidationChannel = options?.Value?.Caching?.Redis?.InvalidationChannel ?? "consent:invalidations";
         _eventBus = eventBus ?? new Messaging.InProcessChannelEventBus();
@@ -50,21 +60,32 @@ public sealed class EpochValidationService : IEpochValidationService
             try
             {
                 var db = _multiplexer.GetDatabase();
-                var redisVal = await db.StringGetAsync($"{_redisPrefix}epoch:{key}").ConfigureAwait(false);
-                if (redisVal.HasValue && (long)redisVal > 0)
+                var redisKey = $"{_redisPrefix}epoch:{key}";
+                var redisVal = await db.StringGetAsync(redisKey).ConfigureAwait(false);
+                long rEpoch = redisVal.HasValue && long.TryParse(redisVal.ToString(), out var parsed) ? parsed : 0;
+                _highestSeenRedisEpoch.TryGetValue(key, out var highestSeen);
+
+                if (rEpoch <= 0 || rEpoch < highestSeen)
                 {
-                    var rEpoch = (long)redisVal;
-                    _epochs[key] = rEpoch;
-                    _lastEpochRefresh[key] = DateTimeOffset.UtcNow;
-                    return rEpoch;
+                    // Missing or rolled-back epoch: never fall back below anything this node has already seen.
+                    var restored = highestSeen > 0 ? highestSeen + 1 : 1;
+                    if (highestSeen > 0)
+                    {
+                        _logger?.LogWarning("Policy epoch rollback detected for {Table} (redis={RedisEpoch}, highestSeen={HighestSeen}); forcing epoch {Restored}.", key, rEpoch, highestSeen, restored);
+                        await db.StringSetAsync(redisKey, restored).ConfigureAwait(false);
+                        rEpoch = restored;
+                    }
+                    else
+                    {
+                        // Atomic INCR creates a missing key with 1 and never overwrites a concurrently created epoch.
+                        rEpoch = await db.StringIncrementAsync(redisKey).ConfigureAwait(false);
+                    }
                 }
-                else
-                {
-                    await db.StringSetAsync($"{_redisPrefix}epoch:{key}", 1).ConfigureAwait(false);
-                    _epochs[key] = 1;
-                    _lastEpochRefresh[key] = DateTimeOffset.UtcNow;
-                    return 1;
-                }
+
+                _highestSeenRedisEpoch.AddOrUpdate(key, rEpoch, (_, current) => Math.Max(current, rEpoch));
+                _epochs[key] = rEpoch;
+                _lastEpochRefresh[key] = DateTimeOffset.UtcNow;
+                return rEpoch;
             }
             catch
             {
@@ -137,7 +158,8 @@ public sealed class EpochValidationService : IEpochValidationService
             try
             {
                 var db = _multiplexer.GetDatabase();
-                await db.StringIncrementAsync($"{_redisPrefix}epoch:{key}").ConfigureAwait(false);
+                var incremented = await db.StringIncrementAsync($"{_redisPrefix}epoch:{key}").ConfigureAwait(false);
+                _highestSeenRedisEpoch.AddOrUpdate(key, incremented, (_, current) => Math.Max(current, incremented));
             }
             catch
             {

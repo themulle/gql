@@ -19,6 +19,10 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
     private readonly WebApplicationFactory<Program> _factory;
     private const string WebhookSecret = "super-secret-itsm-token-12345";
 
+    // SEC H-06: Webhooks are verified with a secret per ITSM instance; the global secret above is no longer accepted.
+    private const string InstanceSecretA = "itsm-instance-secret-tenant-a-0001";
+    private const string InstanceSecretB = "itsm-instance-secret-tenant-b-0002";
+
     public ItsmIntegrationTests(WebApplicationFactory<Program> factory)
     {
         Environment.SetEnvironmentVariable("ITSM__WEBHOOK_SECRET", WebhookSecret);
@@ -32,12 +36,14 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
             builder.UseSetting("Gateway:Itsm:Enabled", "true");
             builder.UseSetting("Gateway:Itsm:InstanceToTenantMap:inst-tenant-a", "tenant-a");
             builder.UseSetting("Gateway:Itsm:InstanceToTenantMap:inst-tenant-b", "tenant-b");
+            builder.UseSetting("itsm:webhook-secret:inst-tenant-a", InstanceSecretA);
+            builder.UseSetting("itsm:webhook-secret:inst-tenant-b", InstanceSecretB);
         });
     }
 
-    private string ComputeSignature(string payload, DateTimeOffset? timestamp = null)
+    private static string ComputeSignature(string payload, DateTimeOffset? timestamp = null, string secret = InstanceSecretA)
     {
-        var keyBytes = Encoding.UTF8.GetBytes(WebhookSecret);
+        var keyBytes = Encoding.UTF8.GetBytes(secret);
         var ts = timestamp ?? DateTimeOffset.UtcNow;
         var message = $"t={ts:O}.v1={payload}";
         var hash = HMACSHA256.HashData(keyBytes, Encoding.UTF8.GetBytes(message));
@@ -151,7 +157,8 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
         });
 
         var timestamp = DateTimeOffset.UtcNow;
-        var signature = ComputeSignature(payload, timestamp);
+        // SEC H-06: Correctly signed by instance B (its own secret) - the tenant-bound lookup must still not find tenant A's ticket.
+        var signature = ComputeSignature(payload, timestamp, InstanceSecretB);
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/itsm/status-change");
         request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
         request.Headers.Add("X-ITSM-Signature", signature);
@@ -702,5 +709,54 @@ public class ItsmIntegrationTests : IClassFixture<WebApplicationFactory<Program>
         var updated = await repo.GetConsentRequestAsync(consentReq.Id);
         updated.ShouldNotBeNull();
         updated.Status.ShouldBe("REJECTED");
+    }
+
+    [Fact]
+    public async Task H06_Webhook_SignedWithLegacyGlobalSecret_IsRejected()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IGovernanceRepository>();
+
+        var tableId = new TableIdentifier("finance", "dbo", "finance_table_1");
+        var meta = await repo.GetTableMetadataAsync(tableId);
+        meta.ShouldNotBeNull();
+
+        var ticketId = $"GLOBAL-SECRET-{Guid.NewGuid():N}";
+        var consentReq = new ConsentRequest
+        {
+            TableId = meta.Table.Id,
+            TableIdentifier = tableId,
+            RequesterSid = new Sid("S-1-5-21-GLOBAL-SECRET-USER"),
+            RequestedGranteeType = GranteeType.User,
+            RequestedGranteeRef = "S-1-5-21-GLOBAL-SECRET-USER",
+            BusinessJustification = "Global secret must not be accepted",
+            Status = "PENDING_EXTERNAL_APPROVAL",
+            TenantId = new TenantId("tenant-a"),
+            ItsmTicketId = ticketId,
+            RequestedValidTo = DateTimeOffset.UtcNow.AddDays(7)
+        };
+        await repo.CreateConsentRequestAsync(consentReq);
+
+        var client = _factory.CreateClient();
+        var payload = JsonSerializer.Serialize(new
+        {
+            TicketId = ticketId,
+            InstanceId = "inst-tenant-a",
+            Action = "APPROVE"
+        });
+
+        var timestamp = DateTimeOffset.UtcNow;
+        var signature = ComputeSignature(payload, timestamp, WebhookSecret);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/webhooks/itsm/status-change");
+        request.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        request.Headers.Add("X-ITSM-Signature", signature);
+        request.Headers.Add("X-ITSM-Timestamp", timestamp.ToString("O"));
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.ShouldBe(HttpStatusCode.Unauthorized);
+
+        var updated = await repo.GetConsentRequestAsync(consentReq.Id);
+        updated.ShouldNotBeNull();
+        updated.Status.ShouldBe("PENDING_EXTERNAL_APPROVAL");
     }
 }

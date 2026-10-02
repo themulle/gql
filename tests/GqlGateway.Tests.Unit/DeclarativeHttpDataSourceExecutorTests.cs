@@ -34,7 +34,8 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
     }
 
     private static (DeclarativeHttpDataSourceExecutor Executor, List<HttpRequestMessage> Requests) CreateExecutor(
-        Func<HttpRequestMessage, HttpResponseMessage> handler)
+        Func<HttpRequestMessage, HttpResponseMessage> handler,
+        bool isDev = true)
     {
         var requests = new List<HttpRequestMessage>();
         var lockObj = new object();
@@ -51,9 +52,13 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
         var factory = Substitute.For<IHttpClientFactory>();
         factory.CreateClient(Arg.Any<string>()).Returns(httpClient);
 
+        var env = Substitute.For<Microsoft.Extensions.Hosting.IHostEnvironment>();
+        env.EnvironmentName.Returns(isDev ? "Development" : "Production");
+
         var executor = new DeclarativeHttpDataSourceExecutor(
             factory,
-            NullLogger<DeclarativeHttpDataSourceExecutor>.Instance);
+            NullLogger<DeclarativeHttpDataSourceExecutor>.Instance,
+            environment: env);
 
         return (executor, requests);
     }
@@ -444,7 +449,7 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
     [InlineData("https://[fd12:3456:789a::1]/api/data")]
     public async Task ExecuteAsync_ThrowsSecurityException_WhenUrlTargetsPrivateOrLoopbackIp(string destinationUrl)
     {
-        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK), isDev: false);
         var descriptor = new HttpEndpointDescriptor
         {
             BaseUrl = destinationUrl,
@@ -479,7 +484,7 @@ public sealed class DeclarativeHttpDataSourceExecutorTests
     [Fact]
     public async Task ExecuteAsync_ThrowsSecurityException_WhenInsecureHttpSchemeInNonDev()
     {
-        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var (executor, _) = CreateExecutor(_ => new HttpResponseMessage(HttpStatusCode.OK), isDev: false);
         var descriptor = new HttpEndpointDescriptor
         {
             BaseUrl = "http://api.external.com",

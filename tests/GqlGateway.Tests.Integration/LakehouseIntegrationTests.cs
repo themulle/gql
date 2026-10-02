@@ -186,7 +186,13 @@ public class LakehouseIntegrationTests : IClassFixture<WebApplicationFactory<Pro
                 new TableColumn { ColumnName = "secretInternalNotes", DataType = "string", IsSensitive = true },
                 new TableColumn { ColumnName = "tenantId", DataType = "string" },
                 new TableColumn { ColumnName = "orderDate", DataType = "string" }
-            ]
+            ],
+            // SEC M-35: masking is rule-based (catalog masking rules), no longer derived from column names
+            ColumnMaskingRules = new Dictionary<string, MaskingRule>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["customerEmail"] = new MaskingRule { RuleType = "MASK_EMAIL" },
+                ["iban"] = new MaskingRule { RuleType = "MASK_IBAN" }
+            }
         };
 
         var decision = new TableAccessDecision(

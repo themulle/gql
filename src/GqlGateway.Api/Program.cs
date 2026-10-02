@@ -1,19 +1,27 @@
 using System;
 using GqlGateway.Api.Extensions;
+using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// SEC M-01: Kestrel limits (configurable via Gateway:Hosting). Global body limit is small (default 2 MB);
+// endpoints with large payloads (dbt sync) raise it explicitly via RequestSizeLimitAttribute.
+var hostingLimits = builder.Configuration.GetSection($"{GatewayOptions.SectionName}:Hosting").Get<HostingLimitsOptions>()
+    ?? new HostingLimitsOptions();
+
 // Configure Kestrel limits & high-throughput concurrency settings (F-PERF / graphql-bench)
 builder.WebHost.ConfigureKestrel(options =>
 {
-    // Allow up to 100 MB for streaming dbt manifests and large audit/governance payloads
-    options.Limits.MaxRequestBodySize = 100 * 1024 * 1024;
+    options.Limits.MaxRequestBodySize = hostingLimits.MaxRequestBodySizeBytes;
     options.AddServerHeader = false;
-    options.Limits.MaxConcurrentConnections = null;
-    options.Limits.MaxConcurrentUpgradedConnections = null;
+    options.Limits.MaxConcurrentConnections = hostingLimits.MaxConcurrentConnections > 0
+        ? hostingLimits.MaxConcurrentConnections
+        : null;
+    options.Limits.MaxConcurrentUpgradedConnections = hostingLimits.MaxConcurrentUpgradedConnections;
     options.Limits.Http2.MaxStreamsPerConnection = 1024;
     options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(2);
     options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(10);

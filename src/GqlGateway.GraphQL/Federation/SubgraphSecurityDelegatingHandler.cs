@@ -34,7 +34,9 @@ public sealed class SubgraphSecurityDelegatingHandler : DelegatingHandler
         _propagationService = propagationService ?? throw new ArgumentNullException(nameof(propagationService));
         _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-        _isDev = options?.Value.HasAnySecurityBypassActive == true;
+        // Relaxed SSRF validation only while DANGER bypasses are active (Development-only by startup validation).
+        // WARN entries are permitted in Production and therefore must not relax the destination check.
+        _isDev = options?.Value.HasAnyDangerBypassActive == true;
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(

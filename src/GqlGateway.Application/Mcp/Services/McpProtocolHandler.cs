@@ -19,6 +19,7 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
     private readonly IMcpToolRegistry _toolRegistry;
     private readonly IAiDataGuardrailService _guardrailService;
     private readonly ISemanticMcpCompiler? _semanticCompiler;
+    private readonly GqlGateway.Application.Mcp.Pruning.ISemanticToolPruner? _toolPruner;
     private readonly ILogger<McpProtocolHandler> _logger;
 
     public McpProtocolHandler(
@@ -26,26 +27,29 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         IMcpToolRegistry toolRegistry,
         IAiDataGuardrailService guardrailService,
         ILogger<McpProtocolHandler> logger,
-        ISemanticMcpCompiler? semanticCompiler = null)
+        ISemanticMcpCompiler? semanticCompiler = null,
+        GqlGateway.Application.Mcp.Pruning.ISemanticToolPruner? toolPruner = null)
     {
         _sessionStore = sessionStore ?? throw new ArgumentNullException(nameof(sessionStore));
         _toolRegistry = toolRegistry ?? throw new ArgumentNullException(nameof(toolRegistry));
         _guardrailService = guardrailService ?? throw new ArgumentNullException(nameof(guardrailService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _semanticCompiler = semanticCompiler;
+        _toolPruner = toolPruner;
     }
 
     public McpSessionContext CreateSession(string servicePrincipalId, string tenantId)
-        => CreateSession(servicePrincipalId, tenantId, null, null, null);
+        => CreateSession(servicePrincipalId, tenantId, null, null, null, null);
 
     public McpSessionContext CreateSession(
         string servicePrincipalId,
         string tenantId,
         string? userSid = null,
         IReadOnlyList<string>? roles = null,
-        IReadOnlyList<string>? groupSids = null)
+        IReadOnlyList<string>? groupSids = null,
+        string? clientIp = null)
     {
-        return _sessionStore.CreateSession(servicePrincipalId, tenantId, userSid, roles, groupSids);
+        return _sessionStore.CreateSession(servicePrincipalId, tenantId, userSid, roles, groupSids, clientIp);
     }
 
     public McpSessionContext? GetSession(string sessionId)
@@ -98,7 +102,7 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         {
             "initialize" => HandleInitialize(rpcId),
             "ping" => HandlePing(rpcId),
-            "tools/list" => HandleToolsList(rpcId),
+            "tools/list" => await HandleToolsListAsync(rpcId, root, cancellationToken).ConfigureAwait(false),
             "tools/call" => await HandleToolsCallAsync(rpcId, root, session, cancellationToken).ConfigureAwait(false),
             "resources/list" => await HandleResourcesListAsync(rpcId, session, cancellationToken).ConfigureAwait(false),
             "resources/read" => await HandleResourcesReadAsync(rpcId, root, session, cancellationToken).ConfigureAwait(false),
@@ -138,18 +142,41 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         """;
     }
 
-    private string HandleToolsList(object? id)
+    private async ValueTask<string> HandleToolsListAsync(
+        object? id,
+        JsonElement root,
+        CancellationToken cancellationToken)
     {
         var tools = _toolRegistry.GetAvailableTools();
+
+        // F-AI-07: Extract prompt if provided in params for dynamic Just-in-Time pruning
+        string? prompt = null;
+        if (root.TryGetProperty("params", out var paramsProp) && paramsProp.ValueKind == JsonValueKind.Object)
+        {
+            if (paramsProp.TryGetProperty("prompt", out var promptProp) && promptProp.ValueKind == JsonValueKind.String)
+            {
+                prompt = promptProp.GetString();
+            }
+            else if (paramsProp.TryGetProperty("query", out var queryProp) && queryProp.ValueKind == JsonValueKind.String)
+            {
+                prompt = queryProp.GetString();
+            }
+        }
+
+        if (_toolPruner != null && !string.IsNullOrWhiteSpace(prompt))
+        {
+            tools = await _toolPruner.PruneToolsAsync(prompt, tools, null, cancellationToken).ConfigureAwait(false);
+        }
+
         var toolItems = new List<string>(tools.Count);
 
         foreach (var t in tools)
         {
             toolItems.Add($$"""
             {
-              "name": "{{t.Name}}",
+              "name": "{{EscapeJson(t.Name)}}",
               "description": "{{EscapeJson(t.Description)}}",
-              "inputSchema": {{t.InputJsonSchema}}
+              "inputSchema": {{SafeRawJson(t.InputJsonSchema)}}
             }
             """);
         }
@@ -191,7 +218,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         var request = new McpToolCallRequest(toolName, argsJson, session.SessionId, id?.ToString());
         var result = await _guardrailService.ExecuteToolWithGuardrailAsync(request, session, cancellationToken).ConfigureAwait(false);
 
-        if (!result.IsSuccess)
+        // SEC M-17: Structured executor error results must be flagged as tool errors (isError:true).
+        if (!result.IsSuccess || AiDataGuardrailService.TryGetExecutorError(result.ContentJson, out _))
         {
             return $$"""
             {
@@ -201,7 +229,7 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
                 "content": [
                   {
                     "type": "text",
-                    "text": "{{EscapeJson(result.ErrorMessage ?? "Tool execution failed")}}"
+                    "text": "{{EscapeJson(result.ErrorMessage ?? (result.IsSuccess ? result.ContentJson : null) ?? "Tool execution failed")}}"
                   }
                 ],
                 "isError": true
@@ -255,6 +283,27 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
             string str => $"\"{EscapeJson(str)}\"",
             _ => "null"
         };
+    }
+
+    /// <summary>
+    /// Low (JSON injection): only embed well-formed JSON documents verbatim; anything else becomes an empty schema.
+    /// </summary>
+    private static string SafeRawJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return "{}";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.GetRawText();
+        }
+        catch (JsonException)
+        {
+            return "{}";
+        }
     }
 
     private static string EscapeJson(string? text)
@@ -316,10 +365,10 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
         {
             items.Add($$"""
             {
-              "uri": "{{r.Uri}}",
-              "name": "{{r.Name}}",
+              "uri": "{{EscapeJson(r.Uri)}}",
+              "name": "{{EscapeJson(r.Name)}}",
               "description": "{{EscapeJson(r.Description)}}",
-              "mimeType": "{{r.MimeType}}"
+              "mimeType": "{{EscapeJson(r.MimeType)}}"
             }
             """);
         }
@@ -366,8 +415,8 @@ public sealed class McpProtocolHandler : IMcpProtocolHandler
           "result": {
             "contents": [
               {
-                "uri": "{{target.Uri}}",
-                "mimeType": "{{target.MimeType}}",
+                "uri": "{{EscapeJson(target.Uri)}}",
+                "mimeType": "{{EscapeJson(target.MimeType)}}",
                 "text": "{{EscapeJson(target.Text)}}"
               }
             ]

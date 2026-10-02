@@ -2,9 +2,14 @@ namespace GqlGateway.Application.Governance.Interfaces;
 
 using System.Threading;
 using System.Threading.Tasks;
+using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
 
 public interface IPolicySimulationService
 {
-    Task<PolicySimulationResult> SimulateAsync(PolicySimulationRequest request, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Replays historical audit logs of <paramref name="effectiveTenant"/> against a draft policy.
+    /// The effective tenant MUST be derived server-side from the authenticated principal (SEC H-05).
+    /// </summary>
+    Task<PolicySimulationResult> SimulateAsync(PolicySimulationRequest request, TenantId effectiveTenant, CancellationToken cancellationToken = default);
 }

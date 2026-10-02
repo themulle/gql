@@ -25,6 +25,9 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
         _governanceRepo = governanceRepo;
     }
 
+    /// <summary>Must match GatewayExtensibilityMiddleware.ClientIpItemKey.</summary>
+    public const string ClientIpItemKey = "GatewayClientIp";
+
     public int Order => 10;
 
     public async ValueTask<IngressResult> OnIngressAsync(IngressContext context, CancellationToken cancellationToken = default)
@@ -54,6 +57,14 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
             {
                 _logger.LogWarning("Break-glass access attempt rejected: Break-glass is disabled globally.");
                 return IngressResult.Deny("Break-glass emergency bypass is disabled by gateway policy.", 403);
+            }
+
+            // SEC M-06: Anonymous callers can never activate break-glass (no flag, no audit entry),
+            // independent of RequireRoleForBreakGlass.
+            if (context.User?.Identity?.IsAuthenticated != true)
+            {
+                _logger.LogWarning("Break-glass access denied: Unauthenticated request attempted to invoke break-glass.");
+                return IngressResult.Deny("Unauthenticated requests cannot invoke emergency break-glass.", 401);
             }
 
             if (extOptions.RequireJustificationForBreakGlass)
@@ -116,7 +127,10 @@ public sealed partial class JustificationAndBreakGlassInterceptor : IIngressInte
                 var userSid = context.User?.Identity?.Name ?? "Anonymous";
                 var tenantIdStr = context.User?.FindFirst("tenant_id")?.Value;
                 var tenantId = GqlGateway.Domain.Common.TenantId.TryParse(tenantIdStr, out var tid) ? tid : GqlGateway.Domain.Common.TenantId.LegacySingleTenant;
-                var clientIp = context.GetHeader("X-Forwarded-For") ?? "unknown";
+                // SEC M-06: IP comes from the connection (trusted-proxy aware), not from the raw X-Forwarded-For header.
+                var clientIp = context.Items.TryGetValue(ClientIpItemKey, out var ipObj) && ipObj is string ipStr && !string.IsNullOrWhiteSpace(ipStr)
+                    ? ipStr
+                    : "unknown";
                 var auditEntry = new GqlGateway.Domain.Model.AuditLogEntry
                 {
                     Id = Guid.NewGuid(),

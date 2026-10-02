@@ -76,10 +76,10 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             }
         }
 
-        return MaskRecursive(data, aliasToFieldMap);
+        return MaskRecursive(data, aliasToFieldMap, null);
     }
 
-    private object? MaskRecursive(object? node, IReadOnlyDictionary<string, string>? aliasToFieldMap)
+    private object? MaskRecursive(object? node, IReadOnlyDictionary<string, string>? aliasToFieldMap, string? path)
     {
         if (node == null) return null;
 
@@ -88,13 +88,14 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             var result = new Dictionary<string, object?>(dict.Count, StringComparer.OrdinalIgnoreCase);
             foreach (var (k, v) in dict)
             {
-                if (ShouldMaskField(k, aliasToFieldMap, out var rule))
+                var childPath = AppendPath(path, k);
+                if (ShouldMaskField(k, childPath, aliasToFieldMap, out var rule))
                 {
                     result[k] = _maskingProvider.MaskValue(k, v, rule);
                 }
                 else
                 {
-                    result[k] = MaskRecursive(v, aliasToFieldMap);
+                    result[k] = MaskRecursive(v, aliasToFieldMap, childPath);
                 }
             }
             return result;
@@ -107,13 +108,14 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             {
                 var k = entry.Key?.ToString() ?? string.Empty;
                 var v = entry.Value;
-                if (ShouldMaskField(k, aliasToFieldMap, out var rule))
+                var childPath = AppendPath(path, k);
+                if (ShouldMaskField(k, childPath, aliasToFieldMap, out var rule))
                 {
                     result[k] = _maskingProvider.MaskValue(k, v, rule);
                 }
                 else
                 {
-                    result[k] = MaskRecursive(v, aliasToFieldMap);
+                    result[k] = MaskRecursive(v, aliasToFieldMap, childPath);
                 }
             }
             return result;
@@ -121,10 +123,11 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
 
         if (node is IEnumerable list && node is not string)
         {
+            // List elements share the path of the list field (indices are not part of the alias path).
             var resultList = new List<object?>();
             foreach (var item in list)
             {
-                resultList.Add(MaskRecursive(item, aliasToFieldMap));
+                resultList.Add(MaskRecursive(item, aliasToFieldMap, path));
             }
             return resultList;
         }
@@ -132,9 +135,24 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
         return node;
     }
 
-    private static bool ShouldMaskField(string fieldOrAliasName, IReadOnlyDictionary<string, string>? aliasToFieldMap, out MaskingRule rule)
+    /// <summary>
+    /// SEC (Federation alias collision): Builds the alias path, i.e. the chain of response keys separated by '.'
+    /// (GraphQL names cannot contain '.', so the separator is unambiguous).
+    /// </summary>
+    public static string AppendPath(string? parentPath, string responseKey)
+        => string.IsNullOrEmpty(parentPath) ? responseKey : parentPath + "." + responseKey;
+
+    /// <summary>
+    /// Returns true if the given (real) field name is treated as sensitive by the federated result masker.
+    /// </summary>
+    public static bool IsSensitiveField(string fieldName)
+        => !string.IsNullOrEmpty(fieldName) && IsSensitiveFieldName(fieldName, out _);
+
+    private static bool ShouldMaskField(string responseKey, string path, IReadOnlyDictionary<string, string>? aliasToFieldMap, out MaskingRule rule)
     {
-        if (aliasToFieldMap != null && aliasToFieldMap.TryGetValue(fieldOrAliasName, out var realFieldName))
+        // SEC (Federation alias collision): aliases are resolved per response path ("a.x"), not via a flat global map,
+        // so `{ a { x: email } b { x: id } }` masks a.x without the b.x alias overriding it (and vice versa).
+        if (aliasToFieldMap != null && aliasToFieldMap.TryGetValue(path, out var realFieldName))
         {
             if (IsSensitiveFieldName(realFieldName, out rule))
             {
@@ -142,7 +160,7 @@ public sealed class SubgraphResultMasker : ISubgraphResultMasker
             }
         }
 
-        return IsSensitiveFieldName(fieldOrAliasName, out rule);
+        return IsSensitiveFieldName(responseKey, out rule);
     }
 
     private static bool IsSensitiveFieldName(string fieldName, out MaskingRule rule)

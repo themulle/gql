@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using GqlGateway.Application.Governance.Interfaces;
 using GqlGateway.Application.Integrations.Backstage;
+using GqlGateway.Extensions.Backstage;
 using GqlGateway.Application.Interfaces;
 using GqlGateway.Application.SchemaRegistry;
 using GqlGateway.Domain.Model;

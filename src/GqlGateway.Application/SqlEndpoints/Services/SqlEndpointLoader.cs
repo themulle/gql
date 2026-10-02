@@ -256,8 +256,43 @@ public sealed class SqlEndpointLoader : IDisposable
     }
 
     /// <summary>
+    /// SEC H-20: Builds the SELECT for a dbt model from validated, quoted identifiers and writes it via <see cref="SyncDbtModelToFile"/>.
+    /// </summary>
+    public string SyncDbtModelDefinitionToFile(
+        string directoryPath,
+        string name,
+        string schema,
+        IEnumerable<string>? columns,
+        string? summary = null,
+        string? dataSource = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schema);
+
+        string quotedName = QuoteDbtIdentifier(name, nameof(name));
+        string quotedSchema = QuoteDbtIdentifier(schema, nameof(schema));
+
+        var quotedColumns = new List<string>();
+        if (columns != null)
+        {
+            foreach (var column in columns)
+            {
+                quotedColumns.Add(QuoteDbtIdentifier(column, nameof(columns)));
+            }
+        }
+
+        string projection = quotedColumns.Count > 0 ? string.Join(", ", quotedColumns) : "*";
+        // No trailing ';': GovernedSqlExecutionService parses RawSql as a single statement (singleStatement: statement EOF).
+        string sql = $"SELECT {projection}\nFROM {quotedSchema}.{quotedName}";
+
+        return SyncDbtModelToFile(directoryPath, name, sql, summary, dataSource);
+    }
+
+    /// <summary>
     /// Writes a dbt model or query definition into the configured queries directory.
     /// Option B writes directly into the directory so Option A can hot-reload it.
+    /// SEC H-20: strict name validation, directory containment, header sanitizing and no overwrite of non-dbt files.
     /// </summary>
     public string SyncDbtModelToFile(
         string directoryPath,
@@ -271,29 +306,85 @@ public sealed class SqlEndpointLoader : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
 
-        if (!Directory.Exists(directoryPath))
+        if (!DbtNameRegex.IsMatch(name))
         {
-            Directory.CreateDirectory(directoryPath);
+            throw new ArgumentException($"Invalid dbt endpoint name '{SanitizeHeaderValue(name)}'. Allowed: ^[A-Za-z0-9_]{{1,128}}$.", nameof(name));
         }
 
-        string filePath = Path.Combine(directoryPath, $"{name}.sql");
+        // Directive injection: the SQL body must not carry its own '-- @...' header directives.
+        if (HeaderRegex.IsMatch(sql))
+        {
+            throw new ArgumentException("Generated SQL must not contain '-- @' header directives.", nameof(sql));
+        }
+
+        string fullDirectory = Path.GetFullPath(directoryPath);
+        if (!Directory.Exists(fullDirectory))
+        {
+            Directory.CreateDirectory(fullDirectory);
+        }
+
+        string normalizedDirectory = fullDirectory.EndsWith(Path.DirectorySeparatorChar)
+            ? fullDirectory
+            : fullDirectory + Path.DirectorySeparatorChar;
+
+        string filePath = Path.GetFullPath(Path.Combine(fullDirectory, $"{name}.sql"));
+        if (!filePath.StartsWith(normalizedDirectory, StringComparison.Ordinal))
+        {
+            throw new System.Security.SecurityException($"dbt endpoint file for '{name}' would be written outside of '{fullDirectory}'.");
+        }
+
+        if (File.Exists(filePath))
+        {
+            var existingInfo = new FileInfo(filePath);
+            if (existingInfo.LinkTarget != null)
+            {
+                throw new System.Security.SecurityException($"Refusing to write dbt endpoint through symbolic link '{filePath}'.");
+            }
+
+            if (!IsDbtGeneratedFile(filePath))
+            {
+                throw new InvalidOperationException($"Refusing to overwrite non-dbt-generated SQL endpoint file '{filePath}'.");
+            }
+        }
+        else if (_registry.TryGet(name, out var existingDefinition) &&
+                 existingDefinition != null &&
+                 !existingDefinition.RawSql.Contains(DbtGeneratedMarker, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Refusing to shadow existing non-dbt SQL endpoint '{name}'.");
+        }
+
+        string? safeSummary = SanitizeHeaderValue(summary);
+        string? safeDataSource = SanitizeHeaderValue(dataSource);
+        if (!string.IsNullOrWhiteSpace(safeDataSource) && !DbtDataSourceRegex.IsMatch(safeDataSource))
+        {
+            throw new ArgumentException($"Invalid data source name '{safeDataSource}' for dbt endpoint '{name}'.", nameof(dataSource));
+        }
 
         using var sw = new StreamWriter(filePath, false, System.Text.Encoding.UTF8);
+        sw.WriteLine(DbtGeneratedMarker);
         sw.WriteLine($"-- @name: {name}");
-        if (!string.IsNullOrWhiteSpace(summary))
+        if (!string.IsNullOrWhiteSpace(safeSummary))
         {
-            sw.WriteLine($"-- @summary: {summary}");
+            sw.WriteLine($"-- @summary: {safeSummary}");
         }
-        if (!string.IsNullOrWhiteSpace(dataSource))
+        if (!string.IsNullOrWhiteSpace(safeDataSource))
         {
-            sw.WriteLine($"-- @datasource: {dataSource}");
+            sw.WriteLine($"-- @datasource: {safeDataSource}");
         }
         if (parameters != null)
         {
             foreach (var p in parameters)
             {
+                if (!DbtNameRegex.IsMatch(p.Name))
+                {
+                    throw new ArgumentException($"Invalid parameter name '{SanitizeHeaderValue(p.Name)}'.", nameof(parameters));
+                }
+
                 string req = p.IsRequired ? "!" : "";
-                string def = p.DefaultValue != null ? $" = \"{p.DefaultValue}\"" : "";
+                string? safeDefault = p.DefaultValue != null
+                    ? SanitizeHeaderValue(Convert.ToString(p.DefaultValue, CultureInfo.InvariantCulture))?.Replace("\"", string.Empty, StringComparison.Ordinal)
+                    : null;
+                string def = safeDefault != null ? $" = \"{safeDefault}\"" : "";
                 sw.WriteLine($"-- @param {p.Name}: {MapClrTypeToName(p.ClrType)}{req}{def}");
             }
         }
@@ -302,6 +393,66 @@ public sealed class SqlEndpointLoader : IDisposable
 
         _logger?.LogInformation("Synchronized dbt model to SQL file at '{FilePath}'.", filePath);
         return filePath;
+    }
+
+    /// <summary>
+    /// Marker written as the first line of every dbt-generated endpoint file.
+    /// </summary>
+    public const string DbtGeneratedMarker = "-- @generated_by: gqlgateway-dbt-sync";
+
+    private static readonly Regex DbtNameRegex = new(
+        @"^[A-Za-z0-9_]{1,128}\z",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
+    private static readonly Regex DbtDataSourceRegex = new(
+        @"^[A-Za-z0-9_.\-]{1,128}\z",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
+
+    private static bool IsDbtGeneratedFile(string filePath)
+    {
+        using var reader = new StreamReader(filePath, System.Text.Encoding.UTF8);
+        string? firstLine = reader.ReadLine();
+        return firstLine != null && string.Equals(firstLine.Trim(), DbtGeneratedMarker, StringComparison.Ordinal);
+    }
+
+    private static string QuoteDbtIdentifier(string? identifier, string paramName)
+    {
+        if (string.IsNullOrWhiteSpace(identifier) || !DbtNameRegex.IsMatch(identifier))
+        {
+            throw new ArgumentException($"Invalid dbt identifier '{SanitizeHeaderValue(identifier)}'. Allowed: ^[A-Za-z0-9_]{{1,128}}$.", paramName);
+        }
+
+        return $"\"{identifier}\"";
+    }
+
+    /// <summary>
+    /// Removes line breaks and all other control / separator characters that could inject additional header directives.
+    /// </summary>
+    internal static string? SanitizeHeaderValue(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return value;
+
+        var sb = new System.Text.StringBuilder(Math.Min(value.Length, 512));
+        foreach (char c in value)
+        {
+            if (sb.Length >= 512) break;
+
+            var category = char.GetUnicodeCategory(c);
+            if (char.IsControl(c) ||
+                category == UnicodeCategory.LineSeparator ||
+                category == UnicodeCategory.ParagraphSeparator ||
+                category == UnicodeCategory.Format)
+            {
+                sb.Append(' ');
+                continue;
+            }
+
+            sb.Append(c);
+        }
+
+        return sb.ToString().Trim();
     }
 
     private static void ParseParamHeader(

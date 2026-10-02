@@ -106,37 +106,11 @@ public sealed class SemanticMcpCompiler(
         CancellationToken ct = default)
     {
         var allTables = await _metadataRepo.GetAllTablesAsync(ct).ConfigureAwait(false);
-        var isOpenSchema = _options?.Value.IsOpenSchemaAllowed == true || _options?.Value.IsMcpAuthBypassed == true;
-        if (principal != null && _consentRepo != null && !isOpenSchema)
+        // SEC H-02: OpenSchema no longer opens MCP resources; only the explicit (production-blocked) MCP auth bypass does.
+        var isMcpAuthBypassed = _options?.Value.IsMcpAuthBypassed == true;
+        if (_consentRepo != null && !isMcpAuthBypassed)
         {
-            var userSid = principal.GetUserSid();
-            var roles = principal.GetUserRoles();
-            bool isAnonymous = userSid == null || string.Equals(userSid.Value.Value, "ANONYMOUS_MCP_CLIENT", StringComparison.OrdinalIgnoreCase);
-            bool isGlobalAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin") || isAnonymous;
-
-            if (!isGlobalAdmin)
-            {
-                var groupSids = principal.GetGroupSids();
-                var tenantId = principal.GetTenantId();
-
-                if (userSid != null)
-                {
-                    var allSubjects = groupSids.Append(userSid.Value).ToList();
-                    var activeConsents = await _consentRepo.GetAllActiveConsentsForSubjectsAsync(
-                        allSubjects, roles, DateTimeOffset.UtcNow, tenantId, ct).ConfigureAwait(false);
-
-                    var allowedTableIds = activeConsents
-                        .Where(c => c.Effect == ConsentEffect.Allow)
-                        .Select(c => c.TableIdentifier)
-                        .ToHashSet();
-
-                    allTables = allTables.Where(t => allowedTableIds.Contains(t.Identifier)).ToList();
-                }
-                else
-                {
-                    allTables = Array.Empty<TableMetadata>();
-                }
-            }
+            allTables = await FilterTablesForPrincipalAsync(allTables, principal, ct).ConfigureAwait(false);
         }
 
         var filtered = string.IsNullOrWhiteSpace(domainScope)
@@ -282,6 +256,49 @@ public sealed class SemanticMcpCompiler(
         }
 
         return resources;
+    }
+
+    /// <summary>
+    /// SEC M-28: anonymous callers (no principal, no SID, the synthetic MCP anonymous SID) see no tables at all;
+    /// only explicit governance roles see the whole catalog; everybody else sees only tables with an active
+    /// Allow consent within the caller's own tenant.
+    /// </summary>
+    private async Task<IReadOnlyList<TableMetadata>> FilterTablesForPrincipalAsync(
+        IReadOnlyList<TableMetadata> allTables,
+        System.Security.Claims.ClaimsPrincipal? principal,
+        CancellationToken ct)
+    {
+        if (principal == null || _consentRepo == null)
+        {
+            return Array.Empty<TableMetadata>();
+        }
+
+        var userSid = principal.GetUserSid();
+        bool isAnonymous = userSid == null || string.Equals(userSid.Value.Value, "ANONYMOUS_MCP_CLIENT", StringComparison.OrdinalIgnoreCase);
+        if (isAnonymous)
+        {
+            return Array.Empty<TableMetadata>();
+        }
+
+        var roles = principal.GetUserRoles();
+        bool isGlobalAdmin = roles.Contains("GovernanceAdmin") || roles.Contains("ClusterAdmin");
+        if (isGlobalAdmin)
+        {
+            return allTables;
+        }
+
+        var groupSids = principal.GetGroupSids();
+        var tenantId = principal.GetTenantId();
+        var allSubjects = groupSids.Append(userSid!.Value).ToList();
+        var activeConsents = await _consentRepo.GetAllActiveConsentsForSubjectsAsync(
+            allSubjects, roles, DateTimeOffset.UtcNow, tenantId, ct).ConfigureAwait(false);
+
+        var allowedTableIds = activeConsents
+            .Where(c => c.Effect == ConsentEffect.Allow && c.TenantId == tenantId)
+            .Select(c => c.TableIdentifier)
+            .ToHashSet();
+
+        return allTables.Where(t => allowedTableIds.Contains(t.Identifier)).ToList();
     }
 
     private static string MapDataTypeToJsonType(string? dataType)
