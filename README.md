@@ -81,6 +81,7 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - **Secure HTTP-based SQL Execution**: Execute ad-hoc SQL queries over HTTP (`POST /api/v1/sql`) modeled after Trino/Presto, completely eliminating the need for exposed database ports (1433/5432) or uncontrolled database logins.
   - **AST-Level Security Linter & Rewriter**: Uses the high-performance `TrinoSqlEngine` / ANTLR4 parser to enforce strict read-only semantics (`SELECT` only), prevent multi-statement injection (`;`), block system functions (`@@`, comments), and enforce maximum result pagination limits.
   - **Deep AST Row-Level Security Pushdown**: Injects Casbin ABAC rules and correlated subquery filters (`IN`, `EXISTS`) transparently into the `WHERE` tree before the query hits the database.
+  - **DML guardrails (`WebSql.AllowDml`, regular option)**: DML requires a role from `WebSql.DmlWriterRoles`; `UPDATE`/`DELETE` without `WHERE` or with a trivially true condition (`WHERE 1=1`, `WHERE true`, `… OR 1=1`, `id = id`) are rejected on the original statement (`RlsOptions.RejectUnfilteredDml`, default `true`); each DML statement runs in a transaction and is rolled back if it affects more than `WebSql.MaxAffectedRows` rows (default `1000`, `0` = unlimited); executed, rejected and failed DML is written to the audit chain (`WEBSQL_DML_EXECUTED` / `WEBSQL_DML_REJECTED` / `WEBSQL_DML_FAILED`: statement type, tables, affected rows, actor, tenant, SHA-256 of the SQL – no SQL text or literal values). Per-table write permissions via a Casbin `write` action are planned.
 
 - **Enterprise Governance Mutations & 4-Eyes Segregation of Duties**:
   - **Fail-Closed Mutation Suite**: Granular GraphQL mutations (`requestConsent`, `approveConsent`, `rejectConsent`, `revokeConsent`, `recertifyConsent`) requiring explicit tenant authorization.
@@ -135,10 +136,23 @@ Instead of traditional coarse-grained role-based access control (RBAC), access t
   - **M2M / Batch Service Accounts**: Dedicated Client-Credentials and mutual TLS (mTLS) authentication schema with service principal consents (`SP-<client_id>` SIDs) distinct from interactive user accounts.
 
 - **Developer Onboarding & "Insecure Modes" (Explicit Risk Controls)**:
-  - Pragmatic onboarding for external integrations and incoming webhooks using strictly separated risk-prefixed configurations:
-  - **`warn_` Prefix (Medium Impact)**: `warn_allow_all_cors_origins`, `warn_disable_rate_limiting`, `warn_bypass_query_cost_limits`.
-  - **`danger_` Prefix (Critical Security Impact)**: `danger_allow_anonymous_queries`, `danger_bypass_authorization`, `danger_bypass_webhook_signature_validation`, `danger_allow_untrusted_certificates`, `danger_allow_anonymous_webhooks`.
-  - Fail-closed by default: All insecure flags default to `false` and log conspicuous operational alerts when engaged.
+  - Pragmatic onboarding for external integrations and incoming webhooks. Every security switch defaults to `false` and is classified in `GatewayOptions.GetAllActiveBypasses()` (the configuration property names are kept for compatibility; a historic `warn_*` name may be classified as DANGER):
+  - **DANGER** (genuinely not recommended): outside `Development` the gateway refuses to start (`ValidateGatewayOptions`); the health component `SecurityConfiguration` is unhealthy (outside Development `/health/ready` → 503); startup banner "INSECURE GETTING-STARTED CONFIGURATION".
+  - **WARN** (mildly security-relevant): permitted in Production, but loud: console warning at startup, health component stays healthy with the description `degraded: …`, listed in the Development health details (`activeBypasses`, `activeWarnings`). Production health responses expose no additional details.
+  - **Regular options** (e.g. `WebSql.AllowDml`): no message.
+  - `securityMode` in the Development health details: `INSECURE_DEV_MODE` (any DANGER), `STRICT_WITH_WARNINGS` (only WARN), `STRICT_ZERO_TRUST` (none). The `X-Gateway-Insecure-Mode` header (Development only) lists all DANGER and WARN entries.
+
+  | Switch (configuration property) | Class |
+  |---|---|
+  | `danger_allow_anonymous_access`, `danger_bypass_consent_checks`, `danger_disable_column_masking`, `danger_allow_insecure_transport`, `danger_bypass_webhook_signature_validation` / `danger_allow_anonymous_webhooks`, `danger_allow_untrusted_certificates`, `danger_bypass_mcp_auth`, `danger_bypass_lakehouse_auth`, `danger_bypass_websql_governance` / `WebSql.danger_bypass_sql_governance`, `OpenSchema` / `Catalog.OpenSchema` | DANGER |
+  | `warn_allow_unmasked_ai_access`, `warn_mock_external_systems_if_unreachable`, `warn_auto_approve_access_requests`, `warn_disable_rate_limiting`, `warn_allow_unsigned_s3_requests`, `warn_ignore_webhook_timestamp_tolerance` | DANGER (historic `warn_` name) |
+  | `warn_allow_all_cors_origins`, `warn_relaxed_query_limits`, `warn_enable_introspection`, `warn_fallback_default_tenant_for_webhooks` | WARN |
+  | `Catalog.AllowLegacyPayloadOnlySignature`, `Itsm.LegacyGlobalWebhookSecret`, `OpenMetadata.AutoCreateConsents` | WARN |
+  | `AllowDevelopmentInContainer` | WARN (additionally only effective together with `Development`, see container check) |
+  | `WebSql.warn_allow_dml`, `Insecure.warn_allow_websql_dml` (legacy aliases) | WARN – use `WebSql.AllowDml` |
+  | `WebSql.AllowDml` (+ mandatory `WebSql.DmlWriterRoles`) | regular option, no message |
+
+  - Independent hard checks stay in place in every non-Development environment: Quickstart profile, `EnableTestAuthHandler`, anonymous access, `SeedDemoData`, valid HMAC Key-Vault reference, Development-in-container opt-in; `WebSql.AllowDml` without `DmlWriterRoles` aborts startup in every environment.
 
 - **Two-Phase ITSM Integration & AI-Assisted Governance**:
   - **ITSM Webhook Integration**: Bi-directional integration with **ServiceNow** and **Jira** for approval workflows. Webhooks secured with timing-safe HMAC-SHA256 verification and 5-minute replay prevention.

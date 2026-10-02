@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using GqlGateway.Application.Federation.Interfaces;
+using GqlGateway.Application.Federation.Services;
 using GqlGateway.Domain.Options;
 using HotChocolate.Execution;
 using Microsoft.AspNetCore.Http;
@@ -94,7 +95,7 @@ public sealed class SubgraphResultMaskingMiddleware
         {
             if (def is HotChocolate.Language.OperationDefinitionNode op)
             {
-                TraverseSelections(op.SelectionSet, map, fragments, new HashSet<string>(StringComparer.Ordinal));
+                TraverseSelections(op.SelectionSet, null, map, fragments, new HashSet<string>(StringComparer.Ordinal));
             }
         }
 
@@ -103,6 +104,7 @@ public sealed class SubgraphResultMaskingMiddleware
 
     private static void TraverseSelections(
         HotChocolate.Language.SelectionSetNode? selectionSet,
+        string? parentPath,
         Dictionary<string, string> map,
         IReadOnlyDictionary<string, HotChocolate.Language.FragmentDefinitionNode> fragments,
         HashSet<string> activeFragments)
@@ -113,21 +115,31 @@ public sealed class SubgraphResultMaskingMiddleware
         {
             if (sel is HotChocolate.Language.FieldNode field)
             {
-                if (field.Alias != null && !string.IsNullOrWhiteSpace(field.Alias.Value))
+                // SEC (Federation alias collision): key the map by response path (chain of response keys), not by the bare alias.
+                var hasAlias = field.Alias != null && !string.IsNullOrWhiteSpace(field.Alias.Value);
+                var responseKey = hasAlias ? field.Alias!.Value : field.Name.Value;
+                var path = SubgraphResultMasker.AppendPath(parentPath, responseKey);
+
+                if (hasAlias)
                 {
-                    map[field.Alias.Value] = field.Name.Value;
+                    // The same path can be produced by different type conditions (unions/interfaces); keep a sensitive target.
+                    if (!map.TryGetValue(path, out var existing) || !SubgraphResultMasker.IsSensitiveField(existing))
+                    {
+                        map[path] = field.Name.Value;
+                    }
                 }
-                TraverseSelections(field.SelectionSet, map, fragments, activeFragments);
+
+                TraverseSelections(field.SelectionSet, path, map, fragments, activeFragments);
             }
             else if (sel is HotChocolate.Language.InlineFragmentNode frag)
             {
-                TraverseSelections(frag.SelectionSet, map, fragments, activeFragments);
+                TraverseSelections(frag.SelectionSet, parentPath, map, fragments, activeFragments);
             }
             else if (sel is HotChocolate.Language.FragmentSpreadNode spread &&
                      fragments.TryGetValue(spread.Name.Value, out var fragmentDef) &&
                      activeFragments.Add(fragmentDef.Name.Value))
             {
-                TraverseSelections(fragmentDef.SelectionSet, map, fragments, activeFragments);
+                TraverseSelections(fragmentDef.SelectionSet, parentPath, map, fragments, activeFragments);
                 activeFragments.Remove(fragmentDef.Name.Value);
             }
         }

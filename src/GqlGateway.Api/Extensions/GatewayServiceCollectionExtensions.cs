@@ -217,10 +217,12 @@ public static class GatewayServiceCollectionExtensions
                 SyncTimeout = gatewayOptions.Caching.Redis.SyncTimeoutMs,
                 AbortOnConnectFail = false
             };
+            RedisConnectionSecurity.ApplyGarnetClientTls(garnetConfig, gatewayOptions.Caching.Garnet); // SEC H-01: optional TLS
             services.AddSingleton<IConnectionMultiplexer>(sp => ConnectionMultiplexer.Connect(garnetConfig));
             services.AddSingleton<IEventBus, RedisEventBus>();
             services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
+            services.AddSingleton<ITokenRevocationService, RedisTokenRevocationService>(); // SEC M-14 (GAP-B)
         }
         else if (gatewayOptions.Caching.Redis.Enabled)
         {
@@ -233,12 +235,14 @@ public static class GatewayServiceCollectionExtensions
             services.AddSingleton<IEventBus, RedisEventBus>();
             services.AddSingleton<IRateLimiterService, RedisRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, RedisIdempotencyStore>();
+            services.AddSingleton<ITokenRevocationService, RedisTokenRevocationService>(); // SEC M-14 (GAP-B)
         }
         else
         {
             services.AddSingleton<IEventBus, InProcessChannelEventBus>();
             services.AddSingleton<IRateLimiterService, InMemoryRateLimiterService>();
             services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
+            services.AddSingleton<ITokenRevocationService, InMemoryTokenRevocationService>(); // SEC M-14 (GAP-B)
         }
 
         services.AddSingleton<IEpochValidationService, EpochValidationService>();
@@ -426,6 +430,7 @@ public static class GatewayServiceCollectionExtensions
             var metaRepo = sp.GetService<ITableMetadataRepository>();
             var opts = sp.GetService<Microsoft.Extensions.Options.IOptions<GatewayOptions>>();
             var env = sp.GetService<IHostEnvironment>();
+            var maskingProvider = sp.GetService<IColumnMaskingProvider>();
 
             if (sqlConnFactory != null && metaRepo != null)
             {
@@ -434,7 +439,8 @@ public static class GatewayServiceCollectionExtensions
                     connectionFactory: sqlConnFactory,
                     metadataRepository: metaRepo,
                     options: opts,
-                    environment: env);
+                    environment: env,
+                    maskingProvider: maskingProvider);
                 registry.RegisterConnector("default-sql", defaultSqlConnector);
                 registry.RegisterConnector("sql", defaultSqlConnector);
             }
@@ -904,15 +910,34 @@ public static class GatewayServiceCollectionExtensions
             }
         }
 
-        if (options.HasAnySecurityBypassActive)
+        // Security switch semantics: DANGER = blocked outside Development (see below), WARN = permitted everywhere
+        // but reported loudly at startup, regular options = no message (see GatewayOptions.GetAllActiveBypasses).
+        var dangerBypasses = options.GetActiveDangerBypasses();
+        var warnings = options.GetActiveWarnings();
+        if (dangerBypasses.Count > 0)
         {
-            var bypasses = string.Join("\n  - ", options.GetAllActiveBypasses());
+            var bypasses = string.Join("\n  - ", dangerBypasses);
             Console.WriteLine(
                 $"\n================================================================================\n" +
                 $"⚠️⚠️⚠️  INSECURE GETTING-STARTED CONFIGURATION DETECTED  ⚠️⚠️⚠️\n" +
                 $"The following security bypasses are currently ACTIVE:\n  - {bypasses}\n" +
                 $"NEVER USE THESE INSECURE SETTINGS IN PRODUCTION ENVIRONMENTS!\n" +
                 $"================================================================================\n");
+        }
+
+        if (warnings.Count > 0)
+        {
+            // WARN entries are permitted in Production; they are reported but never abort startup.
+            Console.WriteLine(
+                "[GqlGateway] WARNING: security-relevant settings are active (permitted, review regularly):\n  - " +
+                string.Join("\n  - ", warnings));
+        }
+
+        if (options.WebSql.AllowDml && options.WebSql.DmlWriterRoles.Count == 0)
+        {
+            throw new ValidationException(
+                "Konfigurationsfehler: WebSql.AllowDml=true erfordert mindestens eine Rolle in WebSql.DmlWriterRoles " +
+                "(SEC M-20: DML ist nur für explizit berechtigte Rollen zulässig).");
         }
 
         if (!environment.IsDevelopment() && options.IsQuickstartProfile)
@@ -967,17 +992,12 @@ public static class GatewayServiceCollectionExtensions
                 throw new ValidationException("Sicherheitsverletzung: danger_allow_anonymous_access darf AUSSCHLIESSLICH in der Development-Umgebung true sein!");
             }
 
-            var activeBypasses = options.GetAllActiveBypasses();
-            var disallowedInProd = activeBypasses
-                .Where(b => b.StartsWith("DANGER:", StringComparison.OrdinalIgnoreCase) ||
-                            b.StartsWith("WARN:", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            if (disallowedInProd.Count > 0)
+            // Only DANGER entries are blocked outside Development; WARN entries are permitted (reported above).
+            if (dangerBypasses.Count > 0)
             {
                 throw new ValidationException(
                     $"Kritische Sicherheitsverletzung: Folgende Sicherheits-Bypasses dürfen AUSSCHLIESSLICH in der Development-Umgebung aktiv sein:\n  - " +
-                    string.Join("\n  - ", disallowedInProd));
+                    string.Join("\n  - ", dangerBypasses));
             }
         }
 

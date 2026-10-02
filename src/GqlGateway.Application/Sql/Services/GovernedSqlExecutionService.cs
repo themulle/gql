@@ -81,7 +81,7 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         TenantId tenantId,
         CancellationToken ct = default)
     {
-        var rewrite = await RewriteCoreAsync(rawSql, user, tenantId, _options.Value.WebSql.DefaultDataSourceName, ct).ConfigureAwait(false);
+        var rewrite = await RewriteCoreAsync(rawSql, user, tenantId, _options.Value.WebSql.DefaultDataSourceName, dmlContext: null, ct).ConfigureAwait(false);
         return rewrite.Sql;
     }
 
@@ -90,6 +90,7 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         ClaimsPrincipal user,
         TenantId tenantId,
         string dataSourceName,
+        DmlAuditContext? dmlContext,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(rawSql))
@@ -146,6 +147,16 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         }
 
         bool isDml = metadata.StatementType is SqlStatementType.Insert or SqlStatementType.Update or SqlStatementType.Delete;
+        if (isDml && dmlContext != null)
+        {
+            // Captured before any DML policy check so that rejected DML statements are audited as well.
+            dmlContext.StatementType = metadata.StatementType;
+            dmlContext.Tables = metadata.ReferencedTables
+                .Select(t => t.FullName)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
         if (metadata.StatementType != SqlStatementType.Select && (!isDml || !_options.Value.IsWebSqlDmlAllowed))
         {
             throw new WebSqlPolicyException(
@@ -167,9 +178,13 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             {
                 throw new WebSqlPolicyException("WebSQL DML requires an authorized writer role (WebSql.DmlWriterRoles). Consent and ABAC policies only grant read access.");
             }
+
+            // TODO: per-table write permission via a Casbin action "write" (in addition to DmlWriterRoles) is planned
+            // for a later iteration; today the ABAC evaluation below only receives gql.action = "write" as attribute.
         }
 
         // 3. Danger Bypass: If WebSQL governance is dangerously bypassed in dev/test, return raw SQL
+        //    (DANGER: Development-only; this also skips the unfiltered-DML guardrail of the RLS rewriter).
         if (_options.Value.IsWebSqlGovernanceBypassed)
         {
             _logger?.LogWarning("[DANGER] WebSQL governance bypass is active! Query will be executed without RLS or AST masking.");
@@ -401,6 +416,8 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             EnforceFunctionPolicy = true,
             AllowInlineFunctionDefinitions = false,
             RejectMaskedColumnsInDml = true,
+            // DML guardrail: UPDATE/DELETE without WHERE or with a trivially true WHERE are rejected (original statement).
+            RejectUnfilteredDml = true,
             PolicyProvider = new DefaultRlsPolicyProvider(
                 defaultFilter: denyAllFilter,
                 predicate: tbl => !tablesWithoutRls.Contains(tbl),
@@ -420,6 +437,12 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         catch (WebSqlPolicyException)
         {
             throw;
+        }
+        catch (UnfilteredDmlException unfilteredEx)
+        {
+            throw new WebSqlPolicyException(
+                "UPDATE/DELETE statements in WebSQL require a restricting WHERE clause (statements without WHERE or with a trivially true condition such as 'WHERE 1=1' are rejected).",
+                unfilteredEx);
         }
         catch (SecurityException secEx)
         {
@@ -454,8 +477,9 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(rowWriter);
 
-        // SEC C-03: dataSource must be on the allowlist (default data source + WebSql.AllowedDataSources)
-        string dsName = ResolveAllowedDataSource(request.DataSourceName);
+        // SEC C-03: dataSource must be on the allowlist (default data source + WebSql.AllowedDataSources),
+        // restricted further by WebSql.TenantDataSourceAllowlist if the tenant has an entry.
+        string dsName = ResolveAllowedDataSource(request.DataSourceName, tenantId);
 
         // SEC H-13: Client parameters must not collide with gateway-internal parameters
         if (request.Parameters != null)
@@ -469,11 +493,24 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             }
         }
 
-        var rewrite = await RewriteCoreAsync(request.Sql, user, tenantId, dsName, ct).ConfigureAwait(false);
+        var dmlContext = new DmlAuditContext();
+        GovernedRewrite rewrite;
+        try
+        {
+            rewrite = await RewriteCoreAsync(request.Sql, user, tenantId, dsName, dmlContext, ct).ConfigureAwait(false);
+        }
+        catch (SecurityException policyEx) when (dmlContext.IsDml)
+        {
+            // Rejected DML statements are recorded in the audit chain as well.
+            await RecordDmlAuditAsync(tenantId, user, dsName, dmlContext, "WEBSQL_DML_REJECTED", "DENY", request.Sql, affectedRows: null, reason: policyEx is WebSqlPolicyException ? policyEx.Message : "policy violation", synthetic: false, ct).ConfigureAwait(false);
+            throw;
+        }
+
         string securedSql = rewrite.Sql;
 
-        // Audit Log Entry (secured SQL only contains parameter placeholders, never masking keys)
-        if (_auditLogRepository != null)
+        // Audit Log Entry (secured SQL only contains parameter placeholders, never masking keys).
+        // DML statements are audited separately (WEBSQL_DML_*), without SQL text that may carry literal data values.
+        if (_auditLogRepository != null && !dmlContext.IsDml)
         {
             var userSid = ResolveUserSid(user);
             await _auditLogRepository.RecordAuditEventAsync(new AuditLogEntry
@@ -510,6 +547,11 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 throw new InvalidOperationException($"No active database connection configured for data source '{dsName}'. Synthetic fallback is disabled in production.");
             }
 
+            if (dmlContext.IsDml)
+            {
+                await RecordDmlAuditAsync(tenantId, user, dsName, dmlContext, "WEBSQL_DML_EXECUTED", "ALLOW", securedSql, affectedRows: 0, reason: null, synthetic: true, ct).ConfigureAwait(false);
+            }
+
             // Synthetic demo reader for testing/dev environments without a backing DB
             using var syntheticReader = new SyntheticDataTableReader(securedSql);
             await rowWriter(syntheticReader, ct).ConfigureAwait(false);
@@ -542,9 +584,111 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             }
         }
 
+        if (dmlContext.IsDml)
+        {
+            await ExecuteDmlInTransactionAsync(connection, command, tenantId, user, dsName, dmlContext, securedSql, ct).ConfigureAwait(false);
+
+            // DML produces no result set; hand an empty reader to the writer (same shape as before).
+            using var emptyTable = new DataTable();
+            using var emptyReader = emptyTable.CreateDataReader();
+            await rowWriter(emptyReader, ct).ConfigureAwait(false);
+            return securedSql;
+        }
+
         await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
         await rowWriter(reader, ct).ConfigureAwait(false);
         return securedSql;
+    }
+
+    /// <summary>
+    /// DML guardrail: executes the statement inside a transaction and rolls it back when more rows than
+    /// WebSql.MaxAffectedRows are affected (0 = unlimited). Fail-closed: if the provider cannot report the number of
+    /// affected rows while a limit is configured, the statement is rolled back as well. Every outcome is audited.
+    /// </summary>
+    private async Task ExecuteDmlInTransactionAsync(
+        DbConnection connection,
+        DbCommand command,
+        TenantId tenantId,
+        ClaimsPrincipal user,
+        string dsName,
+        DmlAuditContext dmlContext,
+        string securedSql,
+        CancellationToken ct)
+    {
+        long maxAffectedRows = _options.Value.WebSql.MaxAffectedRows;
+        int affectedRows;
+
+        await using var transaction = await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
+        command.Transaction = transaction;
+
+        try
+        {
+            affectedRows = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            await RecordDmlAuditAsync(tenantId, user, dsName, dmlContext, "WEBSQL_DML_FAILED", "DENY", securedSql, affectedRows: null, reason: ex.GetType().Name, synthetic: false, ct).ConfigureAwait(false);
+            throw;
+        }
+
+        if (maxAffectedRows > 0 && (affectedRows < 0 || affectedRows > maxAffectedRows))
+        {
+            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            await RecordDmlAuditAsync(tenantId, user, dsName, dmlContext, "WEBSQL_DML_REJECTED", "DENY", securedSql, affectedRows, reason: "MaxAffectedRows exceeded; rolled back", synthetic: false, ct).ConfigureAwait(false);
+
+            throw new WebSqlPolicyException(affectedRows < 0
+                ? "The number of rows affected by the DML statement could not be verified against WebSql.MaxAffectedRows. The statement was rolled back."
+                : $"The DML statement affected {affectedRows} rows, which exceeds the configured limit of {maxAffectedRows} (WebSql.MaxAffectedRows). The statement was rolled back.");
+        }
+
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
+        await RecordDmlAuditAsync(tenantId, user, dsName, dmlContext, "WEBSQL_DML_EXECUTED", "ALLOW", securedSql, affectedRows, reason: null, synthetic: false, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes a WEBSQL_DML_* entry into the audit chain. The SQL text is NOT stored (it may contain literal data values);
+    /// only its SHA-256 hash, the statement type, the target tables and the number of affected rows are recorded.
+    /// </summary>
+    private async Task RecordDmlAuditAsync(
+        TenantId tenantId,
+        ClaimsPrincipal user,
+        string dsName,
+        DmlAuditContext dmlContext,
+        string eventType,
+        string decision,
+        string sqlForHash,
+        int? affectedRows,
+        string? reason,
+        bool synthetic,
+        CancellationToken ct)
+    {
+        if (_auditLogRepository == null)
+        {
+            return;
+        }
+
+        string sqlHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sqlForHash)));
+        await _auditLogRepository.RecordAuditEventAsync(new AuditLogEntry
+        {
+            TenantId = tenantId,
+            EventType = eventType,
+            ActorSid = ResolveUserSid(user),
+            TargetTable = string.Join(",", dmlContext.Tables),
+            Decision = decision,
+            TraceId = Guid.NewGuid().ToString("N"),
+            DetailsJson = JsonSerializer.Serialize(new
+            {
+                statementType = dmlContext.StatementType?.ToString(),
+                tables = dmlContext.Tables,
+                dataSource = dsName,
+                affectedRows,
+                maxAffectedRows = _options.Value.WebSql.MaxAffectedRows,
+                sqlSha256 = sqlHash,
+                reason,
+                synthetic
+            })
+        }, ct).ConfigureAwait(false);
     }
 
     public async Task<GovernedSqlResult> ExecuteQueryBufferedAsync(
@@ -595,9 +739,63 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
 
     /// <summary>
     /// SEC C-03: Resolves the requested data source against the allowlist. The default data source is always allowed,
-    /// any other source must be listed in WebSql.AllowedDataSources.
+    /// any other source must be listed in WebSql.AllowedDataSources. If WebSql.TenantDataSourceAllowlist has an entry
+    /// for the tenant, the result must additionally be listed there (intersection).
     /// </summary>
-    private string ResolveAllowedDataSource(string? requested)
+    private string ResolveAllowedDataSource(string? requested, TenantId tenantId)
+    {
+        string resolved = ResolveGloballyAllowedDataSource(requested);
+        if (!IsDataSourceAllowedForTenant(_options.Value.WebSql, tenantId, resolved))
+        {
+            throw new WebSqlPolicyException("The requested data source is not enabled for this tenant.");
+        }
+
+        return resolved;
+    }
+
+    /// <summary>
+    /// SEC C-03: Per-tenant data source allowlist. Tenants without an entry keep the global allowlist.
+    /// Keys are matched case-insensitively; if several keys match, the data source must be listed in all of them
+    /// (only ever more restrictive). An empty list denies every data source for the tenant.
+    /// </summary>
+    internal static bool IsDataSourceAllowedForTenant(WebSqlOptions webSqlOptions, TenantId tenantId, string dataSourceName)
+    {
+        var tenantAllowlist = webSqlOptions.TenantDataSourceAllowlist;
+        if (tenantAllowlist == null || tenantAllowlist.Count == 0 || string.IsNullOrEmpty(tenantId.Value))
+        {
+            return true;
+        }
+
+        foreach (var entry in tenantAllowlist)
+        {
+            if (!string.Equals(entry.Key, tenantId.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            bool listed = false;
+            if (entry.Value != null)
+            {
+                foreach (var candidate in entry.Value)
+                {
+                    if (string.Equals(candidate, dataSourceName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        listed = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!listed)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private string ResolveGloballyAllowedDataSource(string? requested)
     {
         var webSqlOptions = _options.Value.WebSql;
         string defaultName = webSqlOptions.DefaultDataSourceName;
@@ -851,6 +1049,18 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
     }
 
     private sealed record GovernedRewrite(string Sql, IReadOnlyDictionary<string, object?> InternalParameters);
+
+    /// <summary>
+    /// Collects the DML classification during governance so that executed AND rejected DML can be audited.
+    /// </summary>
+    private sealed class DmlAuditContext
+    {
+        public SqlStatementType? StatementType { get; set; }
+
+        public IReadOnlyList<string> Tables { get; set; } = [];
+
+        public bool IsDml => StatementType is SqlStatementType.Insert or SqlStatementType.Update or SqlStatementType.Delete;
+    }
 
     /// <summary>
     /// Lightweight synthetic reader for developer / unit test environments where no physical DB is attached.

@@ -281,7 +281,7 @@ public sealed class SecurityReview20261002InfraTests : IDisposable
 
         var secured = RedisConnectionSecurity.Apply(
             ConfigurationOptions.Parse("redis:6379"),
-            new RedisOptions { PasswordSecretRef = "redis-password" },
+            new RedisOptions { PasswordSecretRef = "redis-password", UseTls = true }, // GAP-C H-01: TLS is mandatory for non-loopback Redis outside Development
             SecretProvider("s3cr3t"),
             env);
         secured.Password.ShouldBe("s3cr3t");

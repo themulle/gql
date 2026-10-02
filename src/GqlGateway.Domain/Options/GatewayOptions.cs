@@ -87,6 +87,12 @@ public sealed class GatewayOptions
     public bool IsLakehouseAuthBypassed => Insecure.danger_bypass_lakehouse_auth || Lakehouse.danger_bypass_lakehouse_auth;
     public bool AreUnsignedS3RequestsAllowed => Insecure.warn_allow_unsigned_s3_requests || Lakehouse.warn_allow_unsigned_s3_requests;
     public bool IsWebSqlDmlAllowed => WebSql.AllowDml || WebSql.warn_allow_dml || Insecure.warn_allow_websql_dml;
+
+    /// <summary>
+    /// Legacy aliases (WebSql.warn_allow_dml / Insecure.warn_allow_websql_dml) for <see cref="WebSqlOptions.AllowDml"/>.
+    /// They unlock the same DML path and are reported as WARN with the hint to use WebSql.AllowDml instead.
+    /// </summary>
+    public bool IsLegacyWebSqlDmlSwitchActive => WebSql.warn_allow_dml || Insecure.warn_allow_websql_dml;
     public bool IsWebSqlGovernanceBypassed => WebSql.danger_bypass_sql_governance || Insecure.danger_bypass_websql_governance;
 
     /// <summary>
@@ -95,39 +101,68 @@ public sealed class GatewayOptions
     /// </summary>
     public bool IsOpenSchemaExplicitlyEnabled => OpenSchema || Catalog.OpenSchema;
 
-    // SEC H-06 / M-34 / C-04: Legacy and container opt-ins weaken protections and are reported like the other bypasses.
+    // SEC H-06 / M-34 / C-04: Legacy and container opt-ins weaken protections and are reported as WARN.
     public bool IsLegacyGlobalItsmWebhookSecretAllowed => Itsm.LegacyGlobalWebhookSecret;
     public bool IsLegacyCatalogPayloadOnlySignatureAllowed => Catalog.AllowLegacyPayloadOnlySignature;
 
-    public bool HasAnySecurityBypassActive =>
-        IsAnonymousAccessAllowed ||
-        IsConsentBypassed ||
-        IsColumnMaskingDisabled ||
-        IsInsecureTransportAllowed ||
-        IsAllCorsAllowed ||
-        IsRateLimitingDisabled ||
-        AreQueryLimitsRelaxed ||
-        IsIntrospectionForced ||
-        IsAutoApproveEnabled ||
-        IsWebhookSignatureBypassed ||
-        AreUntrustedCertificatesAllowed ||
-        IsWebhookTimestampToleranceIgnored ||
-        IsWebhookTenantFallbackAllowed ||
-        AreExternalSystemsMockedIfUnreachable ||
-        IsMcpAuthBypassed ||
-        IsMcpUnmaskedAllowed ||
-        IsLakehouseAuthBypassed ||
-        AreUnsignedS3RequestsAllowed ||
-        IsOpenSchemaExplicitlyEnabled ||
-        IsWebSqlGovernanceBypassed ||
-        IsWebSqlDmlAllowed ||
-        IsLegacyGlobalItsmWebhookSecretAllowed ||
-        IsLegacyCatalogPayloadOnlySignatureAllowed ||
-        AllowDevelopmentInContainer;
+    // SEC H-19: Consents created automatically from OpenMetadata policies bypass the approval workflow (reported as WARN).
+    public bool IsOpenMetadataAutoCreateConsentsEnabled => OpenMetadata.AutoCreateConsents;
 
+    /// <summary>
+    /// True when any DANGER or WARN entry is active (see <see cref="GetAllActiveBypasses"/>). Used for developer-facing
+    /// transparency only (X-Gateway-Insecure-Mode header in Development, startup banner); it does NOT decide whether the
+    /// gateway may start or is healthy. Use <see cref="HasAnyDangerBypassActive"/> for enforcement decisions.
+    /// </summary>
+    public bool HasAnySecurityBypassActive => GetAllActiveBypasses().Count > 0;
+
+    /// <summary>
+    /// True when at least one DANGER entry is active. DANGER aborts startup outside Development and marks the
+    /// "SecurityConfiguration" health component unhealthy.
+    /// </summary>
+    public bool HasAnyDangerBypassActive => GetActiveDangerBypasses().Count > 0;
+
+    /// <summary>
+    /// True when at least one WARN entry is active. WARN is permitted in Production but reported (startup warning,
+    /// health description "degraded: ...").
+    /// </summary>
+    public bool HasAnyWarningActive => GetActiveWarnings().Count > 0;
+
+    /// <summary>Active DANGER entries (prefix "DANGER:").</summary>
+    public IReadOnlyList<string> GetActiveDangerBypasses() => FilterByPrefix(DangerPrefix);
+
+    /// <summary>Active WARN entries (prefix "WARN:").</summary>
+    public IReadOnlyList<string> GetActiveWarnings() => FilterByPrefix(WarnPrefix);
+
+    public const string DangerPrefix = "DANGER:";
+    public const string WarnPrefix = "WARN:";
+
+    private List<string> FilterByPrefix(string prefix)
+    {
+        var result = new List<string>();
+        foreach (var entry in GetAllActiveBypasses())
+        {
+            if (entry.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                result.Add(entry);
+            }
+        }
+
+        return result;
+    }
+
+    // Security switch semantics (decided 2026-10-02):
+    // - DANGER: genuinely not recommended. Outside Development startup is aborted (ValidateGatewayOptions) and the
+    //   health component "SecurityConfiguration" reports unhealthy.
+    // - WARN:   mildly security-relevant, permitted in Production but loud: startup warning, the health component stays
+    //   healthy with the description "degraded: ...", and the list is shown in the Development health details.
+    // - Regular options (e.g. WebSql.AllowDml) are not reported at all.
+    // Configuration property names are kept for compatibility (a "warn_*" property may be classified as DANGER);
+    // only the list prefix determines the classification.
     public IReadOnlyList<string> GetAllActiveBypasses()
     {
         var list = new List<string>();
+
+        // --- DANGER ---
         if (IsAnonymousAccessAllowed) list.Add("DANGER:danger_allow_anonymous_access");
         if (IsConsentBypassed) list.Add("DANGER:danger_bypass_consent_checks");
         if (IsColumnMaskingDisabled) list.Add("DANGER:danger_disable_column_masking");
@@ -138,20 +173,23 @@ public sealed class GatewayOptions
         if (IsLakehouseAuthBypassed) list.Add("DANGER:danger_bypass_lakehouse_auth");
         if (IsWebSqlGovernanceBypassed) list.Add("DANGER:danger_bypass_websql_governance");
         if (IsOpenSchemaExplicitlyEnabled) list.Add("DANGER:open_schema (OpenSchema / Catalog.OpenSchema)");
-        if (IsLegacyGlobalItsmWebhookSecretAllowed) list.Add("DANGER:itsm_legacy_global_webhook_secret (Itsm.LegacyGlobalWebhookSecret)");
+        if (IsMcpUnmaskedAllowed) list.Add("DANGER:warn_allow_unmasked_ai_access");
+        if (AreExternalSystemsMockedIfUnreachable) list.Add("DANGER:warn_mock_external_systems_if_unreachable");
+        if (IsAutoApproveEnabled) list.Add("DANGER:warn_auto_approve_access_requests");
+        if (IsRateLimitingDisabled) list.Add("DANGER:warn_disable_rate_limiting");
+        if (AreUnsignedS3RequestsAllowed) list.Add("DANGER:warn_allow_unsigned_s3_requests");
+        if (IsWebhookTimestampToleranceIgnored) list.Add("DANGER:warn_ignore_webhook_timestamp_tolerance");
+
+        // --- WARN ---
         if (IsAllCorsAllowed) list.Add("WARN:warn_allow_all_cors_origins");
-        if (IsRateLimitingDisabled) list.Add("WARN:warn_disable_rate_limiting");
         if (AreQueryLimitsRelaxed) list.Add("WARN:warn_relaxed_query_limits");
         if (IsIntrospectionForced) list.Add("WARN:warn_enable_introspection");
-        if (IsAutoApproveEnabled) list.Add("WARN:warn_auto_approve_access_requests");
-        if (IsWebhookTimestampToleranceIgnored) list.Add("WARN:warn_ignore_webhook_timestamp_tolerance");
         if (IsWebhookTenantFallbackAllowed) list.Add("WARN:warn_fallback_default_tenant_for_webhooks");
-        if (AreExternalSystemsMockedIfUnreachable) list.Add("WARN:warn_mock_external_systems_if_unreachable");
-        if (IsMcpUnmaskedAllowed) list.Add("WARN:warn_allow_unmasked_ai_access");
-        if (AreUnsignedS3RequestsAllowed) list.Add("WARN:warn_allow_unsigned_s3_requests");
-        if (IsWebSqlDmlAllowed) list.Add("WARN:warn_allow_websql_dml");
         if (IsLegacyCatalogPayloadOnlySignatureAllowed) list.Add("WARN:catalog_legacy_payload_only_signature (Catalog.AllowLegacyPayloadOnlySignature)");
+        if (IsLegacyGlobalItsmWebhookSecretAllowed) list.Add("WARN:itsm_legacy_global_webhook_secret (Itsm.LegacyGlobalWebhookSecret)");
         if (AllowDevelopmentInContainer) list.Add("WARN:allow_development_in_container (AllowDevelopmentInContainer)");
+        if (IsOpenMetadataAutoCreateConsentsEnabled) list.Add("WARN:openmetadata_auto_create_consents (OpenMetadata.AutoCreateConsents)");
+        if (IsLegacyWebSqlDmlSwitchActive) list.Add("WARN:warn_allow_websql_dml (legacy alias, use WebSql.AllowDml)");
         return list;
     }
 }
@@ -226,7 +264,7 @@ public sealed class InsecureGettingStartedOptions
     public bool warn_allow_all_cors_origins { get; init; } = false;
 
     /// <summary>
-    /// [WARN] Deaktiviert IP- und SID-basiertes Rate-Limiting vollständig (keine HTTP 429 Antworten).
+    /// [DANGER, Name historisch warn_] Deaktiviert IP- und SID-basiertes Rate-Limiting vollständig (keine HTTP 429 Antworten).
     /// </summary>
     public bool warn_disable_rate_limiting { get; init; } = false;
 
@@ -241,12 +279,12 @@ public sealed class InsecureGettingStartedOptions
     public bool warn_enable_introspection { get; init; } = false;
 
     /// <summary>
-    /// [WARN] Schaltet automatische Sofort-Genehmigung für Tabellenzugriffsanträge ein.
+    /// [DANGER, Name historisch warn_] Schaltet automatische Sofort-Genehmigung für Tabellenzugriffsanträge ein.
     /// </summary>
     public bool warn_auto_approve_access_requests { get; init; } = false;
 
     /// <summary>
-    /// [WARN] Ignoriert die 5-Minuten-Gültigkeitsprüfung für Webhook-Timestamps (Replay-Schutz).
+    /// [DANGER, Name historisch warn_] Ignoriert die 5-Minuten-Gültigkeitsprüfung für Webhook-Timestamps (Replay-Schutz).
     /// </summary>
     public bool warn_ignore_webhook_timestamp_tolerance { get; init; } = false;
 
@@ -256,18 +294,18 @@ public sealed class InsecureGettingStartedOptions
     public bool warn_fallback_default_tenant_for_webhooks { get; init; } = false;
 
     /// <summary>
-    /// [WARN] Simuliert erfolgreiche Mock-Antworten, wenn externe Fremdsysteme (ServiceNow, Jira) nicht erreichbar sind.
+    /// [DANGER, Name historisch warn_] Simuliert erfolgreiche Mock-Antworten, wenn externe Fremdsysteme (ServiceNow, Jira) nicht erreichbar sind.
     /// </summary>
     public bool warn_mock_external_systems_if_unreachable { get; init; } = false;
 
     /// <summary>
-    /// [WARN] Deaktiviert das automatische PII- und DSGVO-Art.-9-Masking im AI Data Guardrail des MCP-Servers.
+    /// [DANGER, Name historisch warn_] Deaktiviert das automatische PII- und DSGVO-Art.-9-Masking im AI Data Guardrail des MCP-Servers.
     /// Rohdaten werden unmaskiert an das Kontextfenster von KI-Agenten und LLMs gestreamt.
     /// </summary>
     public bool warn_allow_unmasked_ai_access { get; init; } = false;
 
     /// <summary>
-    /// [WARN] Erlaubt unsignierte, anonyme S3/Object-Store-Anfragen an lokale MinIO- oder Test-Instanzen.
+    /// [DANGER, Name historisch warn_] Erlaubt unsignierte, anonyme S3/Object-Store-Anfragen an lokale MinIO- oder Test-Instanzen.
     /// </summary>
     public bool warn_allow_unsigned_s3_requests { get; init; } = false;
 
@@ -277,7 +315,7 @@ public sealed class InsecureGettingStartedOptions
     public bool danger_bypass_websql_governance { get; init; } = false;
 
     /// <summary>
-    /// [WARN] Erlaubt DML-Operationen (INSERT, UPDATE, DELETE) im WebSQL-Endpunkt (/api/v1/sql).
+    /// [WARN] Legacy-Alias für WebSql.AllowDml: Erlaubt DML-Operationen (INSERT, UPDATE, DELETE) im WebSQL-Endpunkt (/api/v1/sql).
     /// </summary>
     public bool warn_allow_websql_dml { get; init; } = false;
 }
@@ -445,6 +483,34 @@ public sealed class GarnetOptions
     /// zufälliges Passwort erzeugt, das nur der In-Process-Client kennt.
     /// </summary>
     public string? PasswordSecretRef { get; init; }
+
+    /// <summary>
+    /// SEC H-01: Optional TLS for the embedded Garnet server (--tls). Garnet is bound to loopback outside
+    /// Development, so TLS is defense in depth only. Requires <see cref="TlsCertFile"/> (PFX).
+    /// </summary>
+    public bool EnableTls { get; init; } = false;
+
+    /// <summary>
+    /// SEC H-01: Path to the PFX certificate for Garnet TLS (--cert-file-name).
+    /// </summary>
+    public string? TlsCertFile { get; init; }
+
+    /// <summary>
+    /// SEC H-01: Secret reference for the PFX password (--cert-password); resolved via IKeyVaultSecretProvider
+    /// or environment variable.
+    /// </summary>
+    public string? TlsCertPasswordSecretRef { get; init; }
+
+    /// <summary>
+    /// SEC H-01: Host name the in-process client expects in the Garnet server certificate (default: Host).
+    /// </summary>
+    public string? TlsSslHost { get; init; }
+
+    /// <summary>
+    /// SEC H-01: Optional SHA-256 or SHA-1 thumbprints (hex) of accepted Garnet server certificates
+    /// (pinning, e.g. for self-signed certificates). Empty = regular chain validation.
+    /// </summary>
+    public List<string> TlsAllowedServerCertificateThumbprints { get; init; } = [];
 }
 
 public sealed class L1MemoryCacheOptions
@@ -472,6 +538,23 @@ public sealed class RedisOptions
     /// (Standard: DataMasking.HmacSecretKeyVaultRef).
     /// </summary>
     public string? L2IntegrityKeyVaultRef { get; init; }
+
+    /// <summary>
+    /// SEC H-01: Use TLS for the Redis connection. Outside Development TLS is mandatory for non-loopback endpoints
+    /// (start fails otherwise). <c>ssl=true</c> in the connection string has the same effect.
+    /// </summary>
+    public bool UseTls { get; init; } = false;
+
+    /// <summary>
+    /// SEC H-01: Expected host name in the Redis server certificate (SNI/validation), if it differs from the endpoint.
+    /// </summary>
+    public string? SslHost { get; init; }
+
+    /// <summary>
+    /// SEC H-01: Optional SHA-256 or SHA-1 thumbprints (hex) of accepted Redis server certificates (pinning).
+    /// When set, only these certificates are accepted; empty = regular chain and host name validation.
+    /// </summary>
+    public List<string> AllowedServerCertificateThumbprints { get; init; } = [];
 }
 
 public sealed class EpochValidationOptions
@@ -521,6 +604,11 @@ public sealed class GraphQLOptions
     [Range(10, 10000)] public int MaxInClauseBatchSize { get; init; } = 500;
     // SEC M-13: Harte Obergrenze für Root-Felder/Aliase pro GraphQL-Operation (Alias-Amplifikation).
     [Range(1, 200)] public int MaxRootFieldsPerOperation { get; init; } = 10;
+    /// <summary>
+    /// SEC M-14 (GAP-B): Interval in seconds after which open WebSocket subscriptions re-check whether the
+    /// caller's token was revoked (ITokenRevocationService). Revoked sessions are closed.
+    /// </summary>
+    [Range(5, 3600)] public int SubscriptionRevalidationSeconds { get; init; } = 60;
     public List<string> TrustedOrigins { get; init; } = [];
     public bool warn_allow_all_cors_origins { get; init; } = false;
     public bool warn_relaxed_query_limits { get; init; } = false;
@@ -849,6 +937,18 @@ public sealed class ResourceGroupsOptions
     /// </summary>
     [Range(1, 10000)] public int MaxPersistentConnectionsPerPrincipal { get; init; } = 5;
     [Range(1, 100000)] public int MaxPersistentConnectionsPerTenant { get; init; } = 50;
+
+    /// <summary>
+    /// SEC H-07: Share of a tier's MaxConcurrency a single tenant may hold at once (percent, min. 1 slot).
+    /// The tenant's queue share is derived proportionally from MaxQueueDepth.
+    /// </summary>
+    [Range(1, 100)] public int MaxConcurrentPerTenantPercent { get; init; } = 50;
+
+    /// <summary>
+    /// SEC H-07: Absolute per-tenant concurrency limit per tier (capped at the tier's MaxConcurrency).
+    /// 0 = use <see cref="MaxConcurrentPerTenantPercent"/>.
+    /// </summary>
+    [Range(0, 1000)] public int MaxConcurrentPerTenant { get; init; } = 0;
 }
 
 public sealed record ResourceGroupTierConfigOptions(
@@ -935,11 +1035,28 @@ public sealed class WebSqlOptions
     public List<string> AllowedDataSources { get; init; } = [];
 
     /// <summary>
+    /// SEC C-03: Optional per-tenant data source allowlist (tenant id -> data sources). If the tenant has an
+    /// entry, only these data sources are allowed, intersected with the global allowlist
+    /// (DefaultDataSourceName + AllowedDataSources). Tenants without an entry keep the global allowlist.
+    /// Applies to WebSQL and SQL endpoints (both run through GovernedSqlExecutionService).
+    /// </summary>
+    public Dictionary<string, List<string>> TenantDataSourceAllowlist { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// SEC M-20: Roles that are authorized to execute DML via WebSQL (in addition to AllowDml).
     /// Consent and Casbin only evaluate read access, so DML is rejected unless the caller holds one of these roles.
     /// </summary>
     public List<string> DmlWriterRoles { get; init; } = [];
 
+    /// <summary>
+    /// DML guardrail: maximum number of rows a single WebSQL DML statement may affect. The statement runs in a
+    /// transaction; if more rows are affected it is rolled back and rejected. 0 = unlimited.
+    /// </summary>
+    public long MaxAffectedRows { get; init; } = 1000;
+
+    /// <summary>
+    /// Legacy alias for <see cref="AllowDml"/> (reported as WARN with the hint to use WebSql.AllowDml).
+    /// </summary>
     public bool warn_allow_dml { get; init; } = false;
     public bool danger_bypass_sql_governance { get; init; } = false;
 }

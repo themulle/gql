@@ -538,6 +538,7 @@ public sealed class SecurityReview20261002GraphQLTests
         var map = SubgraphResultMaskingMiddleware.ExtractAliasToFieldMap(doc);
 
         map.ShouldNotBeNull();
-        map["harmless"].ShouldBe("email");
+        // Alias map is keyed by response path (GAP-B PART-FED).
+        map["customer.harmless"].ShouldBe("email");
     }
 }

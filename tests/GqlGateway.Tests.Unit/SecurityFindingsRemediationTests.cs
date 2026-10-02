@@ -341,9 +341,10 @@ public class SecurityFindingsRemediationTests
             }
         };
 
+        // warn_disable_rate_limiting is classified as DANGER (property name kept for compatibility).
         var ex = Should.Throw<ValidationException>(() =>
             GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, mockEnv));
-        ex.Message.ShouldContain("WARN:warn_disable_rate_limiting");
+        ex.Message.ShouldContain("DANGER:warn_disable_rate_limiting");
     }
 
     [Fact]
@@ -381,7 +382,7 @@ public class SecurityFindingsRemediationTests
     }
 
     [Fact]
-    public void ValidateGatewayOptions_InProduction_WarnRelaxedQueryLimits_ThrowsValidationException()
+    public void ValidateGatewayOptions_InProduction_WarnRelaxedQueryLimits_IsPermittedAsWarning()
     {
         var mockEnv = Substitute.For<IHostEnvironment>();
         mockEnv.EnvironmentName.Returns("Production");
@@ -391,12 +392,14 @@ public class SecurityFindingsRemediationTests
             Insecure = new InsecureGettingStartedOptions
             {
                 warn_relaxed_query_limits = true
-            }
+            },
+            DataMasking = new DataMaskingOptions { HmacSecretKeyVaultRef = "vault://keys/prod-hmac" }
         };
 
-        var ex = Should.Throw<ValidationException>(() =>
-            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, mockEnv));
-        ex.Message.ShouldContain("WARN:warn_relaxed_query_limits");
+        // WARN entries are permitted in Production (reported, not blocking).
+        options.GetActiveWarnings().ShouldContain("WARN:warn_relaxed_query_limits");
+        Should.NotThrow(() =>
+            GatewayServiceCollectionExtensions.ValidateGatewayOptions(options, mockEnv, _ => null));
     }
 
     [Fact]

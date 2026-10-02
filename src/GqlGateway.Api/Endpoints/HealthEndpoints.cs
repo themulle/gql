@@ -12,6 +12,21 @@ using Microsoft.Extensions.Hosting;
 
 public static class HealthEndpoints
 {
+    /// <summary>
+    /// Security mode reported in the Development health details: any DANGER entry -> "INSECURE_DEV_MODE",
+    /// only WARN entries -> "STRICT_WITH_WARNINGS", none -> "STRICT_ZERO_TRUST".
+    /// </summary>
+    internal static string GetSecurityMode(GatewayOptions gatewayOptions)
+    {
+        ArgumentNullException.ThrowIfNull(gatewayOptions);
+        if (gatewayOptions.HasAnyDangerBypassActive)
+        {
+            return "INSECURE_DEV_MODE";
+        }
+
+        return gatewayOptions.HasAnyWarningActive ? "STRICT_WITH_WARNINGS" : "STRICT_ZERO_TRUST";
+    }
+
     public static IEndpointRouteBuilder MapHealthEndpoints(this IEndpointRouteBuilder app, GatewayOptions gatewayOptions, IHostEnvironment environment)
     {
         app.MapGet("/health/live", () =>
@@ -22,7 +37,7 @@ public static class HealthEndpoints
                 {
                     status = "Live",
                     timestamp = DateTimeOffset.UtcNow,
-                    securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST"
+                    securityMode = GetSecurityMode(gatewayOptions)
                 });
             }
 
@@ -54,8 +69,9 @@ public static class HealthEndpoints
                         {
                             status = "Unhealthy",
                             timestamp = DateTimeOffset.UtcNow,
-                            securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST",
+                            securityMode = GetSecurityMode(gatewayOptions),
                             activeBypasses = gatewayOptions.GetAllActiveBypasses(),
+                            activeWarnings = gatewayOptions.GetActiveWarnings(),
                             components = report.Components
                         }, statusCode: StatusCodes.Status503ServiceUnavailable);
                     }
@@ -74,8 +90,9 @@ public static class HealthEndpoints
                 {
                     status = "Ready",
                     timestamp = DateTimeOffset.UtcNow,
-                    securityMode = gatewayOptions.HasAnySecurityBypassActive ? "INSECURE_DEV_MODE" : "STRICT_ZERO_TRUST",
-                    activeBypasses = gatewayOptions.GetAllActiveBypasses()
+                    securityMode = GetSecurityMode(gatewayOptions),
+                    activeBypasses = gatewayOptions.GetAllActiveBypasses(),
+                    activeWarnings = gatewayOptions.GetActiveWarnings()
                 });
             }
 

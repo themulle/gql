@@ -11,6 +11,8 @@ namespace GqlGateway.Infrastructure.Security;
 
 public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
 {
+    private const string ItsmWebhookSecretInstancePrefix = "itsm:webhook-secret:";
+
     private readonly IConfiguration _configuration;
     private readonly IHostEnvironment _environment;
     private readonly Microsoft.Extensions.Logging.ILogger<DefaultEnvironmentSecretProvider>? _logger;
@@ -57,7 +59,8 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
         // 3. Strictly bounded well-known aliases (exact or prefix match only, preventing accidental cross-secret collisions)
         // SEC H-06: Instance-specific ITSM references ("itsm:<name>:<instance>", e.g. itsm:webhook-secret:{instanceId})
         // never fall back to the global well-known secret; otherwise every instance would share the global key.
-        if (secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) && IsInstanceSpecificReference(secretRef))
+        var isInstanceSpecificItsmRef = secretRef.StartsWith("itsm:", StringComparison.OrdinalIgnoreCase) && IsInstanceSpecificReference(secretRef);
+        if (isInstanceSpecificItsmRef)
         {
             _logger?.LogDebug("Secret reference '{SecretRef}' is instance-specific; no global alias fallback is applied.", secretRef);
         }
@@ -102,6 +105,13 @@ public sealed class DefaultEnvironmentSecretProvider : IKeyVaultSecretProvider
                 _logger?.LogDebug("Resolved secret reference '{SecretRef}' using direct environment variable '{CandidateKey}'.", secretRef, key);
                 return Encoding.UTF8.GetBytes(envVal);
             }
+        }
+
+        // SEC H-06: An unresolved instance-specific ITSM secret is "not found" in every environment. The Development
+        // placeholder (reference name as key) would be a publicly known HMAC key for that instance.
+        if (isInstanceSpecificItsmRef && secretRef.StartsWith(ItsmWebhookSecretInstancePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Sicherheitsfehler: Das instanzspezifische Secret '{secretRef}' ist nicht konfiguriert.");
         }
 
         // In Development, allow using the secret reference itself as dev key

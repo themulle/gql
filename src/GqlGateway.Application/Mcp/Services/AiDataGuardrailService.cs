@@ -387,17 +387,17 @@ public sealed class AiDataGuardrailService : IAiDataGuardrailService
         }
 
         // SEC M-17: Structured executor error results (deny / execution failure / not available) are reported as
-        // tool errors (MCP isError:true) and are not audited as ALLOW.
+        // tool errors (MCP isError:true) and are not audited as ALLOW. GAP07: the audit vocabulary is ALLOW/DENY
+        // (PolicySimulationService treats every non-DENY value as ALLOW), so errors are recorded as DENY with the code in the details.
         if (TryGetExecutorError(rawDataJson, out var errorCode))
         {
-            var errorDecision = string.Equals(errorCode, "FORBIDDEN", StringComparison.OrdinalIgnoreCase) ? "DENY" : "ERROR";
-            activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, errorDecision.ToLowerInvariant());
-            McpDiagnostics.RecordGuardrailVerdict(errorDecision.ToLowerInvariant(), tool.Name, wasMasked, false);
+            activity?.SetTag(McpDiagnostics.GenAiGuardrailVerdictKey, "deny");
+            McpDiagnostics.RecordGuardrailVerdict("deny", tool.Name, wasMasked, false);
 
             await RecordAuditEventAsync(
                 tool.Name,
                 sessionContext,
-                decision: errorDecision,
+                decision: "DENY",
                 details: $"Tool execution returned an error result ({errorCode ?? "UNKNOWN"}).",
                 isMasked: wasMasked,
                 truncated: false,
