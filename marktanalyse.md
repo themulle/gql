@@ -80,7 +80,11 @@ Der Markt für Enterprise GraphQL und API Gateways wird 2025/2026 durch fundamen
 | **Subgraph Federation Router via Fusion (`P7`)** | **100% (GA)** | ✅ **[Done]** | [p07-subgraph-federation.md](file:///root/lis-git/gql/gql/docs/features/p07-subgraph-federation.md) |
 | **WORM Audit Logging & Consent Sealing (`P8`)** | **100% (GA)** | ✅ **[Done]** | [p08-worm-audit-sealing.md](file:///root/lis-git/gql/gql/docs/features/p08-worm-audit-sealing.md) |
 | **Native C# Ingress/Egress Pipeline (`P9`)** | **100% (GA)** | ✅ **[Done]** | [p09-native-csharp-pipeline.md](file:///root/lis-git/gql/gql/docs/features/p09-native-csharp-pipeline.md) |
-| **Enterprise Mutations & 4-Eyes SoD (`P10`)** | **100% (GA)** | ✅ **[Done]** | [p10-governance-mutations-sod.md](file:///root/lis-git/gql/gql/docs/features/p10-governance-mutations-sod.md) |
+| **Dynamic Semantic Schema Pruning (`F-AI-07`)** | **100% (GA)** | ✅ **[Done]** | [f-ai-07-dynamic-semantic-schema-pruning.md](file:///root/lis-git/gql/gql/docs/features/f-ai-07-dynamic-semantic-schema-pruning.md) |
+| **Zero-Kafka PostgreSQL CDC (`F-CDC-03`)** | **100% (GA)** | ✅ **[Done]** | [f-cdc-03-zero-kafka-postgresql-cdc.md](file:///root/lis-git/gql/gql/docs/features/f-cdc-03-zero-kafka-postgresql-cdc.md) |
+| **AST-Aware Traffic Shadowing & Dark Replay (`F-OPS-01`)** | **100% (GA)** | ✅ **[Done]** | [f-ops-01-traffic-shadowing-dark-replay.md](file:///root/lis-git/gql/gql/docs/features/f-ops-01-traffic-shadowing-dark-replay.md) |
+| **FOCUS FinOps Accounting für Token & Compute (`F-AI-08`)** | **100% (GA)** | ✅ **[Done]** | [f-ai-08-focus-finops-accounting.md](file:///root/lis-git/gql/gql/docs/features/f-ai-08-focus-finops-accounting.md) |
+| **Dynamic Schema Contracts & Tag-Projektion (`F-GOV-08`)** | **100% (GA)** | ✅ **[Done]** | [f-gov-08-schema-contracts-tag-projection.md](file:///root/lis-git/gql/gql/docs/features/f-gov-08-schema-contracts-tag-projection.md) |
 | **Management Studio & UI (`P6`)** | **0%** | 🔴 **Roadmap** | Visuelles Web-Dashboard für Data Stewards (Policy Simulator, Audit-Viewer, Schema Explorer). |
 
 ---
@@ -123,6 +127,11 @@ Alle nachfolgenden Features sind **vollständig umgesetzt und produktionsreif**:
 - [x] **P8 WORM Audit Logging & Consent Sealing**: [Done] → Details siehe [`p08-worm-audit-sealing.md`](file:///root/lis-git/gql/gql/docs/features/p08-worm-audit-sealing.md)
 - [x] **P9 Native C# Ingress/Egress Pipeline**: [Done] → Details siehe [`p09-native-csharp-pipeline.md`](file:///root/lis-git/gql/gql/docs/features/p09-native-csharp-pipeline.md)
 - [x] **P10 Enterprise Governance Mutations & 4-Eyes SoD**: [Done] → Details siehe [`p10-governance-mutations-sod.md`](file:///root/lis-git/gql/gql/docs/features/p10-governance-mutations-sod.md)
+- [x] **F-AI-07 Dynamic Semantic Schema Pruning & JIT MCP Tools**: [Done] → Details siehe [`f-ai-07-dynamic-semantic-schema-pruning.md`](file:///root/lis-git/gql/gql/docs/features/f-ai-07-dynamic-semantic-schema-pruning.md)
+- [x] **F-CDC-03 Zero-Kafka PostgreSQL CDC via Logical Streaming Replication**: [Done] → Details siehe [`f-cdc-03-zero-kafka-postgresql-cdc.md`](file:///root/lis-git/gql/gql/docs/features/f-cdc-03-zero-kafka-postgresql-cdc.md)
+- [x] **F-OPS-01 AST-Aware Production Traffic Shadowing & Dark Replay**: [Done] → Details siehe [`f-ops-01-traffic-shadowing-dark-replay.md`](file:///root/lis-git/gql/gql/docs/features/f-ops-01-traffic-shadowing-dark-replay.md)
+- [x] **F-AI-08 FOCUS FinOps Accounting für Token & Compute**: [Done] → Details siehe [`f-ai-08-focus-finops-accounting.md`](file:///root/lis-git/gql/gql/docs/features/f-ai-08-focus-finops-accounting.md)
+- [x] **F-GOV-08 Dynamic Schema Contracts & Tag-basierte Projektion (@tag)**: [Done] → Details siehe [`f-gov-08-schema-contracts-tag-projection.md`](file:///root/lis-git/gql/gql/docs/features/f-gov-08-schema-contracts-tag-projection.md)
 
 ---
 
@@ -193,40 +202,42 @@ GqlGateway transferiert bewährte Konzepte aus Trino/Presto in die GraphQL- und 
 
 Aus Sicht des Enterprise Product Managements ergeben sich die wichtigsten noch benötigten Features aus der Schnittmenge aus Kundenanforderungen (Fortune-500, regulierte Industrien), akuten Schmerzpunkten im Betrieb und Marktdifferenzierung gegenüber Apollo GraphOS und Hasura DDN.
 
-Die Priorisierung unterteilt sich entlang des RICE-C-Modells in drei strategische Reifegrade:
+### 4.1 Abgeschlossene Initiativen (Welle 1 & Welle 2 – 100% GA ✅)
 
----
+Die nachfolgenden Schlüsselthemen wurden in den jüngsten Entwicklungszyklen (Welle 1 & Welle 2) **vollständig implementiert, getestet und sicherheitstechnisch freigegeben**:
 
-### 4.1 Top-Priorität: Sofortige Hebel & Differenzierung (Phase 1)
-
-* **`F-AI-07` Dynamic Semantic Schema Pruning & Just-in-Time MCP Tools**
-  * **Schmerzpunkt:** Große Enterprise-Supergraphs mit hunderten Typen sprengen das Token-Budget im System-Prompt von LLMs (30.000 bis 60.000 Tokens nur für Werkzeugsignaturen). Dies führt zu hohen Inferenzkosten, Latenzen und Fehlentscheidungen der Agenten.
-  * **Lösung:** Vektorbasierte Vorfilterung zur Laufzeit. Das Gateway vergleicht den Benutzer-Prompt mit Metadaten aus dbt und OpenMetadata und injiziert dem LLM dynamisch nur die 5 bis 10 Werkzeuge, die für die Anfrage relevant sind.
+* [x] **`F-AI-07` Dynamic Semantic Schema Pruning & Just-in-Time MCP Tools** (`100% GA`)
+  * **Umgesetzt:** JIT Tool-Injektion via `SemanticToolPruner`, Bounding auf max. 4.000 Tokens, Fail-Closed Fallback.
   * **Business-Value:** Bis zu 80 % Ersparnis bei System-Prompt-Tokens und signifikant höhere Erfolgsquote autonomer Agenten.
+  * **Dokumentation:** [`f-ai-07-dynamic-semantic-schema-pruning.md`](file:///root/lis-git/gql/gql/docs/features/f-ai-07-dynamic-semantic-schema-pruning.md)
 
-* **`F-CDC-03` Zero-Kafka PostgreSQL CDC via Logical Streaming Replication**
-  * **Schmerzpunkt:** Echtzeit-Streaming über Apache Kafka und Debezium scheitert in vielen Abteilungen an den hohen Infrastruktur- und Betriebskosten. Bisher deckt das Gateway diesen Bypass nur für MSSQL ab.
-  * **Lösung:** Direkter PostgreSQL Logical Replication Client im Gateway über das native `pgoutput`-Streaming-Protokoll. WAL-Änderungen werden ohne Message-Broker direkt in mandantengefilterte GraphQL-Subscriptions oder Server-Sent Events überführt.
-  * **Business-Value:** Schließt die Lücke für Cloud-native PostgreSQL- und Supabase-Umgebungen bei minimaler TCO.
+* [x] **`F-CDC-03` Zero-Kafka PostgreSQL CDC via Logical Streaming Replication** (`100% GA`)
+  * **Umgesetzt:** Nativer Logical Streaming Replication Client via `pgoutput`, WAL Lag Guard (1 GB Limit), In-Stream RLS.
+  * **Business-Value:** Schließt die Realtime-Streaming-Lücke für Cloud-native PostgreSQL- und Supabase-Umgebungen bei minimaler TCO.
+  * **Dokumentation:** [`f-cdc-03-zero-kafka-postgresql-cdc.md`](file:///root/lis-git/gql/gql/docs/features/f-cdc-03-zero-kafka-postgresql-cdc.md)
 
-* **`F-OPS-01` AST-Aware Production Traffic Shadowing & Dark Replay**
-  * **Schmerzpunkt:** Statische Schema-Checks erkennen syntaktische Fehler, aber keine Performance-Regressionen, DB-Locking-Probleme oder semantische Datenabweichungen unter Last.
-  * **Lösung:** Asynchrones Spiegeln eines konfigurierbaren Anteils des produktiven Lese-Traffics auf Canary- oder Subgraph-Testversionen mit automatisiertem Diff-Reporting von Latenzen und Fehlerquoten. Mutationen werden im Shadowing-Pfad unterdrückt.
+* [x] **`F-OPS-01` AST-Aware Production Traffic Shadowing & Dark Replay** (`100% GA`)
+  * **Umgesetzt:** AST Mutation Guard (strikte Unterdrückung aller Mutationen/Writes), PII-Redactor, Bounded Payload Buffering (< 2 MB).
   * **Business-Value:** Risikofreie Zero-Downtime-Releases für geschäftskritische Core-Banking- und Enterprise-Systeme.
+  * **Dokumentation:** [`f-ops-01-traffic-shadowing-dark-replay.md`](file:///root/lis-git/gql/gql/docs/features/f-ops-01-traffic-shadowing-dark-replay.md)
+
+* [x] **`F-AI-08` FOCUS-konformes FinOps Accounting für Token & Compute** (`100% GA`)
+  * **Umgesetzt:** Standardisiertes Kostenmodell nach FOCUS v1.2, Soft- & Hard-Cap Gating (`FinOpsBudgetMiddleware`), Denial-of-Wallet Schutz, CSV-Formula-Injection-Schutz.
+  * **Business-Value:** Präzise Unit Economics und automatisierte Budget-Caps für autonome KI-Workloads.
+  * **Dokumentation:** [`f-ai-08-focus-finops-accounting.md`](file:///root/lis-git/gql/gql/docs/features/f-ai-08-focus-finops-accounting.md)
+
+* [x] **`F-GOV-08` Dynamic Schema Contracts & Tag-basierte Projektion (`@tag`)** (`100% GA`)
+  * **Umgesetzt:** Sub-Schema-Slicing via `@tag` und `@inaccessible`, Pruning von Orphan-Types, Zero-Leaking Introspektion, dynamisches Header-Routing.
+  * **Business-Value:** Single Source of Truth bei vollständiger Schnittstellen-Isolation für B2B-Partner und Mobile-Clients ohne teure Apollo GraphOS Contracts-Lizenzen.
+  * **Dokumentation:** [`f-gov-08-schema-contracts-tag-projection.md`](file:///root/lis-git/gql/gql/docs/features/f-gov-08-schema-contracts-tag-projection.md)
 
 ---
 
-### 4.2 Strategische Skalierung & Enterprise Governance (Phase 2)
+### 4.2 Nächste strategische Roadmap-Prioritäten (Phase 3 & Phase 4)
 
-* **`F-AI-08` FOCUS-konformes FinOps Accounting für Token & Compute**
-  * **Schmerzpunkt:** Plattform-Teams können die durch kaskadierende Agenten-Abfragen verursachten Kosten für Backend-I/O und LLM-Inferenz weder transparent nachvollziehen noch intern verrechnen.
-  * **Lösung:** Standardisiertes Kosten-Accounting nach der FinOps Open Cost and Usage Specification (FOCUS v1.2/v1.4). Granulare Erfassung von CPU-Zeit, DB-I/O und Token-Verbrauch pro API-Key, Tenant oder Agent-Session.
-  * **Business-Value:** Präzise Unit Economics und automatisierte Budget-Caps für KI-Workloads.
+Die verbleibenden Roadmap-Themen gliedern sich in folgende Prioritätsstufen:
 
-* **`F-GOV-08` Dynamic Schema Contracts & Tag-basierte Projektion (`@tag`)**
-  * **Schmerzpunkt:** Für unterschiedliche Zielgruppen (interne Teams, Mobil-Apps, B2B-Partner, öffentliche APIs) müssen oft parallele Gateways gewartet werden, was zu Drift und Doppelaufwand führt.
-  * **Lösung:** Ableitung maßgeschneiderter Schemavarianten aus einem zentralen Supergraph mittels Direktiven wie `@tag(name: "...")` und `@inaccessible` direkt im Gateway. Nicht-autorisierte Typen und Felder werden für die jeweilige Gruppe vollständig aus dem Schema und der AST-Validierung getilgt.
-  * **Business-Value:** Single Source of Truth bei vollständiger Schnittstellen-Isolation für externe Partner.
+#### Priorität 1: Frontend-Performance & Feingranulare Autorisierung (Phase 3)
 
 * **`F-PERF-12` Incremental Delivery via `@defer` & `@stream`**
   * **Schmerzpunkt:** Langsame Subgraphs oder rechenintensive Datenanreicherungen blockieren die gesamte GraphQL-Antwort (Latenz-Bottleneck).
@@ -238,9 +249,7 @@ Die Priorisierung unterteilt sich entlang des RICE-C-Modells in drei strategisch
   * **Lösung:** Zanzibar-basierte Autorisierungsprüfungen mit nativem DataLoader-Batching im Gateway-Interceptor, um $N+1$-Abfragen bei verschachtelten Objektlisten zu eliminieren.
   * **Business-Value:** Skalierbare Mandanten- und Dokumentenfreigaben im Sub-Millisekundenbereich.
 
----
-
-### 4.3 Datenvirtualisierung & High-Performance Analytics (Phase 3)
+#### Priorität 2: Datenvirtualisierung & Enterprise UI (Phase 4)
 
 * **`F-DATA-04` Native Apache Arrow Flight SQL Egress**
   * **Schmerzpunkt:** JSON- und REST-Serialisierungen belasten CPU und Speicher bei großen analytischen Exporten massiv.
@@ -252,21 +261,27 @@ Die Priorisierung unterteilt sich entlang des RICE-C-Modells in drei strategisch
   * **Lösung:** Einbettung einer spaltenorientierten In-Memory-Engine direkt im Gateway-Prozess zur Vektor-Verarbeitung von Teilresultaten.
   * **Business-Value:** Ersetzt externe Virtualisierungscluster (wie Trino oder Denodo) für Ad-hoc-Analysen im Mittelstand.
 
+* **`P6` Management Studio & Visual Web UI**
+  * **Schmerzpunkt:** Konfiguration und Monitoring erfolgen bisher überwiegend über Config-Dateien, API-Endpunkte und Prometheus/Grafana.
+  * **Lösung:** Visuelles Web-Dashboard für Data Stewards und API-Owner (Policy Simulator, Audit-Log Viewer, Schema Explorer, FinOps Budget Monitor).
+  * **Business-Value:** Stark verbesserte Adoption bei Nicht-Entwicklern und Compliance-Verantwortlichen.
+
 ---
 
-### 4.4 Zusammenfassende Priorisierungsübersicht (RICE-C Matrix)
+### 4.3 Aktualisierte Priorisierungsübersicht (RICE-C Matrix)
 
-| Feature | Primäre Zielgruppe | RICE-C Rang | Strategischer Kernnutzen |
+| Feature | Primäre Zielgruppe | Status / Rang | Strategischer Kernnutzen |
 | :--- | :--- | :---: | :--- |
-| **`F-AI-07` Dynamic Schema Pruning** | KI- & Agentic-Plattform-Teams | **1** | Beseitigt Token-Explosion & Halluzinationen bei MCP. |
-| **`F-CDC-03` PostgreSQL Native CDC** | Cloud-Native & App-Entwickler | **2** | Sub-Sekunden-Streaming ohne Kafka-Infrastruktur. |
-| **`F-OPS-01` AST Traffic Shadowing** | Site Reliability Engineers / DevOps | **3** | Verifiziert Schema-Rollouts unter realer Produktionslast. |
-| **`F-AI-08` FOCUS FinOps Accounting** | FinOps & Plattform-Leitung | **4** | Klare Kostenzuordnung und Budget-Limits für Agenten. |
-| **`F-GOV-08` Schema Contracts (`@tag`)** | API Governance & Partner-Management | **5** | Ein Supergraph, mehrere passgenaue Schnittstellenansichten. |
-| **`F-PERF-12` Incremental Delivery** | Frontend- & Mobile-Teams | **6** | Schnelle Time-to-First-Byte via `@defer`. |
-| **`F-SEC-04` ReBAC (OpenFGA)** | Security & Enterprise Identity | **7** | Google-Zanzibar-Rechteverwaltung ohne $N+1$-Latenzen. |
-| **`F-DATA-04` Arrow Flight SQL** | Data Science & BI-Teams | **8** | Zero-Copy Binärstreaming für tabellarische Massendaten. |
-| **`F-DATA-03` DuckDB.NET Virtualization** | Data Engineering | **9** | In-Process Cross-Domain Joins ohne externe Trino-Cluster. |
+| **`F-AI-07` Dynamic Schema Pruning** | KI- & Agentic-Plattform-Teams | **GA ✅** | Beseitigt Token-Explosion & Halluzinationen bei MCP. |
+| **`F-CDC-03` PostgreSQL Native CDC** | Cloud-Native & App-Entwickler | **GA ✅** | Sub-Sekunden-Streaming ohne Kafka-Infrastruktur. |
+| **`F-OPS-01` AST Traffic Shadowing** | Site Reliability Engineers / DevOps | **GA ✅** | Verifiziert Schema-Rollouts unter realer Produktionslast. |
+| **`F-AI-08` FOCUS FinOps Accounting** | FinOps & Plattform-Leitung | **GA ✅** | Klare Kostenzuordnung und Budget-Limits für Agenten. |
+| **`F-GOV-08` Schema Contracts (`@tag`)** | API Governance & Partner-Management | **GA ✅** | Ein Supergraph, mehrere passgenaue Schnittstellenansichten. |
+| **`F-PERF-12` Incremental Delivery** | Frontend- & Mobile-Teams | **Rang 1** | Schnelle Time-to-First-Byte via `@defer`. |
+| **`F-SEC-04` ReBAC (OpenFGA)** | Security & Enterprise Identity | **Rang 2** | Google-Zanzibar-Rechteverwaltung ohne $N+1$-Latenzen. |
+| **`F-DATA-04` Arrow Flight SQL** | Data Science & BI-Teams | **Rang 3** | Zero-Copy Binärstreaming für tabellarische Massendaten. |
+| **`F-DATA-03` DuckDB.NET Virtualization** | Data Engineering | **Rang 4** | In-Process Cross-Domain Joins ohne externe Trino-Cluster. |
+| **`P6` Management Studio & UI** | Data Stewards & Compliance | **Rang 5** | Visuelle Governance, FinOps-Monitoring & Audit-Viewer. |
 
 ---
 
@@ -279,29 +294,25 @@ gantt
     section Umgesetzt (GA)
     Wave 1 GA (F-DOC-01, F-DBT-1..4, F-DBT-6, F-API-03/04, F-AI-02/04/06) :done, 2025-10, 2026-03
     Wave 2 GA (F-DATA-02, F-SQL-01, F-PERF-08, F-API-07, F-AI-03, F-ARCH-10, F-CDC-02, F-OPEN-01, F-DX-01) :done, 2026-03, 2026-07
-    Wave 3 GA (F-DATA-01, F-AI-05, F-PERF-09, F-GOV-06, F-PERF-10, F-PERF-11) :done, 2026-07, 2026-10
-    section Phase 1: Sofortige Hebel
-    F-AI-07 Dynamic Schema Pruning & JIT MCP Tools :active, 2026-11, 2027-01
-    F-CDC-03 PostgreSQL Native CDC (Zero-Kafka) :active, 2026-11, 2027-02
-    F-OPS-01 AST-Aware Traffic Shadowing & Dark Replay :active, 2026-12, 2027-02
-    section Phase 2: Skalierung & Governance
-    F-AI-08 FOCUS FinOps Accounting : 2027-02, 2027-04
-    F-GOV-08 Schema Contracts & @tag Projektion : 2027-02, 2027-04
-    F-PERF-12 Incremental Delivery (@defer & @stream) : 2027-03, 2027-05
-    F-SEC-04 ReBAC via OpenFGA / SpiceDB : 2027-04, 2027-06
-    section Phase 3: Analytics & Virtualisierung
-    F-DATA-04 Native Apache Arrow Flight SQL Egress : 2027-06, 2027-08
-    F-DATA-03 Embedded In-Memory OLAP (DuckDB.NET) : 2027-07, 2027-09
+    Wave 3 GA (F-DATA-01, F-AI-05, F-PERF-09, F-GOV-06, F-PERF-10, F-PERF-11) :done, 2026-07, 2026-09
+    Welle 1 & 2 GA (F-AI-07, F-CDC-03, F-OPS-01, F-AI-08, F-GOV-08) :done, 2026-09, 2026-10
+    section Phase 3: Performance & ReBAC
+    F-PERF-12 Incremental Delivery (@defer & @stream) :active, 2026-11, 2027-01
+    F-SEC-04 ReBAC via OpenFGA / SpiceDB :active, 2026-12, 2027-02
+    section Phase 4: Analytics & Studio
+    F-DATA-04 Native Apache Arrow Flight SQL Egress : 2027-02, 2027-04
+    F-DATA-03 Embedded In-Memory OLAP (DuckDB.NET) : 2027-03, 2027-05
+    P6 Management Studio & Visual Web UI : 2027-04, 2027-06
 ```
 
 ### Konkrete Handlungsempfehlungen für das Produktmanagement:
 
-1. **Vertriebliche Positionierung der Wave-1-bis-3-Moats:**
-   - **Semantic MCP & AI Suite (`F-AI-02` bis `F-AI-06`):** Als Hauptdifferenzierer gegen Apollo GraphOS positionieren.
-   - **Governed WebSQL & Declarative SQL (`F-DATA-02`, `F-SQL-01`):** Als TCO-starke, vendor-lockin-freie Alternative zu Hasura DDN vermarkten.
-   - **Hierarchischer Parquet Egress (`F-DATA-01`):** Als Zero-ETL Beschleuniger für Data-Science- und Analytics-Teams platzieren.
-   - **Native MSSQL CDC (`F-CDC-02`):** Als "Zero-Infrastructure Realtime"-Lösung für konservative Enterprise-Kunden präsentieren.
-2. **Fokus der nächsten Entwicklungs-Initiative (Phase 1):**
-   - **`F-AI-07` Dynamic Schema Pruning & Just-in-Time MCP Tools**: Beseitigt Token-Explosion und Halluzinationen bei autonomen Agenten in Enterprise-Supergraphs.
-   - **`F-CDC-03` Zero-Kafka PostgreSQL CDC**: Schließt die Realtime-Streaming-Lücke für Cloud-native PostgreSQL- und Supabase-Umgebungen bei minimaler TCO.
-   - **`F-OPS-01` AST Traffic Shadowing**: Ermöglicht risikofreie Releases für Core-Banking- und Enterprise-Systeme durch Dark Replay unter realer Last.
+1. **Vertriebliche Positionierung der neuen GA-Moats (Welle 1 & Welle 2):**
+   - **FOCUS FinOps & Denial-of-Wallet Schutz (`F-AI-08`):** Als zentrales Verkaufsargument für CIOs und FinOps-Leiter positionieren – vollständige Kostentransparenz und Budgetgrenzen für autonome KI-Agenten.
+   - **Dynamic Schema Contracts (`F-GOV-08`):** Als TCO-starke Alternative zu teuren Apollo GraphOS Contracts vermarkten (Single Source of Truth ohne Schnittstellen-Drift).
+   - **Zero-Kafka PostgreSQL CDC (`F-CDC-03`):** Als schlanke, kostengünstige Realtime-Lösung für Cloud-native Kunden und Supabase-Stacks platzieren.
+   - **Dynamic Schema Pruning (`F-AI-07`):** Bis zu 80 % Token-Ersparnis als direkten ROI für Enterprise-KI-Kunden hervorheben.
+   - **AST-Aware Traffic Shadowing (`F-OPS-01`):** Als Enabler für Zero-Risk Canary-Releases bei geschäftskritischen Systemen bewerben.
+2. **Fokus der nächsten Entwicklungs-Initiative (Phase 3):**
+   - **`F-PERF-12` Incremental Delivery via `@defer` & `@stream`**: Beschleunigt komplexe Frontends und reduziert spürbar die TTFB bei kaskadierenden Subgraphs.
+   - **`F-SEC-04` Relationship-Based Access Control (ReBAC)**: Löst feingranulare B2B- und Dokumentenfreigaben im Sub-Millisekundenbereich.

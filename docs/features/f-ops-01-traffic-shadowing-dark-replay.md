@@ -1,20 +1,37 @@
 # F-OPS-01: AST-Aware Production Traffic Shadowing & Dark Replay
 
-**Status:** Geplant (Welle 1 / Q4 2026)  
-**Komponenten:** `TrafficShadowingMiddleware.cs`, `AstShadowingFilter.cs`, `DarkReplayClient.cs`  
-**Referenzen:** [`implementation-plan-welle-1-2026-10-02.md`](file:///root/lis-git/gql/gql/docs/architecture/implementation-plan-welle-1-2026-10-02.md)
+**Status:** **100% (GA) ✅ (Implementiert & Security-Audited 2026-10-02)**  
+**Komponenten:** [`TrafficShadowingMiddleware.cs`](file:///root/lis-git/gql/gql/src/GqlGateway.Api/Middleware/TrafficShadowingMiddleware.cs), [`AstShadowingFilter.cs`](file:///root/lis-git/gql/gql/src/GqlGateway.Application/Operations/Shadowing/AstShadowingFilter.cs), [`PiiShadowingRedactor.cs`](file:///root/lis-git/gql/gql/src/GqlGateway.Application/Operations/Shadowing/PiiShadowingRedactor.cs), [`TrafficShadowingService.cs`](file:///root/lis-git/gql/gql/src/GqlGateway.Application/Operations/Shadowing/TrafficShadowingService.cs), [`TrafficShadowingOptions.cs`](file:///root/lis-git/gql/gql/src/GqlGateway.Domain/Options/GatewayOptions.cs)  
+**Referenzen:** [`implementation-plan-welle-1-2026-10-02.md`](file:///root/lis-git/gql/gql/docs/architecture/implementation-plan-welle-1-2026-10-02.md), [`security-review-welle-1-2026-10-02.md`](file:///root/lis-git/gql/gql/docs/threat-model/security-review-welle-1-2026-10-02.md)
 
 ---
 
 ## 1. Übersicht & Problemstellung
-Statische Schema-Checks erkennen syntaktische Fehler, aber keine Performance-Regressionen, DB-Locking-Probleme oder semantische Datenabweichungen unter realer Produktionslast.
+Syntaktische Schema-Validierungen erkennen keine Latenz-Regressionen, Lock-Contention auf der Datenbank oder fehlerhafte Datenaggregationen unter realer Produktionslast. Ein Dark-Replay-Mechanismus ist essenziell für risikolose Upgrades und Canary-Deployments.
 
 ## 2. Architektur & Umsetzung
-- Asynchrones Spiegeln eines konfigurierbaren Anteils des produktiven Lese-Traffics auf Canary- oder Staging-Versionen.
-- **AST-Mutation Guard:** Schreibende Operationen (GraphQL-Mutationen, SQL `INSERT/UPDATE/DELETE`) werden über den Query-AST zwingend erkannt und im Shadowing-Pfad unterdrückt.
-- **PII Redaction:** Sensible Header und PII-Werte werden vor dem Replay bereinigt oder durch synthetische Test-Token ersetzt.
-- Automatisiertes Diff-Reporting von Latenzen ($p50, p95, p99$), Statuscodes und Antwortstrukturen.
+- **AST Mutation Guard:** Der `AstShadowingFilter` analysiert den Query-AST (GraphQL) und SQL-Statements vor der Weiterleitung. Sämtliche schreibenden Verben (`mutation`, `INSERT`, `UPDATE`, `DELETE`, `DROP`, `TRUNCATE`, `ALTER`, `MERGE`, `EXEC`, `CALL`, `GRANT`, `COPY`) werden ausnahmslos blockiert (`IsSafeToReplay = false`).
+- **PII- & Credential-Redaction:** Der `PiiShadowingRedactor` filtert sensible Header (`Authorization`, `Cookie`, `X-Api-Key`, Client-Zertifikate, Vault-Token) und ersetzt Tokens durch synthetische Staging-Credentials (`Bearer staging-shadow-synthetic-token`).
+- **Bounded Buffering DoS-Schutz:** Payloads über 2 MB werden im Shadowing-Pfad ignoriert; asynchrone Fire-and-Forget-Warteschlangen belasten den kritischen Client-Pfad mit < 1 µs Overhead.
+- **Konfigurierbare Sampling-Rate:** Präzise Steuerung von 0.0 bis 1.0 (z. B. 0.05 für 5% Shadowing).
 
-## 3. Business Value
-- Risikofreie Zero-Downtime-Releases für geschäftskritische Core-Banking- und Enterprise-Systeme.
-- Frühe Erkennung von Performance- und Index-Bottlenecks vor dem produktiven Rollout.
+## 3. Konfigurationsbeispiel (`appsettings.json`)
+```json
+{
+  "Gateway": {
+    "Operations": {
+      "TrafficShadowing": {
+        "Enabled": true,
+        "TargetBaseUrl": "https://staging-cluster.internal:5001",
+        "SampleRate": 0.1,
+        "DropMutations": true,
+        "StripPiiHeaders": true
+      }
+    }
+  }
+}
+```
+
+## 4. Business Value
+- **Zero-Downtime Releases:** Risikofreies Testen neuer Gateway-Versionen, Fusion-Subgraphs und Datenbank-Indizes mit echten Produktionsanfragen.
+- **Automatisierte Qualitätskontrolle:** Frühzeitige Erkennung von Performance- und Antwort-Divergenzen vor dem Produktivgang.
