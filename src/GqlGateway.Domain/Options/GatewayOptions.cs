@@ -40,6 +40,8 @@ public sealed class GatewayOptions
     [Required] public SqlEndpointsOptions SqlEndpoints { get; init; } = new();
     [Required] public InsecureGettingStartedOptions Insecure { get; init; } = new();
     [Required] public MssqlChangeTrackingOptions MssqlChangeTracking { get; init; } = new();
+    [Required] public PostgreSqlCdcOptions PostgreSqlCdc { get; init; } = new();
+    [Required] public TrafficShadowingOptions TrafficShadowing { get; init; } = new();
 
     /// <summary>
     /// Getting Started Preset Profile: "Strict" (Default) or "Quickstart".
@@ -1142,6 +1144,33 @@ public sealed class MssqlChangeTrackingOptions
     public int PollingIntervalMilliseconds { get; init; } = 1000;
     public int BatchSize { get; init; } = 500;
     public List<string> TrackedTables { get; init; } = [];
+}
+
+/// <summary>
+/// F-CDC-03: Zero-Kafka PostgreSQL CDC via Logical Streaming Replication (pgoutput).
+/// </summary>
+public sealed class PostgreSqlCdcOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string ConnectionString { get; init; } = string.Empty;
+    public string SlotName { get; init; } = "gql_gateway_cdc_slot";
+    public string PublicationName { get; init; } = "gql_gateway_pub";
+    public List<string> TrackedTables { get; init; } = [];
+    public long MaxLagBytes { get; init; } = 1_000_000_000L; // 1 GB protection limit
+    public int AckIntervalMilliseconds { get; init; } = 1000;
+}
+
+/// <summary>
+/// F-OPS-01: AST-Aware Production Traffic Shadowing &amp; Dark Replay.
+/// </summary>
+public sealed class TrafficShadowingOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string TargetBaseUrl { get; init; } = "https://staging-gateway.internal:5001";
+    public double SampleRatePercentage { get; init; } = 5.0; // 0.1% to 100%
+    public int ChannelCapacity { get; init; } = 5000;
+    public int TimeoutMs { get; init; } = 3000;
+    public bool StripPiiHeaders { get; init; } = true;
 }
 
 /// <summary>

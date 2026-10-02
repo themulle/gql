@@ -392,6 +392,7 @@ public static class GatewayServiceCollectionExtensions
         services.AddSingleton<IMcpProvenanceEnricher, McpProvenanceEnricher>();
         services.AddSingleton<IMcpSessionStore, McpSessionStore>();
         services.AddSingleton<IMcpToolRegistry, McpToolRegistry>();
+        services.AddSingleton<GqlGateway.Application.Mcp.Pruning.ISemanticToolPruner, GqlGateway.Application.Mcp.Pruning.SemanticToolPruner>();
         services.AddScoped<IMcpQueryExecutor, GqlGateway.GraphQL.Mcp.GatewayMcpQueryExecutor>();
         services.AddScoped<IAiDataGuardrailService, AiDataGuardrailService>();
         services.AddScoped<IMcpProtocolHandler, McpProtocolHandler>();
@@ -427,10 +428,26 @@ public static class GatewayServiceCollectionExtensions
         // CDC sources (MSSQL Change Tracking, Debezium). Single registration point – see ExtensionsServiceCollectionExtensions.
         services.AddGatewayExtensions(gatewayOptions);
 
-        // Realtime Event Subscriptions & In-Stream RLS (P5)
+        // Realtime Event Subscriptions & In-Stream RLS (P5 & F-CDC-03)
         services.AddSingleton<ICdcEventChannel, InMemoryCdcEventChannel>();
         services.AddSingleton<ICdcEventIngestionService, CdcEventIngestionService>();
         services.AddScoped<IStreamRlsPolicyEnforcer, StreamRlsPolicyEnforcer>();
+        services.AddSingleton<GqlGateway.Infrastructure.Streaming.PostgreSqlLogicalReplicationService>();
+        services.AddSingleton<GqlGateway.Application.Streaming.Interfaces.IPostgreSqlCdcService>(sp => sp.GetRequiredService<GqlGateway.Infrastructure.Streaming.PostgreSqlLogicalReplicationService>());
+        if (gatewayOptions.PostgreSqlCdc.Enabled)
+        {
+            services.AddHostedService(sp => sp.GetRequiredService<GqlGateway.Infrastructure.Streaming.PostgreSqlLogicalReplicationService>());
+        }
+
+        // AST-Aware Traffic Shadowing & Dark Replay (F-OPS-01)
+        services.AddHttpClient<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>();
+        services.AddSingleton<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>();
+        services.AddSingleton<GqlGateway.Application.Diagnostics.Shadowing.ITrafficShadowingService>(sp =>
+            sp.GetRequiredService<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>());
+        if (gatewayOptions.TrafficShadowing.Enabled)
+        {
+            services.AddHostedService(sp => sp.GetRequiredService<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>());
+        }
 
         // Explicit CORS policy configuration
         services.AddCors(options =>
