@@ -887,6 +887,12 @@ public sealed class ParquetEgressOptions
     public bool Enabled { get; init; } = true;
     public int MaxRowsPerFile { get; init; } = 100000;
     public bool FlattenNestedStructures { get; init; } = true;
+
+    /// <summary>Parquet column compression codec: None | Snappy | Gzip (invalid values fall back to Snappy).</summary>
+    public string Compression { get; init; } = "Snappy";
+
+    /// <summary>Maximum size of a buffered JSON source response (GraphQL) that is converted to Parquet.</summary>
+    public long MaxBufferedSourceBytes { get; init; } = 64 * 1024 * 1024;
 }
 
 public sealed class HitLStepUpOptions

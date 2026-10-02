@@ -559,6 +559,26 @@ query GenerateGdprDisclosureReport {
 }
 ```
 
+## 📦 Parquet-Ausgabe
+
+Alle Daten-Ausgabekanäle liefern ihr Ergebnis auf Wunsch als echte Apache-Parquet-Datei (Parquet.Net, eine Row-Group, Snappy-komprimiert) statt JSON:
+
+```bash
+curl -H "Accept: application/vnd.apache.parquet" -H "GraphQL-Preflight: 1" \
+     -H "Content-Type: application/json" \
+     -d '{"query":"{ table(domain:\"sales\", name:\"orders\") { jsonRows } }"}' \
+     -o orders.parquet http://localhost:8080/graphql
+```
+
+- **Header:** `Accept: application/vnd.apache.parquet` (Alias `application/x-parquet`). Parquet wird nur gewählt, wenn der Typ explizit mit q>0 angegeben ist und kein anderer Typ eine höhere q-Präferenz hat (`*/*` zählt nicht). Antwort: `Content-Type: application/vnd.apache.parquet`, `Content-Disposition: attachment`, `X-Row-Count`, `X-Export-Truncated`, `Vary: Accept`, `Cache-Control: no-store`.
+- **Kanäle:** GraphQL (`/graphql`), WebSQL (`POST /api/sql`, `/api/v1/sql`), SQL-Endpoints (`/api/v1/queries/{name}`), OData-Entity-Sets (`/odata/v4/{domain}/{schema}/{table}`). Andere Routen antworten auf einen reinen Parquet-Accept-Header mit `406 Not Acceptable`; enthält der Header zusätzlich `application/json` oder `*/*`, wird normal JSON geliefert.
+- **Governance:** Die Konvertierung ist eine reine Ausgabe-Transformation nach RLS, Masking, Consent und Egress-Interceptors – Parquet enthält exakt die Daten der JSON-Antwort (maskierte Werte bleiben maskiert).
+- **Grenzen:** `GatewayOptions:ParquetEgress:MaxRowsPerFile` (Default 100000, darüber `X-Export-Truncated: true`), `MaxBufferedSourceBytes` (Default 64 MB für die gepufferte GraphQL-JSON-Antwort, darüber `413`), `Compression` (`None`/`Snappy`/`Gzip`), `FlattenNestedStructures` (verschachtelte Objekte → Spalten `parent.child`, Listen → JSON-String).
+- **GraphQL:** genau ein Root-Feld pro Operation; Zeilenquelle ist `jsonRows`, eine Liste `rows`/`items`/`nodes`, `edges[].node` oder eine Liste von Objekten. Skalare Ergebnisse → `406`.
+- **Fehler bleiben JSON:** GraphQL-`errors` (Header `X-Parquet-Conversion: skipped-errors`), Policy-/Validierungsfehler und alle Status ≠ 200 werden unverändert als JSON geliefert.
+- **Ausgenommen:** MCP (`/mcp`, JSON-RPC-Protokoll), Subscriptions/SSE/WebSockets, Webhooks, Health und Metrics werden nie konvertiert.
+- `GET /api/export/parquet/{domain}/{table}` liefert weiterhin nur ein Schema-Gerüst ohne Zeilen.
+
 ## 📝 Code Review & Export Artifacts
 
 For offline security audits, external architecture reviews, or LLM-assisted code reviews, pre-bundled review and diff files can be generated in the repository root:

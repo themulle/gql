@@ -1,9 +1,14 @@
 namespace GqlGateway.Api.Endpoints;
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
 using GqlGateway.Api.Middleware;
+using GqlGateway.Api.Serialization;
 using GqlGateway.Application.OData.Interfaces;
+using GqlGateway.Application.Serialization;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 using GqlGateway.Extensions.OData;
@@ -11,6 +16,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 
 public static class ODataEndpoints
 {
@@ -217,66 +223,175 @@ public static class ODataEndpoints
             return Results.Content(GetSwaggerUiHtml(nonce), "text/html;charset=utf-8");
         }).AllowAnonymous(); // SEC M-03: handler performs its own (OpenSchema/Dev/authenticated) check
 
-        app.MapGet("/odata/v4/{domain}/{schema}/{tableName}", async (
-            string domain,
-            string schema,
-            string tableName,
-            IODataHandler odataHandler,
-            HttpContext context) =>
-        {
-            var serviceRoot = $"{context.Request.Scheme}://{context.Request.Host}/odata/v4";
-            var tableId = new TableIdentifier(domain, schema, tableName);
-
-            int? top = null;
-            if (context.Request.Query.TryGetValue("$top", out var topVal))
-            {
-                if (!int.TryParse(topVal, out var t) || t < 0)
-                {
-                    return Results.Json(
-                        new { error = new { code = "InvalidQueryOption", message = "The query parameter '$top' must be a non-negative integer." } },
-                        statusCode: StatusCodes.Status400BadRequest,
-                        contentType: "application/json;odata.metadata=minimal;charset=utf-8"
-                    );
-                }
-                top = t;
-            }
-
-            int? skip = null;
-            if (context.Request.Query.TryGetValue("$skip", out var skipVal))
-            {
-                if (!int.TryParse(skipVal, out var s) || s < 0)
-                {
-                    return Results.Json(
-                        new { error = new { code = "InvalidQueryOption", message = "The query parameter '$skip' must be a non-negative integer." } },
-                        statusCode: StatusCodes.Status400BadRequest,
-                        contentType: "application/json;odata.metadata=minimal;charset=utf-8"
-                    );
-                }
-                skip = s;
-            }
-
-            string? select = context.Request.Query["$select"].FirstOrDefault();
-            bool includeCount = context.Request.Query.TryGetValue("$count", out var countVal) && bool.TryParse(countVal, out var c) && c;
-
-            var headers = context.Request.Headers.ToDictionary(h => h.Key, h => h.Value.Select(v => v ?? string.Empty).ToArray());
-
-            var result = await odataHandler.ExecuteEntitySetQueryAsync(
-                principal: context.User,
-                serviceRootUrl: serviceRoot,
-                table: tableId,
-                top: top,
-                skip: skip,
-                select: select,
-                includeCount: includeCount,
-                headers: headers,
-                ct: context.RequestAborted
-            );
-
-            return Results.Json(result.Payload, statusCode: result.StatusCode, contentType: "application/json;odata.metadata=minimal;charset=utf-8");
-        }).RequireAuthorization();
+        app.MapGet("/odata/v4/{domain}/{schema}/{tableName}", HandleEntitySetRequestAsync)
+           .WithMetadata(new ParquetOutputSupportedMetadata())
+           .RequireAuthorization();
 
         return app;
     }
+
+    /// <summary>
+    /// OData entity set query. F-DATA-01: with <c>Accept: application/vnd.apache.parquet</c> the governed rows of a
+    /// successful result are returned as Apache Parquet; error results stay OData JSON.
+    /// </summary>
+    internal static async Task<IResult> HandleEntitySetRequestAsync(
+        string domain,
+        string schema,
+        string tableName,
+        IODataHandler odataHandler,
+        HttpContext context)
+    {
+        var serviceRoot = $"{context.Request.Scheme}://{context.Request.Host}/odata/v4";
+        var tableId = new TableIdentifier(domain, schema, tableName);
+
+        int? top = null;
+        if (context.Request.Query.TryGetValue("$top", out var topVal))
+        {
+            if (!int.TryParse(topVal, out var t) || t < 0)
+            {
+                return Results.Json(
+                    new { error = new { code = "InvalidQueryOption", message = "The query parameter '$top' must be a non-negative integer." } },
+                    statusCode: StatusCodes.Status400BadRequest,
+                    contentType: "application/json;odata.metadata=minimal;charset=utf-8"
+                );
+            }
+            top = t;
+        }
+
+        int? skip = null;
+        if (context.Request.Query.TryGetValue("$skip", out var skipVal))
+        {
+            if (!int.TryParse(skipVal, out var s) || s < 0)
+            {
+                return Results.Json(
+                    new { error = new { code = "InvalidQueryOption", message = "The query parameter '$skip' must be a non-negative integer." } },
+                    statusCode: StatusCodes.Status400BadRequest,
+                    contentType: "application/json;odata.metadata=minimal;charset=utf-8"
+                );
+            }
+            skip = s;
+        }
+
+        string? select = context.Request.Query["$select"].FirstOrDefault();
+        bool includeCount = context.Request.Query.TryGetValue("$count", out var countVal) && bool.TryParse(countVal, out var c) && c;
+
+        // F-DATA-01: a Parquet request that cannot be served is rejected before the query is executed
+        bool parquetRequested = ParquetContentNegotiation.IsParquetRequested(context.Request);
+        IParquetExportService? parquetService = null;
+        if (parquetRequested)
+        {
+            parquetService = context.RequestServices?.GetService<IParquetExportService>();
+            if (await ParquetResponseWriter.TryRejectUnavailableAsync(context, parquetService, context.RequestAborted))
+            {
+                return Results.Empty;
+            }
+        }
+
+        var headers = context.Request.Headers.ToDictionary(h => h.Key, h => h.Value.Select(v => v ?? string.Empty).ToArray());
+
+        var result = await odataHandler.ExecuteEntitySetQueryAsync(
+            principal: context.User,
+            serviceRootUrl: serviceRoot,
+            table: tableId,
+            top: top,
+            skip: skip,
+            select: select,
+            includeCount: includeCount,
+            headers: headers,
+            ct: context.RequestAborted
+        );
+
+        if (parquetRequested && parquetService != null && result.StatusCode == StatusCodes.Status200OK)
+        {
+            var rows = ExtractEntitySetRows(result.Payload);
+            await ParquetResponseWriter.WriteAsync(context, parquetService, tableName, rows, null, context.RequestAborted);
+            return Results.Empty;
+        }
+
+        return Results.Json(result.Payload, statusCode: result.StatusCode, contentType: "application/json;odata.metadata=minimal;charset=utf-8");
+    }
+
+    /// <summary>
+    /// Extracts the governed rows ("value") of an OData entity set payload without @odata annotations.
+    /// </summary>
+    internal static IReadOnlyList<IReadOnlyDictionary<string, object?>> ExtractEntitySetRows(object? payload)
+    {
+        var rows = new List<IReadOnlyDictionary<string, object?>>();
+        if (payload is null)
+        {
+            return rows;
+        }
+
+        if (payload is IReadOnlyDictionary<string, object?> dictionary &&
+            dictionary.TryGetValue("value", out var value) &&
+            value is IEnumerable<IReadOnlyDictionary<string, object?>> typedRows)
+        {
+            foreach (var row in typedRows)
+            {
+                rows.Add(StripODataAnnotations(row));
+            }
+
+            return rows;
+        }
+
+        // Fallback for other payload shapes: read "value" from the JSON representation the JSON path would send.
+        var element = JsonSerializer.SerializeToElement(payload, payload.GetType());
+        if (element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty("value", out var valueElement) &&
+            valueElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in valueElement.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var row = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var property in item.EnumerateObject())
+                {
+                    if (!IsODataAnnotation(property.Name))
+                    {
+                        row[property.Name] = property.Value;
+                    }
+                }
+                rows.Add(row);
+            }
+        }
+
+        return rows;
+    }
+
+    private static IReadOnlyDictionary<string, object?> StripODataAnnotations(IReadOnlyDictionary<string, object?> row)
+    {
+        var hasAnnotation = false;
+        foreach (var key in row.Keys)
+        {
+            if (IsODataAnnotation(key))
+            {
+                hasAnnotation = true;
+                break;
+            }
+        }
+
+        if (!hasAnnotation)
+        {
+            return row;
+        }
+
+        var stripped = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var (key, val) in row)
+        {
+            if (!IsODataAnnotation(key))
+            {
+                stripped[key] = val;
+            }
+        }
+
+        return stripped;
+    }
+
+    private static bool IsODataAnnotation(string key) => key.Contains("@odata.", StringComparison.Ordinal);
 
     private static string GetSwaggerUiHtml(string nonce) => $$"""
     <!DOCTYPE html>

@@ -5,13 +5,18 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
+using GqlGateway.Api.Serialization;
+using GqlGateway.Application.Serialization;
+using GqlGateway.Application.Sql.Interfaces;
 using GqlGateway.Application.SqlEndpoints.Interfaces;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Options;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -42,10 +47,12 @@ public static class SqlEndpointRoutes
 
         group.MapGet("/{name}", HandleGetEndpoint)
              .WithName("ExecuteSqlEndpointGet")
+             .WithMetadata(new ParquetOutputSupportedMetadata())
              .RequireAuthorization();
 
         group.MapPost("/{name}", HandlePostEndpoint)
              .WithName("ExecuteSqlEndpointPost")
+             .WithMetadata(new ParquetOutputSupportedMetadata())
              .RequireAuthorization();
 
         return app;
@@ -161,7 +168,7 @@ public static class SqlEndpointRoutes
         return "string";
     }
 
-    private static async Task HandleGetEndpoint(
+    internal static async Task HandleGetEndpoint(
         string name,
         HttpContext httpContext,
         ISqlEndpointExecutionService executionService,
@@ -170,6 +177,13 @@ public static class SqlEndpointRoutes
     {
         var logger = loggerFactory.CreateLogger("GqlGateway.Api.SqlEndpoints");
         var ct = httpContext.RequestAborted;
+
+        // F-DATA-01: reject a Parquet request that cannot be served before any query is executed
+        var parquet = ResolveParquetService(httpContext);
+        if (parquet.Requested && await ParquetResponseWriter.TryRejectUnavailableAsync(httpContext, parquet.Service, ct).ConfigureAwait(false))
+        {
+            return;
+        }
 
         try
         {
@@ -187,9 +201,7 @@ public static class SqlEndpointRoutes
                 tenantId,
                 ct).ConfigureAwait(false);
 
-            httpContext.Response.ContentType = "application/json; charset=utf-8";
-            httpContext.Response.StatusCode = StatusCodes.Status200OK;
-            await JsonSerializer.SerializeAsync(httpContext.Response.Body, result.Rows, JsonOptions, ct).ConfigureAwait(false);
+            await WriteResultAsync(httpContext, name, result, parquet, ct).ConfigureAwait(false);
         }
         catch (KeyNotFoundException knf)
         {
@@ -215,7 +227,7 @@ public static class SqlEndpointRoutes
         }
     }
 
-    private static async Task HandlePostEndpoint(
+    internal static async Task HandlePostEndpoint(
         string name,
         HttpContext httpContext,
         ISqlEndpointExecutionService executionService,
@@ -229,6 +241,13 @@ public static class SqlEndpointRoutes
         {
             httpContext.Response.StatusCode = StatusCodes.Status400BadRequest;
             await httpContext.Response.WriteAsJsonAsync(new { error = "Request body exceeds maximum size limit (2 MB)." }, ct).ConfigureAwait(false);
+            return;
+        }
+
+        // F-DATA-01: reject a Parquet request that cannot be served before any query is executed
+        var parquet = ResolveParquetService(httpContext);
+        if (parquet.Requested && await ParquetResponseWriter.TryRejectUnavailableAsync(httpContext, parquet.Service, ct).ConfigureAwait(false))
+        {
             return;
         }
 
@@ -253,9 +272,7 @@ public static class SqlEndpointRoutes
                 tenantId,
                 ct).ConfigureAwait(false);
 
-            httpContext.Response.ContentType = "application/json; charset=utf-8";
-            httpContext.Response.StatusCode = StatusCodes.Status200OK;
-            await JsonSerializer.SerializeAsync(httpContext.Response.Body, result.Rows, JsonOptions, ct).ConfigureAwait(false);
+            await WriteResultAsync(httpContext, name, result, parquet, ct).ConfigureAwait(false);
         }
         catch (KeyNotFoundException knf)
         {
@@ -279,6 +296,35 @@ public static class SqlEndpointRoutes
             httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
             await httpContext.Response.WriteAsJsonAsync(new { error = "An internal error occurred during query execution." }, ct).ConfigureAwait(false);
         }
+    }
+
+    private static (bool Requested, IParquetExportService? Service) ResolveParquetService(HttpContext httpContext)
+    {
+        if (!ParquetContentNegotiation.IsParquetRequested(httpContext.Request))
+        {
+            return (false, null);
+        }
+
+        return (true, httpContext.RequestServices?.GetService<IParquetExportService>());
+    }
+
+    private static async Task WriteResultAsync(
+        HttpContext httpContext,
+        string endpointName,
+        GovernedSqlResult result,
+        (bool Requested, IParquetExportService? Service) parquet,
+        CancellationToken ct)
+    {
+        if (parquet.Requested && parquet.Service != null)
+        {
+            // F-DATA-01: the governed (masked, row-filtered) result rows are written as Apache Parquet
+            await ParquetResponseWriter.WriteAsync(httpContext, parquet.Service, endpointName, result.Rows, result.Columns, ct).ConfigureAwait(false);
+            return;
+        }
+
+        httpContext.Response.ContentType = "application/json; charset=utf-8";
+        httpContext.Response.StatusCode = StatusCodes.Status200OK;
+        await JsonSerializer.SerializeAsync(httpContext.Response.Body, result.Rows, JsonOptions, ct).ConfigureAwait(false);
     }
 
     private static TenantId ResolveTenantId(HttpContext httpContext)

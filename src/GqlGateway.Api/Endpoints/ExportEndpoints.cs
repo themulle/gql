@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using GqlGateway.Api.Serialization;
 using GqlGateway.Application.Serialization;
 using GqlGateway.Domain.Common;
 using GqlGateway.Domain.Model;
@@ -24,7 +25,7 @@ public static partial class ExportEndpoints
     public static IEndpointRouteBuilder MapExportEndpoints(this IEndpointRouteBuilder app)
     {
         // F-DATA-01: Hierarchical Parquet Egress
-        app.MapGet("/api/export/parquet/{domain}/{table}", (
+        app.MapGet("/api/export/parquet/{domain}/{table}", async (
             string domain,
             string table,
             string? columns,
@@ -57,10 +58,11 @@ public static partial class ExportEndpoints
             );
 
             // Direct endpoint invocation without an executing query pipeline returns a typed Parquet skeleton/schema file (zero rows).
-            // Full data exports with row-level security and column masking are driven via GraphQL query operations and executor pipelines.
+            // Governed data exports (RLS, masking, consent) are requested on the data channels themselves via
+            // 'Accept: application/vnd.apache.parquet' (GraphQL, WebSQL, SQL endpoints, OData entity sets).
             var schemaSkeletonRows = new List<IReadOnlyDictionary<string, object?>>();
 
-            var exportResult = parquetService.ExportToParquet(exportRequest, schemaSkeletonRows);
+            var exportResult = await parquetService.ExportToParquetAsync(exportRequest, schemaSkeletonRows, context.RequestAborted);
 
             context.Response.Headers["X-Export-Truncated"] = exportResult.IsTruncated ? "true" : "false";
             context.Response.Headers["X-Row-Count"] = exportResult.RowCount.ToString();
@@ -70,7 +72,9 @@ public static partial class ExportEndpoints
                 contentType: exportResult.ContentType,
                 fileDownloadName: exportResult.SuggestedFileName
             );
-        }).RequireAuthorization();
+        })
+        .WithMetadata(new ParquetOutputSupportedMetadata())
+        .RequireAuthorization();
 
         return app;
     }
