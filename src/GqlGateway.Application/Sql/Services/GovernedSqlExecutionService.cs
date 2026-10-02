@@ -245,8 +245,11 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         var tablesWithoutRls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var tableMaskingExpressions = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         var tableColumnsMap = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        var tablesWithConsentRowFilter = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tablesWithMaskedColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var internalParameters = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         var hmacKeyParameterNames = new Dictionary<string, string>(StringComparer.Ordinal);
+        DatabaseDialect? targetDatabaseDialect = null;
 
         foreach (var target in metadata.ReferencedTables)
         {
@@ -270,7 +273,9 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 throw TableDenied(target);
             }
 
-            // SEC C-03: A catalog table bound to a specific data source must only be queried through that source.
+            targetDatabaseDialect ??= tableMeta.Dialect;
+
+            // SEC C-03 / SQ-09: A catalog table bound to a specific data source must only be queried through that source.
             if (!string.IsNullOrWhiteSpace(tableMeta.Table.SourceName) &&
                 !string.Equals(tableMeta.Table.SourceName, dataSourceName, StringComparison.OrdinalIgnoreCase))
             {
@@ -278,9 +283,21 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 throw TableDenied(target);
             }
 
+            // SQ-09: If a 3-part name was used, validate the catalog part against the data source / catalog
+            if (!string.IsNullOrWhiteSpace(target.Catalog) &&
+                !string.Equals(target.Catalog, dataSourceName, StringComparison.OrdinalIgnoreCase) &&
+                (string.IsNullOrWhiteSpace(tableMeta.Table.SourceName) || !string.Equals(target.Catalog, tableMeta.Table.SourceName, StringComparison.OrdinalIgnoreCase)))
+            {
+                _logger?.LogWarning("WebSQL rejected table {Table}: 3-part catalog '{Catalog}' does not match data source '{DataSource}'.", target.FullName, target.Catalog, dataSourceName);
+                throw TableDenied(target);
+            }
+
             var colList = tableMeta.Columns.Select(c => c.ColumnName).ToList();
-            tableColumnsMap[target.TableName] = colList;
             tableColumnsMap[target.FullName] = colList;
+            if (string.Equals(target.FullName, target.TableName, StringComparison.OrdinalIgnoreCase))
+            {
+                tableColumnsMap[target.TableName] = colList;
+            }
 
             // SEC C-03: Consent model (same truth table as the GraphQL path)
             TableAccessDecision decision;
@@ -344,18 +361,26 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
                 SqlSecurityValidator.ValidatePredicateSql(decision.CombinedRowFilterSql, "CombinedRowFilterSql");
                 rlsParts.Add($"({decision.CombinedRowFilterSql})");
                 AddInternalRowFilterParameters(decision.RowFilterParameters, internalParameters);
+                tablesWithConsentRowFilter.Add(target.FullName);
+                tablesWithConsentRowFilter.Add(target.TableName);
             }
 
             if (rlsParts.Count > 0)
             {
                 var rlsFilter = string.Join(" AND ", rlsParts);
-                tableRlsFilters[target.TableName] = rlsFilter;
                 tableRlsFilters[target.FullName] = rlsFilter;
+                if (string.Equals(target.FullName, target.TableName, StringComparison.OrdinalIgnoreCase))
+                {
+                    tableRlsFilters[target.TableName] = rlsFilter;
+                }
             }
             else
             {
-                tablesWithoutRls.Add(target.TableName);
                 tablesWithoutRls.Add(target.FullName);
+                if (string.Equals(target.FullName, target.TableName, StringComparison.OrdinalIgnoreCase))
+                {
+                    tablesWithoutRls.Add(target.TableName);
+                }
             }
 
             // Column projection / masking (SEC C-03/H-10: shared effective access function, catalog-sensitive -> Mask unless explicit Clear)
@@ -389,8 +414,13 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
 
             if (columnMasks.Count > 0)
             {
-                tableMaskingExpressions[target.TableName] = columnMasks;
                 tableMaskingExpressions[target.FullName] = columnMasks;
+                if (string.Equals(target.FullName, target.TableName, StringComparison.OrdinalIgnoreCase))
+                {
+                    tableMaskingExpressions[target.TableName] = columnMasks;
+                }
+                tablesWithMaskedColumns.Add(target.FullName);
+                tablesWithMaskedColumns.Add(target.TableName);
             }
         }
 
@@ -404,11 +434,45 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
         // SEC C-03: Any table name the rewriter encounters that was not resolved above is filtered to the empty set (fail-closed).
         const string denyAllFilter = "1 = 0";
 
+        TargetSqlDialect targetSqlDialect = targetDatabaseDialect switch
+        {
+            DatabaseDialect.PostgreSql => TargetSqlDialect.PostgreSql,
+            DatabaseDialect.SqlServer => TargetSqlDialect.SqlServer,
+            DatabaseDialect.Sqlite => TargetSqlDialect.Sqlite,
+            _ => TargetSqlDialect.Ansi
+        };
+
+        var policyProvider = new DefaultRlsPolicyProvider(
+            defaultFilter: denyAllFilter,
+            predicate: tbl => !tablesWithoutRls.Contains(tbl),
+            filterFunc: tbl => tableRlsFilters.TryGetValue(tbl, out var f) ? f : denyAllFilter)
+        {
+            FallbackToSimpleName = false
+        };
+
+        var maskingProvider = new DefaultColumnMaskingPolicyProvider(
+            hasMaskPredicate: (tbl, col) => tableMaskingExpressions.TryGetValue(tbl, out var dict) && dict.ContainsKey(col),
+            maskExpressionProvider: (tbl, col) => tableMaskingExpressions.TryGetValue(tbl, out var dict) && dict.TryGetValue(col, out var expr) ? expr : "'***'")
+        {
+            FallbackToSimpleName = false
+        };
+
         var rlsOptions = new RlsOptions
         {
             AppendTableAlias = true,
             EnforcedMaxRows = maxRows,
             EnforceReadOnlyQueries = !isDml,
+            TargetDialect = targetSqlDialect,
+            // SQ-01 & SQ-02: Strict parser / lexer checks for governed execution
+            RejectComments = true,
+            RejectBackslashInStrings = true,
+            RejectEscapedStringLiterals = true,
+            RejectDollarQuoting = (targetSqlDialect == TargetSqlDialect.SqlServer),
+            // SQ-03 & SQ-07: Guardrails for DML
+            RejectConsentFilteredInsert = true,
+            RejectWholeRowReferencesInDml = true,
+            TablesWithConsentRowFilter = tablesWithConsentRowFilter,
+            TablesWithMaskedColumns = tablesWithMaskedColumns,
             // SEC M-20: WITH CHECK against the caller's tenant (not the library default) and explicit tenant column on INSERT
             ExpectedTenantValue = tenantId.Value,
             RequireTenantColumnInInsert = true,
@@ -418,14 +482,9 @@ public sealed class GovernedSqlExecutionService : IGovernedSqlExecutionService
             RejectMaskedColumnsInDml = true,
             // DML guardrail: UPDATE/DELETE without WHERE or with a trivially true WHERE are rejected (original statement).
             RejectUnfilteredDml = true,
-            PolicyProvider = new DefaultRlsPolicyProvider(
-                defaultFilter: denyAllFilter,
-                predicate: tbl => !tablesWithoutRls.Contains(tbl),
-                filterFunc: tbl => tableRlsFilters.TryGetValue(tbl, out var f) ? f : denyAllFilter),
+            PolicyProvider = policyProvider,
             TableColumnsProvider = tbl => tableColumnsMap.TryGetValue(tbl, out var cols) ? cols : null,
-            ColumnMaskingProvider = new DefaultColumnMaskingPolicyProvider(
-                hasMaskPredicate: (tbl, col) => tableMaskingExpressions.TryGetValue(tbl, out var dict) && dict.ContainsKey(col),
-                maskExpressionProvider: (tbl, col) => tableMaskingExpressions.TryGetValue(tbl, out var dict) && dict.TryGetValue(col, out var expr) ? expr : "'***'")
+            ColumnMaskingProvider = maskingProvider
         };
 
         // 7. Rewrite SQL AST

@@ -388,7 +388,7 @@ public sealed class ResourceGroupManager : IResourceGroupManager, IDisposable
             string.IsNullOrWhiteSpace(tenantId) ? AnonymousTenantKey : tenantId;
     }
 
-    private sealed class TenantSlot
+    private sealed class TenantSlot : IDisposable
     {
         public readonly string Key;
         public readonly SemaphoreSlim Semaphore;
@@ -400,6 +400,11 @@ public sealed class ResourceGroupManager : IResourceGroupManager, IDisposable
         {
             Key = key;
             Semaphore = new SemaphoreSlim(maxConcurrency, maxConcurrency);
+        }
+
+        public void Dispose()
+        {
+            Semaphore.Dispose();
         }
     }
 
