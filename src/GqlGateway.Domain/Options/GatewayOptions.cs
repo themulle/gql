@@ -42,6 +42,8 @@ public sealed class GatewayOptions
     [Required] public MssqlChangeTrackingOptions MssqlChangeTracking { get; init; } = new();
     [Required] public PostgreSqlCdcOptions PostgreSqlCdc { get; init; } = new();
     [Required] public TrafficShadowingOptions TrafficShadowing { get; init; } = new();
+    [Required] public FinOpsOptions FinOps { get; init; } = new();
+    [Required] public SchemaContractsOptions SchemaContracts { get; init; } = new();
 
     /// <summary>
     /// Getting Started Preset Profile: "Strict" (Default) or "Quickstart".
@@ -1171,6 +1173,39 @@ public sealed class TrafficShadowingOptions
     public int ChannelCapacity { get; init; } = 5000;
     public int TimeoutMs { get; init; } = 3000;
     public bool StripPiiHeaders { get; init; } = true;
+}
+
+/// <summary>
+/// F-AI-08: FOCUS-compliant FinOps Accounting for Token &amp; Compute.
+/// Implements standard cost attribution, usage metering, and budget governance caps.
+/// </summary>
+public sealed class FinOpsOptions
+{
+    public bool Enabled { get; init; } = false;
+    public decimal DefaultMonthlyBudget { get; init; } = 1000m;
+    public double SoftCapRatio { get; init; } = 0.8; // 80% warning
+    public decimal PricePerThousandPromptTokens { get; init; } = 0.003m;
+    public decimal PricePerThousandCompletionTokens { get; init; } = 0.015m;
+    public decimal PricePerComputeSecond { get; init; } = 0.0001m;
+    public Dictionary<string, decimal> TenantMonthlyBudgets { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// F-GOV-08: Dynamic Schema Contracts &amp; Tag-based Projection.
+/// Allows slicing the supergraph into isolated contract views (@tag / @inaccessible) for partners, mobile, and web.
+/// </summary>
+public sealed class SchemaContractsOptions
+{
+    public bool Enabled { get; init; } = false;
+    public string DefaultContract { get; init; } = "default";
+    public Dictionary<string, SchemaContractDefinitionOptions> Contracts { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class SchemaContractDefinitionOptions
+{
+    public List<string> IncludedTags { get; init; } = [];
+    public List<string> ExcludedTags { get; init; } = [];
+    public bool ExcludeInaccessible { get; init; } = true;
 }
 
 /// <summary>

@@ -449,6 +449,12 @@ public static class GatewayServiceCollectionExtensions
             services.AddHostedService(sp => sp.GetRequiredService<GqlGateway.Application.Diagnostics.Shadowing.TrafficShadowingService>());
         }
 
+        // FOCUS FinOps Accounting (F-AI-08)
+        services.AddSingleton<GqlGateway.Application.FinOps.Interfaces.IFinOpsAccountingService, GqlGateway.Application.FinOps.Services.FocusCostAccountingService>();
+
+        // Dynamic Schema Contracts (@tag / @inaccessible) (F-GOV-08)
+        services.AddSingleton<GqlGateway.Application.Governance.Contracts.ISchemaContractManager, GqlGateway.Application.Governance.Contracts.SchemaContractManager>();
+
         // Explicit CORS policy configuration
         services.AddCors(options =>
         {

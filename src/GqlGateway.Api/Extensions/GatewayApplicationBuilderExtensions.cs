@@ -233,6 +233,8 @@ public static class GatewayApplicationBuilderExtensions
         app.UseMiddleware<PostAuthSidRateLimitingMiddleware>();
         app.UseMiddleware<TenantResolutionMiddleware>();
         app.UseMiddleware<ResourceGroupMiddleware>();
+        app.UseMiddleware<FinOpsBudgetMiddleware>();
+        app.UseMiddleware<SchemaContractMiddleware>();
         app.UseMiddleware<TrafficShadowingMiddleware>();
         app.UseMiddleware<OpenTelemetryTracingMiddleware>();
         // F-DATA-01: Parquet output negotiation is the outermost output transformation around the governed JSON
@@ -326,6 +328,7 @@ public static class GatewayApplicationBuilderExtensions
         app.MapBackstageEndpoints(gatewayOptions);
         app.MapHitLEndpoints();
         app.MapTokenRevocationEndpoints(); // SEC M-14 (GAP-B)
+        app.MapFinOpsEndpoints();
         app.MapWebSqlEndpoints();
         app.MapSqlEndpoints(gatewayOptions);
         app.MapDevPortalEndpoints(gatewayOptions);
